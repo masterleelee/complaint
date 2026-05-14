@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>驾校投诉处理系统</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link href="/static/css/style.css" rel="stylesheet">
+</head>
+<body>
+<div id="app">
+
+<nav class="navbar navbar-expand navbar-dark bg-primary sticky-top shadow-sm">
+<div class="container-fluid">
+  <span class="navbar-brand fw-bold"><i class="bi bi-shield-check"></i> 驾校投诉处理系统</span>
+  <div class="d-flex gap-1">
+    <button class="btn btn-sm" :class="page==='main'?'btn-light':'btn-outline-light'" @click="page='main'"><i class="bi bi-clipboard-check"></i> 投诉处理</button>
+    <button class="btn btn-sm" :class="page==='history'?'btn-light':'btn-outline-light'" @click="goPage('history')"><i class="bi bi-clock-history"></i> 处理历史</button>
+    <button class="btn btn-sm" :class="page==='settings'?'btn-light':'btn-outline-light'" @click="goPage('settings')"><i class="bi bi-gear"></i> 系统设置</button>
+  </div>
+</div>
+</nav>
+
+<div class="container-fluid py-3" style="max-width:1100px">
+
+<!-- ══════ 主工作流 ══════ -->
+<div v-if="page==='main'">
+
+<!-- 第一步 -->
+<div class="step-card">
+<div class="step-header"><span class="step-num">1</span><span class="step-title">投诉登记</span></div>
+<div class="step-body">
+  <div class="row g-3 align-items-end">
+    <div class="col-md-4">
+      <label class="form-label fw-semibold">身份证号</label>
+      <input type="text" class="form-control" v-model="form.id_card" maxlength="18" placeholder="18位身份证号" @keyup.enter="queryAll">
+    </div>
+    <div class="col-md-2"><label class="form-label">投诉渠道</label>
+      <select class="form-select" v-model="form.channel"><option>交通局</option><option>12345</option><option>信访</option><option>其他</option></select></div>
+    <div class="col-md-2"><label class="form-label">投诉时间</label><input type="date" class="form-control" v-model="form.date"></div>
+    <div class="col-md-2"><label class="form-label">投诉类型</label>
+      <select class="form-select" v-model="form.type"><option value="A">A-退费纠纷</option><option value="B">B-教学服务</option><option value="C">C-考试安排</option><option value="D">D-合同争议</option><option value="E">E-其他</option></select></div>
+    <div class="col-md-2">
+      <button class="btn btn-primary w-100" @click="queryAll" :disabled="querying">
+        <span v-if="querying" class="spinner-border spinner-border-sm me-1"></span>
+        <i v-else class="bi bi-search me-1"></i>[[ querying?'查询中...':'查询三系统' ]]
+      </button>
+    </div>
+  </div>
+  <!-- 查询进度详情 -->
+  <div v-if="querying || queryProgress.show" class="mt-3 p-3 bg-light rounded query-progress-enter">
+    <div class="d-flex align-items-center mb-2">
+      <div class="progress flex-grow-1 me-3" style="height:10px">
+        <div class="progress-bar progress-bar-striped" :class="queryProgress.done?'bg-success':'bg-primary progress-bar-animated'" :style="{width:queryProgress.percent+'%'}"></div>
+      </div>
+      <span class="text-muted small fw-bold">[[ queryProgress.percent ]]%</span>
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+      <span v-for="(item,key) in queryProgress.items" :key="key" class="badge d-flex align-items-center gap-1 px-2 py-1" :class="item.class" :title="item.tooltip">
+        <i class="bi" :class="item.icon"></i>
+        <span>[[ item.label ]]</span>
+        <span v-if="item.time" class="ms-1" style="font-size:0.75em;opacity:0.8">([[ item.time ]]s)</span>
+      </span>
+    </div>
+    <div v-if="queryProgress.message" class="mt-2 small" :class="queryProgress.done?(queryProgress.hasError?'text-danger':'text-success'):'text-muted'">
+      <i class="bi" :class="queryProgress.done?(queryProgress.hasError?'bi-exclamation-triangle':'bi-check-circle'):'bi-info-circle'"></i>
+      [[ queryProgress.message ]]
+    </div>
+    <!-- 第三系统无记录说明 -->
+    <div v-if="qr && qr.sources && qr.sources.third === 'not_found'" class="mt-2 small text-muted">
+      <i class="bi bi-info-circle"></i> 该学员在计时培训管理平台无培训记录
+    </div>
+  </div>
+  <div v-if="qErr" class="alert alert-danger mt-3 mb-0 py-2"><i class="bi bi-exclamation-triangle me-1"></i>[[ qErr ]]</div>
+</div>
+</div>
+
+<!-- 第二步 -->
+<div class="step-card" v-if="qr">
+<div class="step-header">
+  <span class="step-num">2</span><span class="step-title">学员信息 — [[ qr.name ]]</span>
+  <span class="badge ms-2" :class="stBadge(qr.student_status)">[[ qr.student_status ]]</span>
+</div>
+<div class="step-body">
+  <ul class="nav nav-tabs nav-tabs-sm mb-3">
+    <li class="nav-item" v-for="(l,k) in tabs" :key="k"><a class="nav-link" :class="{active:tab===k}" href="#" @click.prevent="tab=k">[[ l ]]</a></li>
+  </ul>
+  <!-- 基本信息 -->
+  <div v-show="tab==='basic'" class="info-grid">
+    <div class="info-item"><span class="info-label">姓名</span><span class="info-value">[[ qr.name||'-' ]]</span></div>
+    <div class="info-item"><span class="info-label">身份证</span><span class="info-value">[[ qr.id_card ]]</span></div>
+    <div class="info-item"><span class="info-label">手机号</span><span class="info-value">[[ qr.phone||'-' ]]</span></div>
+    <div class="info-item"><span class="info-label">车型</span><span class="info-value">[[ qr.license_type||'-' ]]</span></div>
+    <div class="info-item"><span class="info-label">驾校/网点</span><span class="info-value">[[ qr.school_name||'-' ]] <span v-if="qr.school_short">([[ qr.school_short ]])</span></div>
+    <div class="info-item"><span class="info-label">报名日期</span><span class="info-value">[[ qr.registration_date||'-' ]]</span></div>
+    <div class="info-item"><span class="info-label">当前阶段</span><span class="info-value fw-bold text-primary">[[ qr.exam_stage||'-' ]]</span></div>
+    <div class="info-item"><span class="info-label">学员状态</span><span class="info-value">[[ qr.student_status||'-' ]] <i class="bi bi-info-circle text-muted" title="来自内部系统"></i></span></div>
+    <div class="info-item"><span class="info-label">电子合同</span><span class="info-value"><span v-if="qr.contract_available" class="text-success"><i class="bi bi-check-circle"></i> 有</span><span v-else class="text-muted">无</span></span></div>
+  </div>
+  <!-- 考试 -->
+  <div v-show="tab==='exam'">
+    <div v-if="qr.exam_counts&&Object.keys(qr.exam_counts).length" class="row g-3">
+      <div class="col-6 col-md-3" v-for="s in ['科目一','科目二','科目三','科目四']" :key="s">
+        <div class="text-center p-3 bg-light rounded">
+          <div class="fs-3 fw-bold" :class="qr.exam_counts[s]>0?'text-primary':'text-muted'">[[ qr.exam_counts[s]||0 ]]</div>
+          <div class="text-muted small">[[ s ]] 考试次数</div>
+        </div>
+      </div>
+    </div><div v-else class="text-muted">暂无考试记录</div>
+  </div>
+  <!-- 培训时长 - 固定四卡片布局 -->
+  <div v-show="tab==='training'">
+    <div v-if="qr.training_details&&qr.training_details.length" class="row g-3">
+      <!-- 科二总时长 -->
+      <div class="col-6 col-md-3">
+        <div class="text-center p-3 rounded" style="background:#dbeafe;border:1px solid #93c5fd">
+          <div class="fs-3 fw-bold" style="color:#1d4ed8">[[ getTrainingTime('科目二', 'training_time') ]]</div>
+          <div class="small" style="color:#1e40af">科二总时长</div>
+        </div>
+      </div>
+      <!-- 科三总时长 -->
+      <div class="col-6 col-md-3">
+        <div class="text-center p-3 rounded" style="background:#dbeafe;border:1px solid #93c5fd">
+          <div class="fs-3 fw-bold" style="color:#1d4ed8">[[ getTrainingTime('科目三', 'training_time') ]]</div>
+          <div class="small" style="color:#1e40af">科三总时长</div>
+        </div>
+      </div>
+      <!-- 科二共享时长 -->
+      <div class="col-6 col-md-3">
+        <div class="text-center p-3 rounded" style="background:#dcfce7;border:1px solid #86efac">
+          <div class="fs-3 fw-bold" style="color:#15803d">[[ getTrainingTime('科目二', 'platform_time') ]]</div>
+          <div class="small" style="color:#166534">科二共享时长</div>
+        </div>
+      </div>
+      <!-- 科三共享时长 -->
+      <div class="col-6 col-md-3">
+        <div class="text-center p-3 rounded" style="background:#dcfce7;border:1px solid #86efac">
+          <div class="fs-3 fw-bold" style="color:#15803d">[[ getTrainingTime('科目三', 'platform_time') ]]</div>
+          <div class="small" style="color:#166534">科三共享时长</div>
+        </div>
+      </div>
+    </div>
+    <div v-else-if="qr.sources && qr.sources.third === 'not_found'" class="text-muted text-center py-4">
+      <i class="bi bi-info-circle"></i> 该学员在计时培训管理平台无培训记录
+    </div>
+    <div v-else class="text-muted text-center py-4">暂无培训记录</div>
+  </div>
+  <!-- 收费 -->
+  <div v-show="tab==='fees'">
+    <div v-if="qr.fees&&qr.fees.length">
+      <table class="table table-sm table-striped"><thead><tr><th>项目</th><th>金额</th><th>日期</th><th>备注</th></tr></thead>
+      <tbody><tr v-for="(f,i) in qr.fees" :key="i"><td>[[ f.sfxm||f.name||'-' ]]</td><td class="fw-bold">[[ f.sfje||f.amount||'-' ]]</td><td>[[ f.sfrq||f.date||'-' ]]</td><td>[[ f.bz||f.remark||'-' ]]</td></tr></tbody></table>
+    </div><div v-else class="text-muted">暂无收费记录</div>
+  </div>
+  <!-- 时间轴 -->
+  <div v-show="tab==='timeline'">
+    <div v-if="qr.timeline_display&&qr.timeline_display.length" class="timeline">
+      <div v-for="(it,i) in qr.timeline_display" :key="i" class="timeline-item" :class="'timeline-'+it.status">
+        <div class="timeline-dot"></div><div class="timeline-content"><span class="timeline-date">[[ it.date ]]</span><span class="timeline-title">[[ it.title ]]</span></div>
+      </div>
+    </div><div v-else class="text-muted">暂无时间轴</div>
+  </div>
+</div>
+</div>
+
+<!-- 第三步 -->
+<div class="step-card" v-if="qr">
+<div class="step-header"><span class="step-num">3</span><span class="step-title">处理操作</span></div>
+<div class="step-body p-0">
+
+  <!-- AI分析合同 -->
+  <div class="op-panel">
+    <div class="op-panel-header" @click="pan.contract=!pan.contract">
+      <i class="bi" :class="pan.contract?'bi-chevron-down':'bi-chevron-right'"></i>
+      <i class="bi bi-file-earmark-text ms-2 me-1"></i><span class="fw-semibold">AI分析合同</span>
+      <span v-if="ar" class="badge bg-success ms-2">已完成</span>
+    </div>
+    <div class="op-panel-body" v-show="pan.contract">
+      <div class="mb-3"><label class="form-label fw-semibold">合同来源</label>
+        <div class="btn-group w-100">
+          <button class="btn btn-sm" :class="cSrc==='download'?'btn-primary':'btn-outline-secondary'" @click="cSrc='download'" :disabled="!qr.contract_available"><i class="bi bi-cloud-download"></i> 自动下载<span v-if="!qr.contract_available"> (无)</span></button>
+          <button class="btn btn-sm" :class="cSrc==='upload'?'btn-primary':'btn-outline-secondary'" @click="cSrc='upload'"><i class="bi bi-upload"></i> 手动上传</button>
+          <button class="btn btn-sm" :class="cSrc==='manual'?'btn-primary':'btn-outline-secondary'" @click="cSrc='manual'"><i class="bi bi-pencil"></i> 手动填写</button>
+        </div>
+      </div>
+      <div v-if="cSrc==='download'&&qr.contract_available" class="mb-3">
+        <button class="btn btn-outline-primary btn-sm" @click="dlContract" :disabled="cLoading"><span v-if="cLoading" class="spinner-border spinner-border-sm me-1"></span><i v-else class="bi bi-download me-1"></i>[[ cPath?'重新下载':'下载合同' ]]</button>
+        <span v-if="cPath" class="text-success ms-2 small"><i class="bi bi-check-circle"></i> [[ cName ]]</span>
+      </div>
+      <div v-if="cSrc==='upload'" class="mb-3"><input type="file" class="form-control form-control-sm" accept=".pdf,.png,.jpg,.jpeg" @change="ulContract"><span v-if="cPath" class="text-success small mt-1 d-block"><i class="bi bi-check-circle"></i> [[ cName ]]</span></div>
+      <div v-if="cSrc==='manual'" class="mb-3"><label class="form-label">报名费（元）</label><input type="number" class="form-control form-control-sm" style="width:200px" v-model.number="manualFee" placeholder="报名费金额"></div>
+      <div v-if="cPath||cSrc==='manual'" class="mb-3">
+        <button class="btn btn-success" @click="doAnalyze" :disabled="aLoading"><span v-if="aLoading" class="spinner-border spinner-border-sm me-1"></span><i v-else class="bi bi-robot me-1"></i>[[ aLoading?'AI分析中...':'AI分析退费' ]]</button>
+      </div>
+      <div v-if="ar" class="analysis-result">
+        <div class="row g-3 mb-3">
+          <div class="col-3"><div class="stat-box"><div class="stat-label">总培训费</div><div class="stat-value"><input type="number" class="form-control form-control-sm text-center fw-bold" v-model.number="ar.total_fee" @change="recalc" style="background:transparent;border:none;font-size:1.3rem;padding:0"></div></div></div>
+          <div class="col-3"><div class="stat-box stat-box-warning"><div class="stat-label">总扣费</div><div class="stat-value text-warning">[[ ar.total_deduction ]]元</div></div></div>
+          <div class="col-3"><div class="stat-box stat-box-success"><div class="stat-label">应退金额</div><div class="stat-value text-success">[[ ar.refund>0?ar.refund:0 ]]元</div></div></div>
+          <div class="col-3"><div class="stat-box" style="background:#f3f4f6"><div class="stat-label">操作</div><div class="mt-1"><button class="btn btn-sm btn-outline-primary" @click="addDeduction"><i class="bi bi-plus"></i> 添加扣费</button></div></div></div>
+        </div>
+        <table class="table table-sm table-bordered"><thead class="table-light"><tr><th style="width:140px">扣费项目</th><th style="width:100px">金额</th><th>依据（合同条款）</th><th style="width:50px"></th></tr></thead>
+        <tbody><tr v-for="(d,i) in ar.deductions" :key="i"><td><input class="form-control form-control-sm" v-model="d.item"></td><td><input type="number" class="form-control form-control-sm" v-model.number="d.amount" @change="recalc"></td><td><textarea class="form-control form-control-sm small" v-model="d.reason" placeholder="如：合同第七条第1款" rows="2" style="min-width:300px;resize:vertical"></textarea></td><td class="text-center"><button class="btn btn-sm btn-link text-danger" @click="removeDeduction(i)"><i class="bi bi-trash"></i></button></td></tr></tbody></table>
+        <div v-if="ar.summary" class="alert alert-info py-2 small"><i class="bi bi-info-circle me-1"></i>[[ ar.summary ]]</div>
+      </div>
+      <div v-if="aErr" class="alert alert-danger py-2 small"><i class="bi bi-exclamation-triangle"></i> [[ aErr ]]</div>
+    </div>
+  </div>
+
+  <!-- 生成回复函 -->
+  <div class="op-panel">
+    <div class="op-panel-header" @click="pan.reply=!pan.reply">
+      <i class="bi" :class="pan.reply?'bi-chevron-down':'bi-chevron-right'"></i>
+      <i class="bi bi-file-earmark-word ms-2 me-1"></i><span class="fw-semibold">生成回复函</span>
+      <span v-if="rpOk" class="badge bg-success ms-2">已生成</span>
+    </div>
+    <div class="op-panel-body" v-show="pan.reply">
+      <div class="row g-3 mb-3">
+        <div class="col-md-4"><label class="form-label">姓名</label><input class="form-control form-control-sm" v-model="rp.name"></div>
+        <div class="col-md-4"><label class="form-label">网点代号</label><input class="form-control form-control-sm" v-model="rp.school_short"></div>
+        <div class="col-md-4"><label class="form-label">网点全称</label><input class="form-control form-control-sm" v-model="rp.school_name"></div>
+        <div class="col-md-3"><label class="form-label">车型</label><input class="form-control form-control-sm" v-model="rp.license_type"></div>
+        <div class="col-md-3"><label class="form-label">报名日期</label><input class="form-control form-control-sm" v-model="rp.registration_date"></div>
+        <div class="col-md-3"><label class="form-label">考试阶段</label><input class="form-control form-control-sm" v-model="rp.exam_stage"></div>
+        <div class="col-md-3"><label class="form-label">报名费</label><input type="number" class="form-control form-control-sm" v-model.number="rp.total_fee"></div>
+      </div>
+      <button class="btn btn-primary" @click="genReply" :disabled="rpLoading"><span v-if="rpLoading" class="spinner-border spinner-border-sm me-1"></span><i v-else class="bi bi-file-earmark-word me-1"></i>[[ rpLoading?'生成中...':'生成回复函' ]]</button>
+      <div v-if="rpOk" class="alert alert-success py-2 mt-3"><i class="bi bi-check-circle me-1"></i>已生成: [[ rpResult.filename ]] <a :href="'/api/reply/download?path='+encodeURIComponent(rpResult.filepath)" class="btn btn-sm btn-outline-success ms-2"><i class="bi bi-download"></i> 下载</a></div>
+      <div v-if="rpErr" class="alert alert-danger py-2 mt-3 small">[[ rpErr ]]</div>
+    </div>
+  </div>
+
+  <!-- 提交飞书 -->
+  <div class="op-panel">
+    <div class="op-panel-header" @click="pan.feishu=!pan.feishu">
+      <i class="bi" :class="pan.feishu?'bi-chevron-down':'bi-chevron-right'"></i>
+      <i class="bi bi-cloud-upload ms-2 me-1"></i><span class="fw-semibold">提交飞书</span>
+      <span v-if="fsOk" class="badge bg-success ms-2">已提交</span>
+    </div>
+    <div class="op-panel-body" v-show="pan.feishu">
+      <div class="row g-3 mb-3">
+        <div class="col-md-3"><label class="form-label">姓名</label><input class="form-control form-control-sm" v-model="fs.name" readonly></div>
+        <div class="col-md-4"><label class="form-label">身份证</label><input class="form-control form-control-sm" v-model="fs.id_card" readonly></div>
+        <div class="col-md-2"><label class="form-label">代号</label><input class="form-control form-control-sm" v-model="fs.school_short"></div>
+        <div class="col-md-3"><label class="form-label">手机号</label><input class="form-control form-control-sm" v-model="fs.phone"></div>
+        <div class="col-md-2"><label class="form-label">车型</label><input class="form-control form-control-sm" v-model="fs.license_type"></div>
+        <div class="col-md-2"><label class="form-label">考试阶段</label><input class="form-control form-control-sm" v-model="fs.exam_stage"></div>
+        <div class="col-md-2"><label class="form-label">报名费</label><input type="number" class="form-control form-control-sm" v-model.number="fs.registration_fee"></div>
+        <div class="col-md-2"><label class="form-label">扣费</label><input type="number" class="form-control form-control-sm" v-model.number="fs.deduction"></div>
+        <div class="col-md-2"><label class="form-label">渠道</label><input class="form-control form-control-sm" v-model="fs.complaint_channel"></div>
+        <div class="col-md-2"><label class="form-label">状态</label><select class="form-select form-select-sm" v-model="fs.handle_status"><option>待处理</option><option>处理中</option><option>已完结</option><option>已归档</option></select></div>
+        <div class="col-md-6"><label class="form-label">备注</label><input class="form-control form-control-sm" v-model="fs.remarks"></div>
+      </div>
+      <button class="btn btn-primary" @click="submitFs" :disabled="fsLoading"><span v-if="fsLoading" class="spinner-border spinner-border-sm me-1"></span><i v-else class="bi bi-cloud-upload me-1"></i>[[ fsLoading?'提交中...':'提交到飞书' ]]</button>
+      <div v-if="fsOk" class="alert alert-success py-2 mt-3"><i class="bi bi-check-circle me-1"></i>已提交！编号: [[ fsResult.handle_no ]]</div>
+      <div v-if="fsErr" class="alert alert-danger py-2 mt-3 small">[[ fsErr ]]</div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+</div><!-- main -->
+
+<!-- ══════ 处理历史 ══════ -->
+<div v-if="page==='history'">
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-md-3" v-for="s in statCards" :key="s.label"><div class="card text-center h-100"><div class="card-body py-3"><div class="fs-3 fw-bold" :class="s.color">[[ s.value ]]</div><div class="text-muted small">[[ s.label ]]</div></div></div></div>
+  </div>
+  <div class="card">
+    <div class="card-header d-flex align-items-center py-2"><i class="bi bi-clock-history me-1"></i>投诉记录<div class="ms-auto d-flex gap-2"><input class="form-control form-control-sm" style="width:200px" placeholder="搜索姓名/身份证/网点" v-model="hSearch" @input="debSearch"><button class="btn btn-sm btn-outline-primary" @click="loadHist"><i class="bi bi-arrow-clockwise"></i></button></div></div>
+    <div class="table-responsive"><table class="table table-sm table-hover mb-0">
+      <thead class="table-light"><tr><th>姓名</th><th>身份证</th><th>网点</th><th>阶段</th><th>渠道</th><th>类型</th><th>应退</th><th>状态</th><th>时间</th></tr></thead>
+      <tbody>
+        <tr v-for="c in hList" :key="c.id" @click="loadFromHist(c)" style="cursor:pointer">
+          <td class="fw-semibold">[[ c.name ]]</td><td class="small">[[ c.id_card ]]</td><td>[[ c.school_short ]]</td><td>[[ c.exam_stage ]]</td><td>[[ c.complaint_channel ]]</td><td>[[ c.complaint_type ]]</td>
+          <td class="fw-bold text-primary">[[ c.refund_fee?c.refund_fee+'元':'-' ]]</td>
+          <td><span class="badge" :class="stBadge(c.handle_status)">[[ c.handle_status ]]</span></td><td class="small text-muted">[[ c.created_at ]]</td>
+        </tr>
+        <tr v-if="!hList.length"><td colspan="9" class="text-center text-muted py-4">暂无记录</td></tr>
+      </tbody>
+    </table></div>
+  </div>
+</div>
+
+<!-- ══════ 系统设置 ══════ -->
+<div v-if="page==='settings'">
+<div class="card">
+  <div class="card-header d-flex align-items-center py-2"><i class="bi bi-gear me-2"></i>系统设置<button class="btn btn-sm btn-primary ms-auto" @click="saveCfg" :disabled="cfgSaving"><span v-if="cfgSaving" class="spinner-border spinner-border-sm me-1"></span><i v-else class="bi bi-check-lg me-1"></i>保存</button></div>
+  <div class="card-body" v-if="cfg">
+    <h6 class="text-primary mb-3"><i class="bi bi-server"></i> 内部系统</h6>
+    <div class="row g-3 mb-4"><div class="col-md-4"><label class="form-label">地址</label><input class="form-control form-control-sm" v-model="cfg.internal_system.base_url"></div><div class="col-md-4"><label class="form-label">用户名</label><input class="form-control form-control-sm" v-model="cfg.internal_system.username"></div><div class="col-md-4"><label class="form-label">密码</label><input type="password" class="form-control form-control-sm" v-model="cfg.internal_system.password"></div></div>
+    <h6 class="text-primary mb-3"><i class="bi bi-server"></i> 第三系统</h6>
+    <div class="row g-3 mb-4"><div class="col-md-4"><label class="form-label">地址</label><input class="form-control form-control-sm" v-model="cfg.third_system.base_url"></div><div class="col-md-4"><label class="form-label">用户名</label><input class="form-control form-control-sm" v-model="cfg.third_system.username"></div><div class="col-md-4"><label class="form-label">密码</label><input type="password" class="form-control form-control-sm" v-model="cfg.third_system.password"></div></div>
+    <h6 class="text-primary mb-3"><i class="bi bi-server"></i> 东莞驾培</h6>
+    <div class="row g-3 mb-4"><div class="col-md-4"><label class="form-label">地址</label><input class="form-control form-control-sm" v-model="cfg.driving_system.base_url"></div><div class="col-md-4"><label class="form-label">用户名</label><input class="form-control form-control-sm" v-model="cfg.driving_system.username"></div><div class="col-md-4"><label class="form-label">密码</label><input type="password" class="form-control form-control-sm" v-model="cfg.driving_system.password"></div></div>
+    <h6 class="text-primary mb-3"><i class="bi bi-robot"></i> AI大模型</h6>
+    <div class="row g-3 mb-4"><div class="col-md-5"><label class="form-label">API URL</label><input class="form-control form-control-sm" v-model="cfg.llm.api_url"></div><div class="col-md-4"><label class="form-label">API Key</label><input type="password" class="form-control form-control-sm" v-model="cfg.llm.api_key"></div><div class="col-md-3"><label class="form-label">模型</label><input class="form-control form-control-sm" v-model="cfg.llm.model"></div></div>
+    <h6 class="text-primary mb-3"><i class="bi bi-cloud"></i> 飞书多维表格</h6>
+    <div class="row g-3 mb-3"><div class="col-md-3"><label class="form-label">App ID</label><input class="form-control form-control-sm" v-model="cfg.feishu.app_id"></div><div class="col-md-3"><label class="form-label">App Secret</label><input type="password" class="form-control form-control-sm" v-model="cfg.feishu.app_secret"></div><div class="col-md-3"><label class="form-label">Bitable Token</label><input class="form-control form-control-sm" v-model="cfg.feishu.bitable_app_token"></div>
+    <div class="col-md-3"><label class="form-label">Table ID</label><div class="input-group input-group-sm"><input class="form-control" v-model="cfg.feishu.bitable_table_id"><button class="btn btn-outline-primary" @click="testFs" :disabled="fsTesting">[[ fsTesting?'...':'测试' ]]</button></div></div></div>
+    <div v-if="fsTestMsg" class="alert py-2 small" :class="fsTestOk?'alert-success':'alert-danger'">[[ fsTestMsg ]]</div>
+  </div>
+  <div v-if="cfgMsg" class="card-footer py-2"><span class="small" :class="cfgOk?'text-success':'text-danger'">[[ cfgMsg ]]</span></div>
+</div>
+</div>
+
+</div><!-- container -->
+
+<!-- Toast -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:9999">
+  <div v-for="(t,i) in toasts" :key="i" class="toast show mb-2"><div class="toast-header" :class="'text-bg-'+t.type"><strong class="me-auto">[[ t.title ]]</strong><button type="button" class="btn-close btn-close-white" @click="toasts.splice(i,1)"></button></div><div class="toast-body small">[[ t.message ]]</div></div>
+</div>
+
+</div><!-- #app -->
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4/dist/vue.global.prod.js"></script>
+<script src="/static/js/app.js"></script>
+</body>
+</html>

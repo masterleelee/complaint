@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>驾校投诉处理系统</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════════════════════════
+       分栏式布局样式 - 优化版
+       ═══════════════════════════════════════════════════════════════ */
+    
+    :root {
+      --sidebar-width: 260px;
+      --header-height: 60px;
+      --primary-color: #2563eb;
+      --success-color: #16a34a;
+      --warning-color: #ea580c;
+      --danger-color: #dc2626;
+      --bg-sidebar: #1e293b;
+      --bg-main: #f1f5f9;
+    }
+    
+    * { box-sizing: border-box; }
+    
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-main);
+      overflow: hidden;
+    }
+    
+    /* ── 左侧导航栏 ── */
+    .sidebar {
+      position: fixed;
+      left: 0;
+      top: 0;
+      width: var(--sidebar-width);
+      height: 100vh;
+      background: var(--bg-sidebar);
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      z-index: 1000;
+    }
+    
+    .sidebar-header {
+      padding: 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .sidebar-header h1 {
+      font-size: 1.2rem;
+      margin: 0;
+      font-weight: 600;
+    }
+    
+    .sidebar-header .version {
+      font-size: 0.75rem;
+      opacity: 0.6;
+      margin-top: 4px;
+    }
+    
+    .nav-menu {
+      flex: 1;
+      padding: 16px 12px;
+      overflow-y: auto;
+    }
+    
+    .nav-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      margin-bottom: 4px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: rgba(255,255,255,0.8);
+    }
+    
+    .nav-item:hover {
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+    }
+    
+    .nav-item.active {
+      background: var(--primary-color);
+      color: #fff;
+    }
+    
+    .nav-item i {
+      font-size: 1.1rem;
+      margin-right: 12px;
+      width: 20px;
+      text-align: center;
+    }
+    
+    .nav-section {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: rgba(255,255,255,0.4);
+      padding: 16px 16px 8px;
+      margin-top: 8px;
+    }
+    
+    .sidebar-footer {
+      padding: 16px;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      font-size: 0.8rem;
+      opacity: 0.6;
+    }
+    
+    /* ── 右侧工作区 ── */
+    .main-content {
+      margin-left: var(--sidebar-width);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* 顶部状态栏 */
+    .top-bar {
+      height: var(--header-height);
+      background: #fff;
+      border-bottom: 1px solid #e2e8f0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+    }
+    
+    .top-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    
+    .breadcrumb {
+      margin: 0;
+      font-size: 0.9rem;
+    }
+    
+    .system-status {
+      display: flex;
+      gap: 12px;
+    }
+    
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      background: #f1f5f9;
+    }
+    
+    .status-badge.online {
+      background: #dcfce7;
+      color: #166534;
+    }
+    
+    .status-badge.offline {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    
+    /* 工作区内容 */
+    .workspace {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+    }
+    
+    /* ── 卡片样式 ── */
+    .card {
+      border: none;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+    
+    .card-header {
+      background: #fff;
+      border-bottom: 1px solid #f1f5f9;
+      padding: 16px 20px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .card-body {
+      padding: 20px;
+    }
+    
+    /* ── 表单样式 ── */
+    .form-group {
+      margin-bottom: 20px;
+    }
+    
+    .form-label {
+      font-weight: 500;
+      font-size: 0.875rem;
+      margin-bottom: 6px;
+      color: #374151;
+    }
+    
+    .form-control, .form-select {
+      border-radius: 8px;
+      border: 1px solid #d1d5db;
+      padding: 10px 14px;
+      font-size: 0.875rem;
+    }
+    
+    .form-control:focus, .form-select:focus {
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    
+    /* ── 按钮样式 ── */
+    .btn {
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+    }
+    
+    .btn-primary:hover {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+    }
+    
+    .btn-success {
+      background: var(--success-color);
+      border-color: var(--success-color);
+    }
+    
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    
+    /* ── 步骤指示器 ── */
+    .step-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+    
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 20px;
+      background: #f1f5f9;
+      font-size: 0.875rem;
+      color: #6b7280;
+    }
+    
+    .step.active {
+      background: var(--primary-color);
+      color: #fff;
+    }
+    
+    .step.completed {
+      background: #dcfce7;
+      color: #166534;
+    }
+    
+    .step-number {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: rgba(0,0,0,0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    
+    .step.active .step-number {
+      background: rgba(255,255,255,0.2);
+    }
+    
+    /* ── 进度条 ── */
+    .progress-steps {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    
+    .progress-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    
+    .progress-title {
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .progress-status {
+      font-size: 0.875rem;
+      color: #6b7280;
+    }
+    
+    .progress {
+      height: 8px;
+      border-radius: 4px;
+      background: #e5e7eb;
+    }
+    
+    .progress-bar {
+      border-radius: 4px;
+      transition: width 0.3s ease;
+    }
+    
+    .step-list {
+      margin-top: 16px;
+      display: flex;
+      gap: 16px;
+    }
+    
+    .step-item {
+      flex: 1;
+      text-align: center;
+      padding: 12px;
+      border-radius: 8px;
+      background: #f9fafb;
+      font-size: 0.8rem;
+    }
+    
+    .step-item.pending {
+      color: #9ca3af;
+    }
+    
+    .step-item.running {
+      background: #dbeafe;
+      color: var(--primary-color);
+    }
+    
+    .step-item.success {
+      background: #dcfce7;
+      color: #166534;
+    }
+    
+    .step-item.error {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    
+    /* ── 数据表格 ── */
+    .table-container {
+      background: #fff;
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    
+    .table {
+      margin: 0;
+    }
+    
+    .table thead th {
+      background: #f8fafc;
+      font-weight: 600;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    
+    .table tbody td {
+      padding: 14px 16px;
+      font-size: 0.875rem;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    
+    .table tbody tr:hover {
+      background: #f8fafc;
+    }
+    
+    .table tbody tr:nth-child(even) {
+      background: #fafafa;
+    }
+    
+    /* ── 统计卡片 ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    
+    .stat-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .stat-label {
+      font-size: 0.8rem;
+      color: #6b7280;
+      margin-bottom: 8px;
+    }
+    
+    .stat-value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: #111827;
+    }
+    
+    .stat-change {
+      font-size: 0.75rem;
+      margin-top: 4px;
+    }
+    
+    .stat-change.up {
+      color: var(--success-color);
+    }
+    
+    .stat-change.down {
+      color: var(--danger-color);
+    }
+    
+    /* ── Toast通知 ── */
+    .toast-container {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 9999;
+    }
+    
+    .toast {
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 10px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.15);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 300px;
+      animation: slideIn 0.3s ease;
+    }
+    
+    @keyframes slideIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0;
+      }
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+    
+    .toast.success {
+      background: #dcfce7;
+      color: #166534;
+      border-left: 4px solid var(--success-color);
+    }
+    
+    .toast.error {
+      background: #fee2e2;
+      color: #991b1b;
+      border-left: 4px solid var(--danger-color);
+    }
+    
+    .toast.warning {
+      background: #fef3c7;
+      color: #92400e;
+      border-left: 4px solid var(--warning-color);
+    }
+    
+    /* ── 敏感信息脱敏 ── */
+    .sensitive {
+      font-family: monospace;
+      letter-spacing: 1px;
+    }
+    
+    .sensitive.masked {
+      filter: blur(4px);
+      user-select: none;
+    }
+    
+    .sensitive-toggle {
+      cursor: pointer;
+      color: var(--primary-color);
+      font-size: 0.8rem;
+      margin-left: 8px;
+    }
+    
+    /* ── 快捷操作栏 ── */
+    .action-bar {
+      position: sticky;
+      bottom: 0;
+      background: #fff;
+      border-top: 1px solid #e2e8f0;
+      padding: 16px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .action-bar-left {
+      display: flex;
+      gap: 12px;
+    }
+    
+    .action-bar-right {
+      display: flex;
+      gap: 12px;
+    }
+    
+    /* ── 加载动画 ── */
+    .loading-spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 2px solid #e5e7eb;
+      border-top-color: var(--primary-color);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    /* ── 响应式 ── */
+    @media (max-width: 1200px) {
+      .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    
+    @media (max-width: 768px) {
+      .sidebar {
+        transform: translateX(-100%);
+      }
+      .main-content {
+        margin-left: 0;
+      }
+      .stats-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <!-- 左侧导航栏 -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1><i class="bi bi-shield-check"></i> 投诉处理系统</h1>
+        <div class="version">v2.0 优化版</div>
+      </div>
+      
+      <nav class="nav-menu">
+        <div class="nav-section">主要功能</div>
+        <div class="nav-item" :class="{active: currentPage==='dashboard'}" @click="goPage('dashboard')">
+          <i class="bi bi-speedometer2"></i>
+          <span>工作台</span>
+        </div>
+        <div class="nav-item" :class="{active: currentPage==='complaint'}" @click="goPage('complaint')">
+          <i class="bi bi-file-earmark-text"></i>
+          <span>投诉登记</span>
+        </div>
+        <div class="nav-item" :class="{active: currentPage==='history'}" @click="goPage('history')">
+          <i class="bi bi-clock-history"></i>
+          <span>处理历史</span>
+        </div>
+        
+        <div class="nav-section">系统管理</div>
+        <div class="nav-item" :class="{active: currentPage==='settings'}" @click="goPage('settings')">
+          <i class="bi bi-gear"></i>
+          <span>系统设置</span>
+        </div>
+        <div class="nav-item" :class="{active: currentPage==='logs'}" @click="goPage('logs')">
+          <i class="bi bi-journal-text"></i>
+          <span>操作日志</span>
+        </div>
+      </nav>
+      
+      <div class="sidebar-footer">
+        <div>快捷键: Ctrl+Q 查询</div>
+        <div>Ctrl+S 保存</div>
+      </div>
+    </aside>
+
+    <!-- 右侧工作区 -->
+    <main class="main-content">
+      <!-- 顶部状态栏 -->
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <nav aria-label="breadcrumb">
+            <ol class="breadcrumb">
+              <li class="breadcrumb-item">首页</li>
+              <li class="breadcrumb-item active">{{ pageTitle }}</li>
+            </ol>
+          </nav>
+        </div>
+        
+        <div class="system-status">
+          <div class="status-badge" :class="authStatus.internal ? 'online' : 'offline'">
+            <span class="status-dot"></span>
+            <span>内部系统</span>
+          </div>
+          <div class="status-badge" :class="authStatus.third ? 'online' : 'offline'">
+            <span class="status-dot"></span>
+            <span>计时平台</span>
+          </div>
+          <div class="status-badge" :class="authStatus.driving ? 'online' : 'offline'">
+            <span class="status-dot"></span>
+            <span>驾培系统</span>
+          </div>
+          <button class="btn btn-sm btn-outline-primary" @click="refreshAuth">
+            <i class="bi bi-arrow-clockwise"></i> 刷新登录
+          </button>
+        </div>
+      </header>
+
+      <!-- 工作区内容 -->
+      <div class="workspace">
+        <!-- 投诉登记页面 -->
+        <template v-if="currentPage==='complaint'">
+          <!-- 步骤指示器 -->
+          <div class="step-indicator">
+            <div class="step" :class="{active: step===1, completed: step>1}">
+              <span class="step-number">1</span>
+              <span>信息登记</span>
+            </div>
+            <i class="bi bi-chevron-right text-muted"></i>
+            <div class="step" :class="{active: step===2, completed: step>2}">
+              <span class="step-number">2</span>
+              <span>数据核查</span>
+            </div>
+            <i class="bi bi-chevron-right text-muted"></i>
+            <div class="step" :class="{active: step===3}">
+              <span class="step-number">3</span>
+              <span>处理操作</span>
+            </div>
+          </div>
+
+          <!-- 查询进度条 -->
+          <div v-if="querying" class="progress-steps">
+            <div class="progress-header">
+              <div class="progress-title">
+                <div class="loading-spinner"></div>
+                <span>正在查询三系统数据...</span>
+              </div>
+              <div class="progress-status">{{ queryProgress }}%</div>
+            </div>
+            <div class="progress">
+              <div class="progress-bar bg-primary" :style="{width: queryProgress+'%'}"></div>
+            </div>
+            <div class="step-list">
+              <div class="step-item" :class="queryStep.internal">
+                <i class="bi" :class="stepIcon(queryStep.internal)"></i>
+                <div>内部系统</div>
+              </div>
+              <div class="step-item" :class="queryStep.third">
+                <i class="bi" :class="stepIcon(queryStep.third)"></i>
+                <div>计时平台</div>
+              </div>
+              <div class="step-item" :class="queryStep.driving">
+                <i class="bi" :class="stepIcon(queryStep.driving)"></i>
+                <div>驾培系统</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 第一步：信息登记 -->
+          <div v-if="step===1" class="card">
+            <div class="card-header">
+              <span><i class="bi bi-person-fill"></i> 学员基本信息</span>
+            </div>
+            <div class="card-body">
+              <div class="row g-3">
+                <div class="col-md-4">
+                  <label class="form-label">身份证号码 <span class="text-danger">*</span></label>
+                  <input type="text" class="form-control" v-model="form.id_card" 
+                         placeholder="请输入18位身份证号" maxlength="18"
+                         @input="formatIdCard">
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">姓名</label>
+                  <input type="text" class="form-control" v-model="form.name" placeholder="自动填充">
+                </div>
+                <div class="col-md-3">
+                  <label class="form-label">联系电话</label>
+                  <input type="text" class="form-control" v-model="form.phone" placeholder="自动填充">
+                </div>
+                <div class="col-md-2">
+                  <label class="form-label">车型</label>
+                  <select class="form-select" v-model="form.license_type">
+                    <option value="">请选择</option>
+                    <option value="C1">C1</option>
+                    <option value="C2">C2</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div class="row g-3 mt-2">
+                <div class="col-md-4">
+                  <label class="form-label">投诉类型 <span class="text-danger">*</span></label>
+                  <select class="form-select" v-model="form.complaint_type">
+                    <option value="">请选择</option>
+                    <option value="A">A-退费纠纷</option>
+                    <option value="B">B-教学服务</option>
+                    <option value="C">C-考试安排</option>
+                    <option value="D">D-合同争议</option>
+                    <option value="E">E-其他</option>
+                  </select>
+                </div>
+                <div class="col-md-8">
+                  <label class="form-label">投诉内容 <span class="text-danger">*</span></label>
+                  <textarea class="form-control" v-model="form.content" rows="2" placeholder="请描述投诉详情"></textarea>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 快捷操作栏 -->
+          <div class="action-bar" v-if="step===1">
+            <div class="action-bar-left">
+              <button class="btn btn-secondary" @click="resetForm">
+                <i class="bi bi-x-circle"></i> 重置
+              </button>
+            </div>
+            <div class="action-bar-right">
+              <button class="btn btn-primary btn-lg" @click="startQuery" :disabled="!canQuery || querying">
+                <span v-if="querying" class="loading-spinner"></span>
+                <i v-else class="bi bi-search"></i>
+                {{ querying ? '查询中...' : '一键查询三系统' }}
+              </button>
+            </div>
+          </div>
+        </template>
+
+        <!-- 工作台页面 -->
+        <template v-if="currentPage==='dashboard'">
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">今日待处理</div>
+              <div class="stat-value">{{ stats.pending }}</div>
+              <div class="stat-change up">
+                <i class="bi bi-arrow-up"></i> 12%
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">本周已处理</div>
+              <div class="stat-value">{{ stats.completed }}</div>
+              <div class="stat-change up">
+                <i class="bi bi-arrow-up"></i> 8%
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">平均处理时长</div>
+              <div class="stat-value">{{ stats.avgTime }}<small style="font-size:0.5em">min</small></div>
+              <div class="stat-change down">
+                <i class="bi bi-arrow-down"></i> 15%
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">系统运行状态</div>
+              <div class="stat-value text-success">正常</div>
+              <div class="stat-change">缓存命中 {{ stats.cacheHit }}%</div>
+            </div>
+          </div>
+        </template>
+      </div>
+    </main>
+
+    <!-- Toast通知容器 -->
+    <div class="toast-container">
+      <div v-for="(toast, index) in toasts" :key="index" 
+           class="toast" :class="toast.type">
+        <i class="bi" :class="toastIcon(toast.type)"></i>
+        <div>{{ toast.message }}</div>
+        <button class="btn-close" @click="removeToast(index)"></button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.4/dist/vue.global.prod.js"></script>
+  <script>
+    const { createApp, ref, computed } = Vue;
+    
+    createApp({
+      setup() {
+        // 页面状态
+        const currentPage = ref('dashboard');
+        const step = ref(1);
+        const querying = ref(false);
+        const queryProgress = ref(0);
+        
+        // 系统认证状态
+        const authStatus = ref({
+          internal: false,
+          third: false,
+          driving: false
+        });
+        
+        // 查询步骤状态
+        const queryStep = ref({
+          internal: 'pending',
+          third: 'pending',
+          driving: 'pending'
+        });
+        
+        // 表单数据
+        const form = ref({
+          id_card: '',
+          name: '',
+          phone: '',
+          license_type: '',
+          complaint_type: '',
+          content: ''
+        });
+        
+        // 统计数据
+        const stats = ref({
+          pending: 12,
+          completed: 48,
+          avgTime: 18,
+          cacheHit: 85
+        });
+        
+        // Toast通知
+        const toasts = ref([]);
+        
+        // 计算属性
+        const pageTitle = computed(() => {
+          const titles = {
+            dashboard: '工作台',
+            complaint: '投诉登记',
+            history: '处理历史',
+            settings: '系统设置',
+            logs: '操作日志'
+          };
+          return titles[currentPage.value] || '首页';
+        });
+        
+        const canQuery = computed(() => {
+          return form.value.id_card.length === 18 && 
+                 form.value.complaint_type && 
+                 form.value.content;
+        });
+        
+        // 方法
+        const goPage = (page) => {
+          currentPage.value = page;
+        };
+        
+        const formatIdCard = () => {
+          // 身份证号自动格式化
+          let value = form.value.id_card.replace(/[^\dXx]/g, '');
+          form.value.id_card = value.toUpperCase();
+        };
+        
+        const startQuery = async () => {
+          querying.value = true;
+          queryProgress.value = 0;
+          step.value = 2;
+          
+          // 模拟三系统查询进度
+          const systems = ['internal', 'third', 'driving'];
+          for (let i = 0; i < systems.length; i++) {
+            queryStep.value[systems[i]] = 'running';
+            await new Promise(r => setTimeout(r, 800));
+            queryStep.value[systems[i]] = 'success';
+            queryProgress.value = Math.round(((i + 1) / 3) * 100);
+          }
+          
+          querying.value = false;
+          step.value = 3;
+          showToast('查询完成', 'success');
+        };
+        
+        const resetForm = () => {
+          form.value = {
+            id_card: '',
+            name: '',
+            phone: '',
+            license_type: '',
+            complaint_type: '',
+            content: ''
+          };
+          step.value = 1;
+        };
+        
+        const refreshAuth = async () => {
+          showToast('正在刷新登录状态...', 'warning');
+          // 调用API刷新登录状态
+          try {
+            const res = await fetch('/api/auth/status');
+            const data = await res.json();
+            authStatus.value = data;
+            showToast('登录状态已刷新', 'success');
+          } catch (e) {
+            showToast('刷新失败', 'error');
+          }
+        };
+        
+        const showToast = (message, type = 'info') => {
+          const id = Date.now();
+          toasts.value.push({ id, message, type });
+          setTimeout(() => {
+            toasts.value = toasts.value.filter(t => t.id !== id);
+          }, 3000);
+        };
+        
+        const removeToast = (index) => {
+          toasts.value.splice(index, 1);
+        };
+        
+        const toastIcon = (type) => {
+          const icons = {
+            success: 'bi-check-circle-fill',
+            error: 'bi-x-circle-fill',
+            warning: 'bi-exclamation-triangle-fill',
+            info: 'bi-info-circle-fill'
+          };
+          return icons[type] || icons.info;
+        };
+        
+        const stepIcon = (status) => {
+          const icons = {
+            pending: 'bi-circle',
+            running: 'bi-arrow-repeat spin',
+            success: 'bi-check-circle-fill',
+            error: 'bi-x-circle-fill'
+          };
+          return icons[status] || icons.pending;
+        };
+        
+        // 快捷键支持
+        document.addEventListener('keydown', (e) => {
+          if (e.ctrlKey && e.key === 'q') {
+            e.preventDefault();
+            if (canQuery.value && !querying.value) {
+              startQuery();
+            }
+          }
+        });
+        
+        // 初始化
+        refreshAuth();
+        
+        return {
+          currentPage,
+          step,
+          querying,
+          queryProgress,
+          authStatus,
+          queryStep,
+          form,
+          stats,
+          toasts,
+          pageTitle,
+          canQuery,
+          goPage,
+          formatIdCard,
+          startQuery,
+          resetForm,
+          refreshAuth,
+          removeToast,
+          toastIcon,
+          stepIcon
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>

@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>驾校投诉处理系统</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- ═══ 导航栏 ═══ -->
+    <nav class="navbar">
+      <div class="navbar-brand"><i class="bi bi-shield-check"></i> 驾校投诉处理系统</div>
+      <div class="nav-links">
+        <a class="nav-link" :class="{active: page==='main'}" @click="goPage('main')"><i class="bi bi-inbox"></i> 工单受理</a>
+        <a class="nav-link" :class="{active: page==='history'}" @click="goPage('history')"><i class="bi bi-clock-history"></i> 处理历史</a>
+        <a class="nav-link" :class="{active: page==='settings'}" @click="goPage('settings')"><i class="bi bi-gear"></i> 系统设置</a>
+      </div>
+    </nav>
+
+    <div class="container">
+      <!-- ════════════════════════════════════════ -->
+      <!-- 工单受理页面 -->
+      <!-- ════════════════════════════════════════ -->
+      <div v-if="page==='main'" class="fade-in">
+
+        <!-- 第一步：投诉受理 -->
+        <div class="card">
+          <div class="card-header"><i class="bi bi-inbox text-primary"></i> 投诉受理</div>
+          <div class="card-body">
+            <!-- 投诉受理：文件上传图标 + 文本输入 一体 -->
+            <div class="intake-row"
+              @dragover="onDragOver"
+              @dragenter="onDragEnter"
+              @dragleave="onDragLeave"
+              @drop="onDrop"
+              :class="{'drag-over': isDragOver}">
+              <!-- 上传图标 -->
+              <div class="intake-icon" @click="triggerFileInput" title="点击上传文件">
+                <i v-if="!intakeLoading && !intakeResult" class="bi bi-paperclip"></i>
+                <i v-if="intakeLoading" class="bi bi-arrow-repeat spin"></i>
+                <i v-if="intakeResult && !intakeLoading" class="bi bi-check-circle-fill" style="color:var(--green)"></i>
+              </div>
+              <!-- 文本输入（支持粘贴图片） -->
+              <textarea class="form-control intake-input"
+                v-model="intakeText"
+                placeholder="粘贴投诉内容、截图，或拖拽文件至此..."
+                rows="1"
+                @input="autoResizeTextarea"
+                @paste="onIntakePaste"
+                ref="intakeTextareaRef"></textarea>
+              <!-- 提取按钮 -->
+              <button class="btn btn-primary btn-sm" @click="handleIntakeText"
+                :disabled="intakeLoading || !intakeText.trim()">
+                [[ intakeLoading ? '提取中...' : 'AI提取' ]]
+              </button>
+              <!-- 隐藏文件输入 -->
+              <input type="file" ref="fileInputRef"
+                accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx,.txt"
+                @change="onFileSelected" style="display:none">
+            </div>
+            <!-- 提示语 -->
+            <div class="intake-hint">
+              支持上传 PDF / 图片 / Word / Excel / 文本文件，或直接输入/粘贴投诉内容（Ctrl+V 粘贴图片也可识别）
+            </div>
+
+            <!-- 提取结果预览 -->
+            <div v-if="intakeResult && !intakeLoading" class="alert alert-success mt-2 fade-in" style="margin-bottom:0">
+              <i class="bi bi-info-circle"></i>
+              已识别学员: <strong>[[ intakeResult.student_name || '未知' ]]</strong>
+              <span v-if="intakeResult.id_card"> | 身份证: [[ intakeResult.id_card ]]</span>
+              <span v-if="intakeResult.source_channel"> | 来源: [[ intakeResult.source_channel ]]</span>
+              <span v-if="intakeResult.ticket_no" style="margin-left:8px;font-size:11px;opacity:.7">工单: [[ intakeResult.ticket_no ]]</span>
+              </div>
+            </div>
+            <div v-if="intakeErr" class="alert alert-danger mt-2">[[ intakeErr ]]</div>
+
+            <hr style="margin:12px 0; border:none; border-top:1px solid var(--gray-200)">
+
+            <!-- 查询表单 -->
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div class="form-row" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px">
+                <div>
+                  <label class="form-label" style="font-size:12px;margin-bottom:2px">身份证号</label>
+                  <input type="text" class="form-control" style="font-size:13px;padding:6px 8px"
+                    v-model="form.id_card" placeholder="18位（优先）" maxlength="18">
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:12px;margin-bottom:2px">手机号</label>
+                  <input type="text" class="form-control" style="font-size:13px;padding:6px 8px"
+                    v-model="form.phone" placeholder="11位" maxlength="11">
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:12px;margin-bottom:2px">来源渠道</label>
+                  <select class="form-control" style="font-size:13px;padding:6px 8px" v-model="form.source_channel">
+                    <option value="交通局">交通局</option>
+                    <option value="电话投诉">电话投诉</option>
+                    <option value="信访投诉">信访投诉</option>
+                    <option value="驾培协会">驾培协会</option>
+                    <option value="custom">自定义</option>
+                  </select>
+                  <input v-if="form.source_channel === 'custom'" type="text" class="form-control" style="font-size:13px;padding:4px 8px;margin-top:3px" v-model="form.source_channel_custom" placeholder="请输入">
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:12px;margin-bottom:2px">投诉日期</label>
+                  <input type="date" class="form-control" style="font-size:13px;padding:6px 8px" v-model="form.complaint_date">
+                </div>
+                <div>
+                  <label class="form-label" style="font-size:12px;margin-bottom:2px">投诉类型</label>
+                  <select class="form-control" style="font-size:13px;padding:6px 8px" v-model="form.complaint_type">
+                    <option value="A">A-退费纠纷</option>
+                    <option value="B">B-教学服务</option>
+                    <option value="C">C-考试安排</option>
+                    <option value="D">D-合同争议</option>
+                    <option value="E">E-其他</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div style="margin-top:8px">
+              <button class="btn btn-primary" style="padding:6px 20px;font-size:13px" @click="queryAll" :disabled="querying">
+                <span v-if="querying"><i class="bi bi-arrow-repeat spin"></i></span>
+                <i v-else class="bi bi-search"></i>
+                [[ querying ? '查询中...' : '查询三系统' ]]
+              </button>
+            </div>
+
+            <!-- 查询进度 -->
+            <div v-if="queryProgress.show" class="progress-card fade-in">
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" :style="{width: queryProgress.percent + '%'}"></div>
+              </div>
+              <div class="progress-status">
+                <span v-for="(item, key) in queryProgress.items" :key="key" class="badge" :class="item.class" :title="item.tip || item.label">
+                  <i class="bi" :class="item.icon"></i> [[ item.label ]]
+                </span>
+              </div>
+              <div v-if="queryProgress.message || !queryProgress.done" class="d-flex gap-2 align-center flex-wrap" style="font-size:12px">
+                <span :class="queryProgress.done ? (queryProgress.hasError ? 'text-warning' : 'text-success') : 'text-gray'">
+                  <i class="bi" :class="queryProgress.done ? (queryProgress.hasError ? 'bi-exclamation-triangle' : 'bi-check-circle') : 'bi-hourglass text-primary'"></i>
+                  [[ queryProgress.message ]]
+                  <span v-if="!queryProgress.done" style="font-family:mono">
+                    ([[ queryProgress.elapsed ]]s)
+                    <span v-if="queryProgress.elapsed > 15" class="text-warning">系统响应较慢，请耐心等待...</span>
+                    <span v-if="queryProgress.elapsed > 30" style="color:#ec4899">仍在运行中，未卡住...</span>
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <div v-if="qErr" class="alert alert-danger mt-2">[[ qErr ]]</div>
+          </div>
+        </div>
+
+        <!-- 第二步：学员信息 -->
+        <div v-if="qr && qr.name && page==='main'" class="card fade-in">
+          <div class="card-header d-flex align-center justify-between flex-wrap" style="gap:8px">
+            <div><i class="bi bi-person text-primary"></i> 学员信息 — <strong>[[ qr.name ]]</strong></div>
+            <div class="d-flex gap-2 align-center flex-wrap">
+              <!-- 来源状态：图标 + 文字 -->
+              <span v-if="qr.sources" style="display:inline-flex;gap:10px;font-size:12px;align-items:center">
+                <span :style="{color: qr.sources.internal==='success' ? 'var(--green)' : '#ec4899'}">
+                  <i :class="qr.sources.internal==='success' ? 'bi-check-circle-fill' : 'bi-dash-circle'"></i>
+                  [[ qr.sources.internal==='success' ? '查到数据' : '无记录' ]]
+                </span>
+                <span :style="{color: qr.sources.third==='success' ? 'var(--green)' : '#ec4899'}">
+                  <i :class="qr.sources.third==='success' ? 'bi-check-circle-fill' : 'bi-dash-circle'"></i>
+                  [[ qr.sources.third==='success' ? '查到记录' : '无实操' ]]
+                </span>
+                <span :style="{color: qr.sources.driving==='success' ? 'var(--green)' : '#ec4899'}">
+                  <i :class="qr.sources.driving==='success' ? 'bi-check-circle-fill' : 'bi-dash-circle'"></i>
+                  [[ qr.sources.driving==='success' ? '有合同' : '无合同' ]]
+                </span>
+              </span>
+              <span class="badge" :class="stBadge(qr.student_status)">[[ qr.student_status ]]</span>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="tabs">
+              <div v-for="(label, key) in tabs" :key="key" class="tab" :class="{active: tab === key}" @click="tab = key">[[ label ]]</div>
+            </div>
+
+            <!-- 基本信息 -->
+            <div v-show="tab === 'basic'">
+              <div class="info-grid">
+                <div class="info-item"><span class="info-label">姓名</span><span class="info-value">[[ qr.name || '-' ]]</span></div>
+                <div class="info-item"><span class="info-label">身份证</span><span class="info-value font-mono">[[ qr.id_card ]]</span></div>
+                <div class="info-item"><span class="info-label">手机号</span><span class="info-value">[[ qr.phone || '-' ]]</span></div>
+                <div class="info-item"><span class="info-label">车型</span><span class="info-value">[[ qr.license_type || '-' ]]</span></div>
+                <div class="info-item"><span class="info-label">驾校</span><span class="info-value">[[ qr.school_name || '-' ]]<span v-if="qr.school_short" style="color:var(--gray-400);font-size:12px">([[ qr.school_short ]])</span></span></div>
+                <div class="info-item"><span class="info-label">报名日期</span><span class="info-value">[[ qr.registration_date || '-' ]]</span></div>
+                <div class="info-item"><span class="info-label">当前阶段</span><span class="info-value text-primary font-semibold">[[ qr.exam_stage || '-' ]]</span></div>
+                <div class="info-item"><span class="info-label">学员状态</span><span class="info-value">[[ qr.student_status || '-' ]]</span></div>
+              </div>
+            </div>
+
+            <!-- 考试情况 -->
+            <div v-show="tab === 'exam'">
+              <div v-if="qr.exam_counts && Object.keys(qr.exam_counts).length" class="stats-row">
+                <div v-for="subject in ['科目一','科目二','科目三','科目四']" :key="subject" class="stat-card">
+                  <div class="stat-value" :class="(qr.exam_counts[subject]||0) > 0 ? 'text-primary' : 'text-gray'">[[ qr.exam_counts[subject] || 0 ]]</div>
+                  <div class="stat-label">[[ subject ]] 考试次数</div>
+                </div>
+              </div>
+              <div v-else class="text-center text-gray" style="padding:24px"><i class="bi bi-inbox" style="font-size:24px"></i><p class="mt-1">暂无考试记录</p></div>
+            </div>
+
+            <!-- 培训时长 -->
+            <div v-show="tab === 'training'">
+              <div v-if="qr.training_details && qr.training_details.length" class="stats-row">
+                <div class="stat-card"><div class="stat-value text-primary">[[ getTrainingTime(qr.training_details, '科目二', 'training_time') ]]</div><div class="stat-label">科二总时长</div></div>
+                <div class="stat-card"><div class="stat-value text-primary">[[ getTrainingTime(qr.training_details, '科目三', 'training_time') ]]</div><div class="stat-label">科三总时长</div></div>
+                <div class="stat-card"><div class="stat-value text-success">[[ getTrainingTime(qr.training_details, '科目二', 'platform_time') ]]</div><div class="stat-label">科二共享时长</div></div>
+                <div class="stat-card"><div class="stat-value text-success">[[ getTrainingTime(qr.training_details, '科目三', 'platform_time') ]]</div><div class="stat-label">科三共享时长</div></div>
+              </div>
+              <div v-else class="text-center text-gray" style="padding:24px"><i class="bi bi-inbox" style="font-size:24px"></i><p class="mt-1">该学员在计时培训管理平台无培训记录</p></div>
+            </div>
+
+            <!-- 收费记录 -->
+            <div v-show="tab === 'fees'">
+              <div v-if="qr.fees && qr.fees.length" class="table-wrap">
+                <table><thead><tr><th>项目</th><th>金额</th><th>日期</th><th>备注</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(fee, i) in qr.fees" :key="i">
+                      <td>[[ fee.sfxm || fee.name || '-' ]]</td>
+                      <td class="font-semibold">[[ fee.sfje || fee.amount || '-' ]]</td>
+                      <td>[[ fee.sfrq || fee.date || '-' ]]</td>
+                      <td>[[ fee.bz || fee.remark || '-' ]]</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else class="text-center text-gray" style="padding:24px"><i class="bi bi-inbox" style="font-size:24px"></i><p class="mt-1">暂无收费记录</p></div>
+            </div>
+
+            <!-- 时间轴 -->
+            <div v-show="tab === 'timeline'">
+              <div v-if="qr.timeline_display && qr.timeline_display.length" class="timeline">
+                <div v-for="(event, i) in qr.timeline_display" :key="i" class="timeline-item" :class="event.status">
+                  <div class="timeline-node"></div>
+                  <div class="timeline-content-wrapper">
+                    <div class="timeline-content">
+                      <span class="timeline-date">[[ event.date ]]</span>
+                      <span class="timeline-event">[[ getEventType(event.title) ]]</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="text-center text-gray" style="padding:24px"><i class="bi bi-inbox" style="font-size:24px"></i><p class="mt-1">暂无时间轴记录</p></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 第三步：处理流程 -->
+        <div v-if="qr && qr.name && page==='main'" class="card fade-in">
+          <div class="card-header d-flex align-center justify-between">
+            <div><i class="bi bi-gear text-primary"></i> 处理流程</div>
+            <span class="badge" :class="workflowStep === 1 ? 'badge-pending' : workflowStep === 2 ? 'badge-processing' : 'badge-completed'">[[ workflowStatusText ]]</span>
+          </div>
+          <div class="card-body">
+            <!-- 步骤指示器 -->
+            <div class="workflow-steps">
+              <div class="workflow-step" :class="{active: workflowStep === 1, completed: workflowStep > 1}">
+                <div class="step-icon"><i class="bi bi-file-earmark-text"></i></div>
+                <div class="step-text">1. 合同</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="workflow-step" :class="{active: workflowStep === 2, completed: workflowStep > 2}">
+                <div class="step-icon"><i class="bi bi-robot"></i></div>
+                <div class="step-text">2. AI分析</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="workflow-step" :class="{active: workflowStep === 3, completed: workflowStep > 3}">
+                <div class="step-icon"><i class="bi bi-file-word"></i></div>
+                <div class="step-text">3. 回复函</div>
+              </div>
+              <div class="step-line"></div>
+              <div class="workflow-step" :class="{active: workflowStep === 4}">
+                <div class="step-icon"><i class="bi bi-send"></i></div>
+                <div class="step-text">4. 飞书</div>
+              </div>
+            </div>
+
+            <!-- 步骤1: 合同 -->
+            <div v-if="workflowStep === 1" class="fade-in">
+              <h5 class="mb-3"><i class="bi bi-file-earmark-text text-primary"></i> 获取合同</h5>
+
+              <!-- 电子合同状态提示 -->
+              <div v-if="qr.contract_available && !cPath" class="alert alert-info mb-3">
+                <i class="bi bi-info-circle"></i> 系统检测到该学员在东莞驾培系统中有电子合同
+              </div>
+              <div v-if="!qr.contract_available" class="alert alert-warning mb-3" style="font-size:15px;font-weight:600;color:#d97706">
+                <i class="bi bi-exclamation-triangle"></i> 该学员在东莞驾培系统中无电子合同记录，请上传合同文件或手动填写费用信息
+              </div>
+
+              <div class="source-cards mb-3">
+                <div v-if="qr.contract_available" class="source-card" :class="{active: cSrc === 'download' || (!cPath && cSrc !== 'upload' && cSrc !== 'manual')}" @click="cSrc = 'download'">
+                  <i class="bi bi-cloud-download fs-3 text-primary"></i>
+                  <h6>下载电子合同</h6>
+                  <p>从驾培系统下载</p>
+                </div>
+                <div class="source-card" :class="{active: cSrc === 'upload'}" @click="cSrc = 'upload'">
+                  <i class="bi bi-upload fs-3 text-success"></i>
+                  <h6>上传文件</h6>
+                  <p>上传PDF或图片合同</p>
+                </div>
+                <div class="source-card" :class="{active: cSrc === 'manual'}" @click="cSrc = 'manual'">
+                  <i class="bi bi-pencil-square fs-3 text-warning"></i>
+                  <h6>手动填写</h6>
+                  <p>手动输入费用信息</p>
+                </div>
+              </div>
+
+              <div v-if="cSrc === 'download' && qr.contract_available && !cPath">
+                <button class="btn btn-primary btn-lg" @click="dlContract(qr.id_card, qr.name)" :disabled="cLoading">
+                  <span v-if="cLoading"><i class="bi bi-arrow-repeat spin"></i></span>
+                  <i v-else class="bi bi-download"></i>
+                  [[ cLoading ? '下载中...' : '一键下载电子合同' ]]
+                </button>
+                <p class="text-gray mt-1" style="font-size:12px">点击下载后系统会自动识别合同内容</p>
+              </div>
+
+              <div v-if="cSrc === 'upload'">
+                <input type="file" class="form-control" accept=".pdf,.jpg,.jpeg,.png,.docx,.xlsx" @change="ulContract">
+              </div>
+
+              <div v-if="cSrc === 'manual'" class="form-row">
+                <div><label class="form-label">已缴费用 <span class="text-danger">*</span></label><input type="number" class="form-control" v-model.number="manualContract.total_fee" placeholder="如: 3500"></div>
+                <div><label class="form-label">合同编号</label><input type="text" class="form-control" v-model="manualContract.contract_code" placeholder="DG20240001"></div>
+              </div>
+
+              <div v-if="cPath" class="alert alert-success mt-3">
+                <i class="bi bi-check-circle"></i> 合同已确认：[[ cName ]]
+              </div>
+
+              <div class="d-flex justify-end mt-2">
+                <button class="btn btn-primary" @click="confirmContract" :disabled="!canProceedToAnalysis">
+                  AI分析合同 <i class="bi bi-arrow-right"></i>
+                </button>
+              </div>
+            </div>
+
+            <!-- 步骤2: AI分析（自动触发） -->
+            <div v-if="workflowStep === 2" class="fade-in">
+              <h5 class="mb-3"><i class="bi bi-robot text-primary"></i> AI退费分析</h5>
+
+              <div class="mb-4 p-3 bg-light rounded">
+                <h6 class="mb-2" style="font-size:13px">分析参数</h6>
+                <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:13px">
+                  <span><span style="color:var(--gray-500)">已缴费用：</span><strong>[[ manualContract.total_fee ? manualContract.total_fee + ' 元' : '合同中提取' ]]</strong></span>
+                  <span><span style="color:var(--gray-500)">当前阶段：</span><strong>[[ qr.exam_stage ]]</strong></span>
+                </div>
+              </div>
+
+              <!-- 加载中状态 -->
+              <div v-if="aLoading" class="text-center py-4" style="background:var(--gray-50);border-radius:8px;padding:24px">
+                <i class="bi bi-arrow-repeat spin" style="font-size:32px;color:var(--blue)"></i>
+                <p style="font-size:15px;font-weight:600;margin:12px 0 0">AI 正在分析合同</p>
+
+                <!-- 步骤指示 -->
+                <div style="margin:16px auto;max-width:320px;text-align:left">
+                  <div v-for="(step, i) in analysisLoadingSteps" :key="i" style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px" :style="{color: step.done ? 'var(--green)' : 'var(--gray-400)'}">
+                    <i class="bi" :class="step.done ? 'bi-check-circle-fill' : 'bi-circle'"></i>
+                    [[ step.label ]]
+                  </div>
+                </div>
+
+                <!-- 已用时长 -->
+                <p style="font-size:12px;color:var(--gray-500);margin-top:8px">
+                  <i class="bi bi-clock"></i> 已耗时 [[ analysisLoadingTime ]]s
+                  <span v-if="analysisLoadingTime > 15">，系统响应较慢，请耐心等待…</span>
+                  <span v-if="analysisLoadingTime > 30" style="color:#ec4899">仍在运行中，未卡住…</span>
+                </p>
+                <p style="font-size:11px;color:var(--gray-400);margin-top:4px">LLM 正在逐项分析合同条款，通常需要 15–30 秒</p>
+              </div>
+
+              <div v-if="aErr" class="alert alert-danger">[[ aErr ]]</div>
+
+              <!-- 分析结果 -->
+              <div v-if="ar && !aLoading">
+                <!-- 特殊规则警告 -->
+                <div v-if="ar._warnings && ar._warnings.length" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 16px;margin-bottom:16px">
+                  <div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:#dc2626;margin-bottom:6px">
+                    <i class="bi bi-exclamation-triangle-fill"></i> 特殊规则触发
+                  </div>
+                  <div v-for="(w, wi) in ar._warnings" :key="wi" style="font-size:13px;color:#b91c1c;padding:2px 0;padding-left:24px">
+                    • [[ w ]]
+                  </div>
+                  <div style="margin-top:8px;font-size:14px;font-weight:700;color:#dc2626;padding-left:24px">
+                    应退金额强制为 0 元
+                  </div>
+                </div>
+
+                <!-- 退费计算总览 -->
+                <div style="background:linear-gradient(135deg,#eff6ff,#f0fdf4);border:1px solid #bfdbfe;border-radius:10px;padding:16px;margin-bottom:16px">
+                  <div style="font-size:14px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:6px">
+                    <i class="bi bi-calculator" style="color:var(--blue)"></i> 退费计算
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;text-align:center;font-size:14px">
+                    <div>
+                      <div style="font-size:11px;color:var(--gray-500)">已缴费用</div>
+                      <div style="font-size:22px;font-weight:700;color:var(--blue)">[[ ar.total_fee || 0 ]]</div>
+                      <div style="font-size:11px;color:var(--gray-400)">元</div>
+                    </div>
+                    <div>
+                      <div style="font-size:11px;color:var(--gray-500)">总扣费</div>
+                      <div style="font-size:22px;font-weight:700;color:var(--red)"><span v-if="ar._deductionMismatch" title="总扣费与明细之和不符，请检查修正">⚠️ </span>[[ ar.total_deduction || 0 ]]</div>
+                      <div style="font-size:11px;color:var(--gray-400)">元</div>
+                      <div v-if="ar._deductionMismatch" style="font-size:10px;color:#dc2626;margin-top:2px">与明细之和 [[ ar._deductionSum || '?' ]] 不符</div>
+                    </div>
+                    <div>
+                      <div style="font-size:11px;color:var(--gray-500)">应退金额</div>
+                      <div style="font-size:22px;font-weight:700" :style="{color: ar.refund > 0 ? 'var(--green)' : 'var(--gray-400)'}">[[ ar.refund > 0 ? ar.refund : 0 ]]</div>
+                      <div style="font-size:11px;color:var(--gray-400)">元</div>
+                      <div v-if="ar.refund <= 0" style="font-size:10px;color:#d97706;margin-top:2px">总扣费已超过已缴费用，无需退费</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 扣费明细表 -->
+                <h6 class="mb-2" style="font-size:13px;display:flex;align-items:center;gap:6px">
+                  <i class="bi bi-list-check text-primary"></i> 扣费明细（可编辑）
+                  <button class="btn btn-sm btn-secondary" @click="recalc" style="margin-left:auto;font-size:11px;padding:2px 8px"><i class="bi bi-calculator"></i> 重新计算</button>
+                </h6>
+                <div class="table-wrap mb-3">
+                  <table style="font-size:12px">
+                    <thead><tr>
+                      <th style="min-width:120px">项目</th>
+                      <th style="min-width:140px">时长/说明</th>
+                      <th style="min-width:80px">单价</th>
+                      <th style="min-width:80px">金额（元）</th>
+                      <th>依据</th>
+                      <th style="width:36px"></th>
+                    </tr></thead>
+                    <tbody>
+                      <tr v-for="(ded, i) in ar.deductions" :key="i" :style="{background: ded._editable ? '#fefce8' : ''}">
+                        <td><input class="form-control form-control-sm" v-model="ded.item" style="font-size:12px"></td>
+                        <td><input class="form-control form-control-sm" v-model="ded._detail || ded._parsedDetail || ''" placeholder="如 19h6分×150" style="font-size:12px;width:100%" @input="ded._detail = ($event.target).value"></td>
+                        <td><input class="form-control form-control-sm" v-model="ded._unitPrice || ''" placeholder="如 150元/h" style="font-size:12px;width:100%" @input="ded._unitPrice = ($event.target).value"></td>
+                        <td><input type="number" class="form-control form-control-sm" v-model.number="ded.amount" style="font-size:12px;width:100px" @input="recalc()"></td>
+                        <td><input class="form-control form-control-sm" v-model="ded.reason" placeholder="合同条款位置" style="font-size:12px" @input="ded.reason = ($event.target).value"></td>
+                        <td><button class="btn btn-sm btn-danger" @click="removeDeduction(i)" style="padding:2px 6px"><i class="bi bi-trash" style="font-size:12px"></i></button></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="d-flex gap-2 mb-3">
+                  <button class="btn btn-sm btn-secondary" @click="addDeduction" style="font-size:11px"><i class="bi bi-plus"></i> 添加扣费项</button>
+                  <button class="btn btn-sm btn-secondary" @click="ensureSupplementaryRows" style="font-size:11px"><i class="bi bi-pencil"></i> 添加补训费</button>
+                </div>
+
+                <div class="d-flex justify-between">
+                  <button class="btn btn-secondary" @click="workflowStep = 1"><i class="bi bi-arrow-left"></i> 返回修改合同</button>
+                  <button class="btn btn-primary" @click="confirmAnalysis">
+                    确认退费结果，生成回复函 <i class="bi bi-arrow-right"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 步骤3: 回复函 -->
+            <div v-if="workflowStep === 3" class="fade-in">
+              <h5 class="mb-3"><i class="bi bi-file-word text-primary"></i> 生成回复函</h5>
+              <div v-if="rpLoading" class="text-center py-4">
+                <i class="bi bi-arrow-repeat spin" style="font-size:24px"></i>
+                <p class="text-gray mt-2">正在生成...</p>
+              </div>
+              <div v-if="rpErr" class="alert alert-danger">[[ rpErr ]]</div>
+              <div v-if="rpResult" class="alert alert-success">
+                <i class="bi bi-check-circle"></i> 回复函已生成
+                <a :href="'/api/reply/download?path=' + encodeURIComponent(rpResult.filepath)" class="btn btn-sm btn-success ml-2" target="_blank"><i class="bi bi-download"></i> 下载</a>
+              </div>
+              <div v-if="!rpLoading && !rpResult" class="d-flex justify-between">
+                <button class="btn btn-secondary" @click="workflowStep = 2"><i class="bi bi-arrow-left"></i> 返回</button>
+                <button class="btn btn-primary" @click="genReply(qr.id_card, qr, currentTicketId)" :disabled="rpLoading">
+                  <span v-if="rpLoading"><i class="bi bi-arrow-repeat spin"></i></span>
+                  <i v-else class="bi bi-file-earmark-word"></i>
+                  [[ rpLoading ? '生成中...' : '生成Word回复函' ]]
+                </button>
+              </div>
+            </div>
+
+            <!-- 步骤4: 飞书 -->
+            <div v-if="workflowStep === 4" class="fade-in">
+              <h5 class="mb-3"><i class="bi bi-send text-primary"></i> 提交飞书</h5>
+              <div class="form-row mb-3">
+                <div><label class="form-label">学员姓名</label><input type="text" class="form-control" :value="qr.name" readonly></div>
+                <div><label class="form-label">身份证号</label><input type="text" class="form-control font-mono" :value="qr.id_card" readonly></div>
+                <div><label class="form-label">所属驾校</label><input type="text" class="form-control" :value="qr.school_short" readonly></div>
+                <div><label class="form-label">应退金额</label><input type="text" class="form-control" :value="(ar ? ar.refund : 0) + '元'" readonly></div>
+              </div>
+              <div v-if="fsResult" class="alert alert-success"><i class="bi bi-check-circle"></i> 已提交到飞书，处理编号: [[ fsResult.handle_no ]]</div>
+              <div class="d-flex justify-between">
+                <button class="btn btn-secondary" @click="workflowStep = 3"><i class="bi bi-arrow-left"></i> 返回</button>
+                <button class="btn btn-primary" @click="submitFeishu({ticket_id: currentTicketId, id_card: qr.id_card, name: qr.name, phone: qr.phone, school_short: qr.school_short, license_type: qr.license_type, exam_stage: qr.exam_stage, complaint_channel: form.source_channel, complaint_date: form.complaint_date, complaint_type: form.complaint_type, registration_fee: ar ? ar.total_fee : 0, refund: ar ? ar.refund : 0, deduction: ar ? ar.total_deduction : 0, handle_status: '待处理'})" :disabled="fsLoading">
+                  <span v-if="fsLoading"><i class="bi bi-arrow-repeat spin"></i></span>
+                  <i v-else class="bi bi-send"></i>
+                  [[ fsLoading ? '提交中...' : '提交到飞书' ]]
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      <!-- ════════════════════════════════════════ -->
+      <!-- 处理历史页面（仪表盘 + 列表） -->
+      <!-- ════════════════════════════════════════ -->
+      <div v-if="page==='history'" class="fade-in">
+
+        <!-- 仪表盘：时间筛选 + 统计卡片 -->
+        <div class="card mb-3">
+          <div class="card-header d-flex align-center justify-between flex-wrap" style="gap:8px">
+            <div><i class="bi bi-bar-chart"></i> 数据看板</div>
+            <div class="d-flex gap-2 flex-wrap">
+              <select class="form-control" style="width:auto;min-width:100px" v-model="statsPeriod" @change="loadStats">
+                <option value="month">本月</option>
+                <option value="quarter">本季度</option>
+                <option value="year">本年度</option>
+                <option value="all">全部</option>
+              </select>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="stats-row">
+              <div class="stat-card"><div class="stat-value text-primary">[[ periodStat.this_month ?? stats.total ]]</div><div class="stat-label">本月</div></div>
+              <div class="stat-card"><div class="stat-value text-info">[[ periodStat.this_quarter ?? '-' ]]</div><div class="stat-label">本季</div></div>
+              <div class="stat-card"><div class="stat-value text-primary">[[ periodStat.this_year ?? '-' ]]</div><div class="stat-label">本年</div></div>
+              <div class="stat-card"><div class="stat-value">[[ stats.total ]]</div><div class="stat-label">累计</div></div>
+              <div class="stat-card"><div class="stat-value text-warning">[[ stats.pending ]]</div><div class="stat-label">待处理</div></div>
+              <div class="stat-card"><div class="stat-value text-success">[[ stats.refund_sum || 0 ]]</div><div class="stat-label">退费(元)</div></div>
+            </div>
+
+            <!-- 投诉排行 -->
+            <div class="d-flex gap-3 flex-wrap" v-if="stats.by_school && stats.by_school.length">
+              <div style="flex:1;min-width:200px">
+                <h6 style="font-size:12px;color:var(--gray-500);margin-bottom:6px"><i class="bi bi-building"></i> 驾校投诉量 TOP</h6>
+                <table style="font-size:12px">
+                  <tbody>
+                    <tr v-for="(item, i) in stats.by_school.slice(0,5)" :key="i">
+                      <td style="padding:3px 6px;color:var(--gray-500)">[[ i+1 ]]</td>
+                      <td style="padding:3px 6px">[[ item.school ]]</td>
+                      <td style="padding:3px 6px;font-weight:600">[[ item.count ]]</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div style="flex:1;min-width:160px" v-if="stats.by_type && stats.by_type.length">
+                <h6 style="font-size:12px;color:var(--gray-500);margin-bottom:6px"><i class="bi bi-tag"></i> 投诉类型</h6>
+                <table style="font-size:12px">
+                  <tbody>
+                    <tr v-for="(item, i) in stats.by_type" :key="i">
+                      <td style="padding:3px 6px;color:var(--gray-500)">[[ item.type ]]</td>
+                      <td style="padding:3px 6px;font-weight:600">[[ item.count ]]</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div style="flex:1;min-width:160px" v-if="stats.by_source && stats.by_source.length">
+                <h6 style="font-size:12px;color:var(--gray-500);margin-bottom:6px"><i class="bi bi-inbox"></i> 来源渠道</h6>
+                <table style="font-size:12px">
+                  <tbody>
+                    <tr v-for="(item, i) in stats.by_source" :key="i">
+                      <td style="padding:3px 6px;color:var(--gray-500)">[[ item.source ]]</td>
+                      <td style="padding:3px 6px;font-weight:600">[[ item.count ]]</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 工单列表 -->
+        <div class="card">
+          <div class="card-header"><i class="bi bi-clock-history"></i> 工单列表</div>
+          <div class="card-body">
+            <!-- 筛选栏 -->
+            <div class="d-flex gap-2 mb-3 flex-wrap" style="align-items:flex-end">
+              <div>
+                <label class="form-label" style="font-size:11px">关键词</label>
+                <input type="text" class="form-control" style="max-width:160px" v-model="hSearch" @keyup.enter="hPage=1;loadHist()" placeholder="姓名/身份证/工单号">
+              </div>
+              <div>
+                <label class="form-label" style="font-size:11px">状态</label>
+                <select class="form-control" style="max-width:110px" v-model="statusFilter" @change="hPage=1;loadHist()">
+                  <option value="">全部</option>
+                  <option value="待处理">待处理</option>
+                  <option value="处理中">处理中</option>
+                  <option value="已完结">已完结</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:11px">代号</label>
+                <select class="form-control" style="max-width:100px" v-model="schoolFilter" @change="hPage=1;loadHist()">
+                  <option value="">全部</option>
+                  <option value="快捷">快捷</option>
+                  <option value="东坑">东坑</option>
+                  <option value="横沥">横沥</option>
+                  <option value="常平">常平</option>
+                  <option value="大朗">大朗</option>
+                  <option value="塘厦">塘厦</option>
+                </select>
+              </div>
+              <div>
+                <label class="form-label" style="font-size:11px">起止日期</label>
+                <div class="d-flex gap-1 align-center">
+                  <input type="date" class="form-control" style="max-width:120px;font-size:12px" v-model="dateStart" title="开始日期">
+                  <span style="color:var(--gray-400)">~</span>
+                  <input type="date" class="form-control" style="max-width:120px;font-size:12px" v-model="dateEnd" title="结束日期">
+                </div>
+              </div>
+              <div>
+                <button class="btn btn-primary" @click="hPage=1;loadHist()" style="height:34px">
+                  <i class="bi bi-search"></i> 查询
+                </button>
+              </div>
+            </div>
+
+            <!-- 表格 -->
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th style="width:32px">#</th>
+                    <th style="width:48px">代号</th>
+                    <th>姓名</th>
+                    <th style="width:120px">身份证</th>
+                    <th style="width:60px">来源</th>
+                    <th style="width:80px">日期</th>
+                    <th style="width:40px">重复</th>
+                    <th style="width:60px">状态</th>
+                    <th style="width:70px">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(item, idx) in hList" :key="item.id">
+                    <td style="color:var(--gray-400);text-align:center">[[ (hPage-1)*hLimit + idx + 1 ]]</td>
+                    <td>[[ item.school_short || '-' ]]</td>
+                    <td class="font-semibold">[[ item.student_name ]]</td>
+                    <td class="font-mono" style="font-size:12px">[[ item.id_card ]]</td>
+                    <td>[[ item.source_channel || '-' ]]</td>
+                    <td style="white-space:nowrap">[[ item.complaint_date ? item.complaint_date.substring(5) : '-' ]]</td>
+                    <td style="text-align:center"><span v-if="item._repeat" class="badge badge-warning" style="font-size:10px">是</span><span v-else style="color:var(--gray-300)">-</span></td>
+                    <td><span class="badge" :class="stBadge(item.handle_status)">[[ item.handle_status ]]</span></td>
+                    <td style="white-space:nowrap">
+                      <button class="btn btn-sm btn-secondary" @click="loadFromHist(item)" title="重新处理">
+                        <i class="bi bi-arrow-clockwise"></i>
+                      </button>
+                      <button class="btn btn-sm btn-primary" @click="goFeishu(item)" title="提交飞书" v-if="item.student_name" style="margin-left:2px">
+                        <i class="bi bi-send"></i>
+                      </button>
+                    </td>
+                  </tr>
+                  <tr v-if="!hList.length"><td colspan="9" class="text-center text-gray" style="padding:24px">暂无记录</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 分页 -->
+            <div class="d-flex justify-between align-center mt-3 flex-wrap" style="gap:8px">
+              <div class="d-flex gap-2 align-center">
+                <span style="font-size:12px;color:var(--gray-500)">共 [[ hTotal ]] 条</span>
+                <select class="form-control form-control-sm" style="width:auto" v-model="hLimit" @change="loadHist">
+                  <option value="10">10条/页</option>
+                  <option value="20">20条/页</option>
+                  <option value="50">50条/页</option>
+                </select>
+              </div>
+              <div class="d-flex gap-1">
+                <button class="btn btn-sm btn-secondary" @click="hPage=1;loadHist()" :disabled="hPage<=1"><i class="bi bi-chevron-double-left"></i></button>
+                <button class="btn btn-sm btn-secondary" @click="hPage>1 && (hPage--,loadHist())" :disabled="hPage<=1"><i class="bi bi-chevron-left"></i></button>
+                <span style="line-height:30px;font-size:12px;color:var(--gray-600);padding:0 8px">[[ hPage ]] / [[ hTotalPages ]]</span>
+                <button class="btn btn-sm btn-secondary" @click="hPage<hTotalPages && (hPage++,loadHist())" :disabled="hPage>=hTotalPages"><i class="bi bi-chevron-right"></i></button>
+                <button class="btn btn-sm btn-secondary" @click="hPage=hTotalPages;loadHist()" :disabled="hPage>=hTotalPages"><i class="bi bi-chevron-double-right"></i></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ════════════════════════════════════════ -->
+      <!-- 系统设置页面 -->
+      <!-- ════════════════════════════════════════ -->
+      <div v-if="page==='settings' && cfg" class="fade-in">
+        <div class="card">
+          <div class="card-header"><i class="bi bi-hdd-network"></i> 三系统登录配置</div>
+          <div class="card-body" style="padding:12px">
+            <!-- 水平三系统配置 -->
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+              <div style="border:1px solid var(--gray-200);border-radius:6px;padding:10px">
+                <h6 style="color:#0ea5e9;font-size:12px;margin-bottom:8px">内部系统</h6>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <div><label class="form-label">地址</label><input class="form-control" v-model="cfg.internal_system.base_url" style="font-size:12px"></div>
+                  <div><label class="form-label">用户名</label><input class="form-control" v-model="cfg.internal_system.username" style="font-size:12px"></div>
+                  <div><label class="form-label">密码</label><input type="password" class="form-control" v-model="cfg.internal_system.password" style="font-size:12px"></div>
+                </div>
+              </div>
+              <div style="border:1px solid var(--gray-200);border-radius:6px;padding:10px">
+                <h6 style="color:#10b981;font-size:12px;margin-bottom:8px">第三系统</h6>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <div><label class="form-label">地址</label><input class="form-control" v-model="cfg.third_system.base_url" style="font-size:12px"></div>
+                  <div><label class="form-label">用户名</label><input class="form-control" v-model="cfg.third_system.username" style="font-size:12px"></div>
+                  <div><label class="form-label">密码</label><input type="password" class="form-control" v-model="cfg.third_system.password" style="font-size:12px"></div>
+                </div>
+              </div>
+              <div style="border:1px solid var(--gray-200);border-radius:6px;padding:10px">
+                <h6 style="color:#06b6d4;font-size:12px;margin-bottom:8px">驾培系统</h6>
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <div><label class="form-label">地址</label><input class="form-control" v-model="cfg.driving_system.base_url" style="font-size:12px"></div>
+                  <div><label class="form-label">用户名</label><input class="form-control" v-model="cfg.driving_system.username" style="font-size:12px"></div>
+                  <div><label class="form-label">密码</label><input type="password" class="form-control" v-model="cfg.driving_system.password" style="font-size:12px"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><i class="bi bi-cpu"></i> AI大模型配置</div>
+          <div class="card-body">
+            <div class="form-row">
+              <div><label class="form-label">API地址</label><input class="form-control" v-model="cfg.llm.api_url"></div>
+              <div><label class="form-label">模型</label><input class="form-control" v-model="cfg.llm.model"></div>
+              <div><label class="form-label">API Key</label><input type="password" class="form-control" v-model="cfg.llm.api_key"></div>
+              <div><label class="form-label">Max Tokens</label><input type="number" class="form-control" v-model="cfg.llm.max_tokens"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><i class="bi bi-chat-dots"></i> 飞书配置</div>
+          <div class="card-body">
+            <div class="form-row">
+              <div><label class="form-label">App ID</label><input class="form-control" v-model="cfg.feishu.app_id"></div>
+              <div><label class="form-label">App Secret</label><input type="password" class="form-control" v-model="cfg.feishu.app_secret"></div>
+              <div><label class="form-label">App Token</label><input class="form-control" v-model="cfg.feishu.bitable_app_token"></div>
+              <div><label class="form-label">Table ID</label><input class="form-control" v-model="cfg.feishu.bitable_table_id"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="d-flex justify-between align-center">
+          <button class="btn btn-secondary" @click="loadCfg"><i class="bi bi-arrow-clockwise"></i> 重置</button>
+          <div class="d-flex align-center gap-3">
+            <span v-if="cfgMsg" :class="cfgOk ? 'text-success' : 'text-danger'">[[ cfgMsg ]]</span>
+            <button class="btn btn-primary" @click="saveCfg" :disabled="cfgSaving">
+              <span v-if="cfgSaving"><i class="bi bi-arrow-repeat spin"></i></span>
+              <i v-else class="bi bi-check-lg"></i>
+              [[ cfgSaving ? '保存中...' : '保存配置' ]]
+            </button>
+          </div>
+        </div>
+      </div>
+
+    <!-- ═══ Toast 通知 ═══ -->
+    <div class="toast-container" v-if="toasts.length">
+      <div v-for="(t, i) in toasts" :key="i" class="toast" :class="'toast-' + t.type">
+        <div class="toast-title">[[ t.title ]]</div>
+        <div>[[ t.message ]]</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.4/dist/vue.global.prod.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "api": "/static/js/utils/api.js?v=7",
+      "helpers": "/static/js/utils/helpers.js?v=7",
+      "useToast": "/static/js/composables/useToast.js?v=7",
+      "useComplaint": "/static/js/composables/useComplaint.js?v=7",
+      "useWorkflow": "/static/js/composables/useWorkflow.js?v=7",
+      "useSettings": "/static/js/composables/useSettings.js?v=7",
+      "useHistory": "/static/js/composables/useHistory.js?v=7"
+    }
+  }
+  </script>
+  <script type="module" src="/static/js/app.js?v=7"></script>
+</body>
+</html>

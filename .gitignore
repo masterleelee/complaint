@@ -1,0 +1,25 @@
+# 环境变量和配置（包含敏感信息）
+.env
+data/config.json
+
+# 本地数据与缓存（勿提交到公开仓库）
+data/cache/
+data/logs/
+*.db
+*.db-shm
+*.db-wal
+*.db.backup
+
+# 案件材料、上传与业务文书（含个人信息）
+案件归档/
+uploads/
+回复函/
+*.doc
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 操作系统与编辑器
+.DS_Store
