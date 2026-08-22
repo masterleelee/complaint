@@ -2,11 +2,12 @@
 import os
 from PIL import Image
 import io
+from utils.logger import system_logger
 
 # 压缩参数配置
 COMPRESS_CONFIG = {
-    # 最大尺寸限制（宽度, 高度）- 足够看清合同文字
-    "max_size": (1920, 1080),
+    # 文档图片按长边保留到 1920，避免竖版合同被压到 1080 后文字不可读
+    "max_size": (1920, 1920),
     # JPEG 质量（1-100），85 是视觉无损的甜点
     "jpeg_quality": 85,
     # PNG 压缩级别
@@ -56,7 +57,7 @@ def compress_image(input_path: str, output_path: str = None, **kwargs) -> str:
         max_width, max_height = config["max_size"]
         if original_width > max_width or original_height > max_height:
             img.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
-            print(f"[COMPRESS] Resized: {original_width}x{original_height} -> {img.size}")
+            system_logger.info("[COMPRESS] Resized: %dx%d -> %s", original_width, original_height, img.size)
         
         # 根据目标文件大小动态调整质量
         quality = config["jpeg_quality"]
@@ -72,7 +73,7 @@ def compress_image(input_path: str, output_path: str = None, **kwargs) -> str:
                 break
             
             quality -= 5
-            print(f"[COMPRESS] Quality reduced to {quality} (size: {compressed_bytes/1024/1024:.2f}MB)")
+            system_logger.info("[COMPRESS] Quality reduced to %d (size: %.2fMB)", quality, compressed_bytes/1024/1024)
         
         # 保存最终文件
         with open(output_path, 'wb') as f:
@@ -81,9 +82,10 @@ def compress_image(input_path: str, output_path: str = None, **kwargs) -> str:
         # 输出压缩统计
         compressed_size = os.path.getsize(output_path)
         ratio = (1 - compressed_size / original_size) * 100
-        print(f"[COMPRESS] {os.path.basename(input_path)}: "
-              f"{original_size/1024:.1f}KB -> {compressed_size/1024:.1f}KB "
-              f"(-{ratio:.1f}%, quality={quality})")
+        system_logger.info("[COMPRESS] %s: %.1fKB -> %.1fKB (-%.1f%%, quality=%d)",
+                           os.path.basename(input_path),
+                           original_size/1024, compressed_size/1024,
+                           ratio, quality)
         
         return output_path
 
@@ -130,15 +132,16 @@ def compress_for_vision_api(image_paths: list, **kwargs) -> list:
             compressed_paths.append(temp_path)
             total_compressed += os.path.getsize(temp_path)
         except Exception as e:
-            print(f"[COMPRESS ERROR] {path}: {e}")
+            system_logger.error("[COMPRESS ERROR] %s: %s", path, e)
             compressed_paths.append(path)
             total_compressed += original_size
     
     if total_original > 0:
         ratio = (1 - total_compressed / total_original) * 100
-        print(f"[COMPRESS TOTAL] {len(image_paths)} files: "
-              f"{total_original/1024/1024:.2f}MB -> {total_compressed/1024/1024:.2f}MB "
-              f"(-{ratio:.1f}%)")
+        system_logger.info("[COMPRESS TOTAL] %d files: %.2fMB -> %.2fMB (-%.1f%%)",
+                           len(image_paths),
+                           total_original/1024/1024, total_compressed/1024/1024,
+                           ratio)
     
     return compressed_paths
 
@@ -160,4 +163,4 @@ def cleanup_compressed_cache(base_dir: str, max_age_hours: int = 24):
             if not any(comp_dir.iterdir()):
                 comp_dir.rmdir()
         except Exception as e:
-            print(f"[CLEANUP ERROR] {comp_dir}: {e}")
+            system_logger.error("[CLEANUP ERROR] %s: %s", comp_dir, e)

@@ -1,5 +1,8 @@
 """多格式文件文本提取器 - 支持 PDF/图片/DOCX/XLSX/TXT"""
 import os
+from utils.logger import system_logger
+
+_EASYOCR_READER = None
 
 
 def extract_text(filepath: str) -> str:
@@ -64,8 +67,11 @@ def _extract_image(filepath: str) -> str:
         temp_path = filepath + "_temp_processed.png"
         img.save(temp_path)
         
-        import easyocr
-        reader = easyocr.Reader(['ch_sim', 'en'], gpu=False, verbose=False)
+        global _EASYOCR_READER
+        if _EASYOCR_READER is None:
+            import easyocr
+            _EASYOCR_READER = easyocr.Reader(['ch_sim', 'en'], gpu=False, verbose=False)
+        reader = _EASYOCR_READER
         result = reader.readtext(temp_path)
         
         # 清理临时文件
@@ -75,7 +81,7 @@ def _extract_image(filepath: str) -> str:
         lines = [item[1] for item in result if item[2] > 0.2]
         return "\n".join(lines)
     except Exception as e:
-        print(f"OCR Error: {e}")
+        system_logger.warning("OCR Error: %s", e)
         return ""
 
 

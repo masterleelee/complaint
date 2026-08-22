@@ -4,6 +4,7 @@
 """
 import json
 import ddddocr
+import time
 from typing import Optional
 from dataclasses import dataclass, field
 
@@ -32,21 +33,54 @@ class InternalStudentInfo:
     fees: list = field(default_factory=list)
 
 
+# 内部系统状态码 → 待考阶段（来源：jxywxt 前端 syUtil.js 的 xyztTypeData）
 STATUS_MAP = {
-    "1": "报名", "2": "科目一待考", "3": "科目二待考",
-    "4": "科目三待考", "5": "科目四待考", "6": "已结业",
-    "7": "已领证", "8": "已注销", "9": "已退学",
-    "10": "暂停培训", "12": "科二待考",
-    "18": "科一未通过",
-    "20": "科二收", "30": "科三收", "49": "科四收",
+    "-1": "报名", "00": "报名", "09": "报名",
+    "10": "科目一", "11": "科目一", "12": "科目一", "13": "科目一",
+    "14": "科目一", "15": "科目一", "16": "科目一", "17": "科目一",
+    "18": "科目一", "19": "科目一",
+    "20": "科目二", "21": "科目二", "22": "科目二", "23": "科目二",
+    "28": "科目二", "29": "科目二",
+    "30": "科目三", "31": "科目三", "32": "科目三", "33": "科目三",
+    "38": "科目三", "39": "科目三",
+    "40": "科目四", "41": "科目四", "42": "科目四",
+    "48": "科目四", "49": "科目四",
+    "99": "已结业",
+    "T1": "未知", "TT": "未知",
+    "X2": "科目二", "X3": "科目三",
 }
+
+# 内部系统学员状态字典（来源：jxywxt 前端 syUtil.js 的 xyztTypeData）
+XYZT_TEXT_MAP = {
+    "-1": "待完善", "00": "录入", "09": "总校收", "10": "科一收",
+    "11": "受理中", "12": "已受理", "13": "受理退回", "14": "已缴费1190(申请)",
+    "15": "科一约考", "16": "科一约成功", "17": "科一已缴费(申请)", "18": "科一未通过",
+    "19": "科一通过", "20": "科二收", "21": "科二约考", "22": "科二约成功",
+    "23": "科二已缴费(申请)", "28": "科二未通过", "29": "科二通过", "30": "科三收",
+    "31": "科三约考", "32": "科三约成功", "33": "科三已缴费(申请)", "38": "科三未通过",
+    "39": "科三通过", "40": "科四收", "41": "科四约考", "42": "科四约成功",
+    "48": "科四未通过", "49": "科四通过", "99": "已领证", "T1": "退学申请",
+    "TT": "已退学(已审核退费)", "X2": "科二五次未过", "X3": "科三五次未过",
+}
+
+
+class InternalAuthenticationExpired(RuntimeError):
+    pass
+
+
+class PhoneLookupAmbiguityError(ValueError):
+    """手机号匹配到多个不同学员，无法安全确定身份证号。"""
 
 
 class InternalCrawler(BaseCrawler):
     """内部系统爬虫（重构版）"""
+
+    SESSION_MAX_AGE_SECONDS = 15 * 60
+    DETAIL_DEADLINE_SECONDS = 8
     
     def __init__(self):
         from config import load_config
+
         cfg = load_config()["internal_system"]
         base_url = cfg["base_url"]
         username = cfg["username"]
@@ -56,6 +90,23 @@ class InternalCrawler(BaseCrawler):
         self.base_url = base_url.rstrip("/")
         self.api_base = f"{self.base_url}/sypro_jm"
         self._org_list = []
+
+    def _response_json(self, response):
+        text = (getattr(response, "text", "") or "").lstrip()
+        if "userController/login.action" in text:
+            raise InternalAuthenticationExpired("内部系统登录态已失效")
+        data = response.json()
+        self.mark_session_verified()
+        return data
+
+    def _record_student_list_duration(self, started: float, auth_wait_before: int):
+        metrics = self.get_last_query_metrics()
+        auth_wait_after = metrics["phase_durations_ms"].get("auth_wait", 0)
+        total_ms = int((time.perf_counter() - started) * 1000)
+        self._record_query_phase(
+            "student_list",
+            max(0, total_ms - (auth_wait_after - auth_wait_before)),
+        )
     
     def _do_login(self) -> LoginResult:
         """执行登录"""
@@ -105,6 +156,11 @@ class InternalCrawler(BaseCrawler):
     
     def query_student(self, id_card: str, _retry: int = 0) -> Optional[InternalStudentInfo]:
         """查询学员信息（按身份证）"""
+        if _retry == 0:
+            self._reset_query_metrics()
+        list_started = time.perf_counter()
+        auth_wait_before = self.get_last_query_metrics()["phase_durations_ms"].get("auth_wait", 0)
+        list_recorded = False
         try:
             url = f"{self.api_base}/xyxxController/listXyxx.action"
             resp = self.post(url, data={
@@ -113,14 +169,12 @@ class InternalCrawler(BaseCrawler):
                 "rows": 10,
                 "sort": "createtime",
                 "order": "desc"
-            })
-            data = resp.json()
+            }, timeout=8, retries=0)
+            data = self._response_json(resp)
+            self._record_student_list_duration(list_started, auth_wait_before)
+            list_recorded = True
             
             if not data.get("rows"):
-                if _retry == 0:
-                    self.logout()
-                    if self.ensure_login():
-                        return self.query_student(id_card, _retry=1)
                 return None
             
             row = data["rows"][0]
@@ -129,25 +183,64 @@ class InternalCrawler(BaseCrawler):
             # 获取时间轴、考试次数、收费记录（并行）
             if info.student_id:
                 import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    timeline_future = executor.submit(self._get_timeline, info.student_id)
-                    fees_future = executor.submit(self._query_fees, info.student_id)
-                    
-                    info.timeline = timeline_future.result()
-                    info.fees = fees_future.result()
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+                try:
+                    timeline_future = executor.submit(
+                        self._timed_detail_query, "timeline", self._get_timeline, info.student_id
+                    )
+                    fees_future = executor.submit(
+                        self._timed_detail_query, "fees", self._query_fees, info.student_id
+                    )
+                    done, pending = concurrent.futures.wait(
+                        {timeline_future, fees_future},
+                        timeout=self.DETAIL_DEADLINE_SECONDS,
+                    )
+                    info.timeline = (
+                        timeline_future.result()
+                        if timeline_future in done and not timeline_future.exception()
+                        else []
+                    )
+                    info.fees = (
+                        fees_future.result()
+                        if fees_future in done and not fees_future.exception()
+                        else []
+                    )
+                    for future in pending:
+                        future.cancel()
                     info.exam_stage, info.exam_counts = self._analyze_timeline(info.timeline)
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
             
             return info
             
-        except Exception:
+        except InternalAuthenticationExpired:
+            if not list_recorded:
+                self._record_student_list_duration(list_started, auth_wait_before)
+                list_recorded = True
+            self._increment_query_retry()
             if _retry == 0:
                 self.logout()
                 if self.ensure_login():
                     return self.query_student(id_card, _retry=1)
             raise
+        finally:
+            if not list_recorded:
+                self._record_student_list_duration(list_started, auth_wait_before)
+
+    def _timed_detail_query(self, phase: str, func, student_id: str):
+        started = time.perf_counter()
+        try:
+            return func(student_id)
+        finally:
+            self._record_query_phase(phase, (time.perf_counter() - started) * 1000)
     
     def query_by_phone(self, phone: str, _retry: int = 0) -> Optional[InternalStudentInfo]:
         """通过手机号查询学员信息，返回后通过身份证号查完整信息"""
+        id_card = self.lookup_id_card_by_phone(phone, _retry=_retry)
+        return self.query_student(id_card) if id_card else None
+
+    def lookup_id_card_by_phone(self, phone: str, _retry: int = 0) -> str:
+        """仅按手机号获取证件号，不加载时间轴和收费记录。"""
         try:
             url = f"{self.api_base}/xyxxController/listXyxx.action"
             resp = self.post(url, data={
@@ -156,44 +249,33 @@ class InternalCrawler(BaseCrawler):
                 "rows": 10,
                 "sort": "createtime",
                 "order": "desc"
-            })
-            data = resp.json()
+            }, timeout=8, retries=0)
+            data = self._response_json(resp)
             
             if not data.get("rows"):
-                return None
+                return ""
             
-            row = data["rows"][0]
-            id_card = row.get("sfzh", "")
-            if id_card and len(id_card) >= 7:
-                return self.query_student(id_card)
+            id_cards = {
+                row.get("sfzh", "")
+                for row in data["rows"]
+                if row.get("sfzh", "") and len(row.get("sfzh", "")) >= 7
+            }
+            if len(id_cards) > 1:
+                raise PhoneLookupAmbiguityError("手机号匹配多个学员，请补充身份证号")
+            return next(iter(id_cards), "")
             
-            # 如果没有身份证号，返回基本信息
-            return self._parse_student_row(row)
-            
-        except Exception:
+        except InternalAuthenticationExpired:
             if _retry == 0:
                 self.logout()
                 if self.ensure_login():
-                    return self.query_by_phone(phone, _retry=1)
+                    return self.lookup_id_card_by_phone(phone, _retry=1)
             raise
     
     def _parse_student_row(self, row: dict) -> InternalStudentInfo:
         """解析学员数据行"""
         status_code = str(row.get("xyzt", ""))
         exam_stage = STATUS_MAP.get(status_code, "未知")
-        
-        # 判断考试阶段
-        if status_code in ["20"]:
-            exam_stage = "科目二"
-        elif status_code in ["30", "3"]:
-            exam_stage = "科目三"
-        elif status_code in ["49", "4", "5"]:
-            exam_stage = "科目四"
-        elif status_code in ["6", "7"]:
-            exam_stage = "已结业"
-        elif status_code in ["1", "2"]:
-            exam_stage = "科目一"
-        
+
         return InternalStudentInfo(
             name=row.get("name", ""),
             id_card=row.get("sfzh", ""),
@@ -203,7 +285,7 @@ class InternalCrawler(BaseCrawler):
             school_name=row.get("orgname", ""),
             school_short=row.get("orgdh", ""),
             registration_date=row.get("bmrq", "") or row.get("createtime", ""),
-            student_status=STATUS_MAP.get(status_code, f"未知({status_code})"),
+            student_status=XYZT_TEXT_MAP.get(status_code, f"未知({status_code})"),
             student_status_code=status_code,
             student_code=row.get("xybh", ""),
             student_id=row.get("id", ""),
@@ -215,7 +297,7 @@ class InternalCrawler(BaseCrawler):
         """获取学员时间轴"""
         try:
             url = f"{self.api_base}/xyxxController/queryXySjz.action"
-            resp = self.http.get(url, params={"xyid": student_id})
+            resp = self.http.get(url, params={"xyid": student_id}, timeout=8, retries=0)
             data = resp.json()
             obj_str = data.get("obj", "")
             if obj_str and isinstance(obj_str, str):
@@ -264,7 +346,7 @@ class InternalCrawler(BaseCrawler):
         """获取收费记录"""
         try:
             url = f"{self.api_base}/xyxxController/queryXySfList.action"
-            resp = self.http.get(url, params={"xyid": student_id})
+            resp = self.http.get(url, params={"xyid": student_id}, timeout=8, retries=0)
             data = resp.json()
             return data.get("rows", [])
         except Exception:

@@ -15,6 +15,27 @@ export function getTrainingTime(details, subject, field) {
   return item && item[field] ? item[field] : "-";
 }
 
+const DRIVING_FEE_BREAKDOWN = [
+  ["service_fee", "综合服务费", "元"],
+  ["theory_fee", "理论培训费", "元"],
+  ["subject2_fee", "科目二实操培训费", "元"],
+  ["subject2_unit", "科目二学时单价", "元/学时"],
+  ["subject3_fee", "科目三实操培训费", "元"],
+  ["subject3_unit", "科目三学时单价", "元/学时"],
+  ["subject2_retrain", "科目二补训费", "元/次"],
+  ["subject3_retrain", "科目三补训费", "元/次"],
+  ["pickup_fee", "接送服务费", "元/次"],
+];
+
+export function getDrivingFeeBreakdown(breakdown) {
+  if (!breakdown) return [];
+  return DRIVING_FEE_BREAKDOWN.map(([key, label, unit]) => ({
+    label,
+    unit,
+    value: Number(breakdown[key] || 0),
+  }));
+}
+
 export function getEventType(title) {
   if (!title) return "其他";
   if (title.includes("报名")) return "报名";
@@ -30,5 +51,6 @@ export function getEventType(title) {
 }
 
 export function todayStr() {
-  return new Date().toISOString().split("T")[0];
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }

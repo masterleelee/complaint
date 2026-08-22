@@ -8,6 +8,7 @@ from docx.oxml.ns import qn
 from config import load_config
 from database import get_default_template
 from services.template_service import generate_reply_from_template
+from utils.logger import system_logger
 
 
 def generate_reply(
@@ -26,6 +27,12 @@ def generate_reply(
     training_hours: dict = None,
     output_dir: str = "",
     template_id: str = "",
+    visit_summary: str = "",
+    actual_paid: float = 0,
+    complaint_summary: str = "",
+    final_outcome: str = "",
+    communications: list[dict] = None,
+    special_warnings: list = None,
 ) -> dict:
     """
     生成回复函Word文档。
@@ -35,6 +42,22 @@ def generate_reply(
 
     返回 {"success": True, "filepath": "...", "filename": "..."} 或 {"success": False, "error": "..."}
     """
+    actual_paid = float(actual_paid or 0)
+    if actual_paid <= 0:
+        actual_paid = float(total_fee or 0)
+    communications = communications or []
+    special_warnings = special_warnings or []
+    communication_summary = "；".join(
+        str(record.get("summary", "")).strip()
+        for record in communications
+        if str(record.get("summary", "")).strip()
+    )
+    warning_summary = "；".join(
+        str(item.get("message", item)) if isinstance(item, dict) else str(item)
+        for item in special_warnings
+        if item
+    )
+
     # ── 尝试使用模板 ──
     try:
         tmpl = None
@@ -70,17 +93,23 @@ def generate_reply(
                     "license_type": license_type,
                     "exam_stage": exam_stage,
                     "total_fee": f"{total_fee:.0f}",
+                    "actual_paid": f"{actual_paid:.0f}",
                     "total_deduction": f"{total_deduction:.0f}",
                     "refund": f"{refund:.0f}",
                     "contract_code": contract_code,
                     "training_hours": hours_desc,
                     "reply_date": str(datetime.now().year),
                     "deductions": deductions,
+                    "visit_summary": visit_summary,
+                    "complaint_summary": complaint_summary,
+                    "final_outcome": final_outcome,
+                    "communication_summary": communication_summary,
+                    "special_warnings": warning_summary,
                 },
                 output_dir=output_dir,
             )
     except Exception as e:
-        print(f"[回复函] 模板生成失败，回退代码生成: {e}")
+        system_logger.warning("[回复函] 模板生成失败，回退代码生成: %s", e)
 
     # ── 回退：代码生成 ──
     try:
@@ -112,7 +141,7 @@ def generate_reply(
             doc,
             f"经我驾校调查核实，投诉人{name}（身份证号：{id_card}），"
             f"于{registration_date}在{school_name}网点报名{license_type}驾照培训。"
-            f"现收到学员投诉，要求退费。"
+            f"现收到学员投诉，投诉事项概述：{complaint_summary or '学员对培训服务提出异议'}。"
         )
 
         # ── 第二段：培训费及进度 ──
@@ -127,7 +156,8 @@ def generate_reply(
 
         _add_paragraph(
             doc,
-            f"据了解，学员报名共交培训服务费{total_fee:.0f}元，"
+            f"据了解，学员签订合同培训服务费总额为{total_fee:.0f}元，"
+            f"实际已交费用{actual_paid:.0f}元，"
             f"目前进度处于：{exam_stage}阶段，{hours_desc}。"
         )
 
@@ -136,8 +166,7 @@ def generate_reply(
         _add_paragraph(
             doc,
             f"按照《东莞市机动车驾驶员培训服务合同》{contract_ref}"
-            f"第九条退学退费相关约定：（一）合同有效期内，甲方因个人原因中途提出退学的"
-            f"应向乙方提交书面申请，按项目扣除费用，剩余款项由乙方退回。扣费如下："
+            f"退学退费相关约定及已确认的扣费明细，核算扣费如下："
         )
 
         # 逐项扣费 - 简化依据，只保留合同条款
@@ -156,6 +185,9 @@ def generate_reply(
                 else:
                     # 如果太长，截断
                     simplified_reason = reason[:30] + "..." if len(reason) > 30 else reason
+                formula = d.get("formula", "")
+                if formula and ("封顶" in formula or "调整" in formula):
+                    simplified_reason = f"{simplified_reason}；计算：{formula}"
                 text = f"{i}、{item_name}（{simplified_reason}）：{amount:.0f}元"
             else:
                 text = f"{i}、{item_name}：{amount:.0f}元"
@@ -177,15 +209,27 @@ def generate_reply(
         # ── 应退金额 ──
         _add_paragraph(
             doc,
-            f"学员已交费用{total_fee:.0f}元，应退回：{total_fee:.0f} - {total_deduction:.0f} = {refund:.0f}元。"
+            f"学员实际已交费用{actual_paid:.0f}元，应退回："
+            f"实际已交费用扣减总扣费后，按不低于0元处理，金额为{refund:.0f}元。"
         )
 
-        # ── 合规说明 ──
+        if communication_summary:
+            _add_paragraph(doc, f"沟通处理情况：{communication_summary}。")
+        if final_outcome:
+            _add_paragraph(doc, f"本案最终处理结果：{final_outcome}。")
+        if warning_summary:
+            _add_paragraph(doc, f"合同核验说明：{warning_summary}。")
+
         _add_paragraph(
             doc,
-            "以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》"
-            "第三条、第九条相关条款执行，我驾校愿意按合同约定配合办理退学退费手续。"
+            "以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》、"
+            "已确认的扣费明细及已核实的学员培训、考试进度计算，"
+            "我驾校将依据案件最终处理结果继续办理。"
         )
+
+        # ── 回访情况 ──
+        if visit_summary:
+            _add_paragraph(doc, f"回访情况：{visit_summary}")
 
         # 空行
         for _ in range(3):
@@ -212,19 +256,52 @@ def generate_reply(
         os.makedirs(output_dir, exist_ok=True)
 
         today_str = datetime.now().strftime("%Y%m%d")
-        filename = f"{today_str}{name}{id_card}投诉回复函{school_short}.docx"
-        filepath = os.path.join(output_dir, filename)
+        base_filename = f"{today_str}{name}{id_card}投诉回复函{school_short}"
+        filepath = os.path.join(output_dir, base_filename + ".docx")
 
-        # 同名文件加序号
+        # Versioning: if file exists, rename existing as _v1, new as _v2
         if os.path.exists(filepath):
-            base, ext = os.path.splitext(filepath)
-            n = 1
-            while os.path.exists(f"{base}({n}){ext}"):
-                n += 1
-            filepath = f"{base}({n}){ext}"
+            existing_versions = []
+            for f in os.listdir(output_dir):
+                if f.startswith(base_filename) and f.endswith(".docx"):
+                    existing_versions.append(f)
+            existing_versions.sort()
+
+            # Find max version number from existing files
+            max_v = 0
+            for f in existing_versions:
+                import re
+                m = re.search(r'_v(\d+)\.docx$', f)
+                if m:
+                    v = int(m.group(1))
+                    if v > max_v:
+                        max_v = v
+                elif f == base_filename + ".docx":
+                    max_v = 1  # bare file exists, will become v1
+
+            if max_v == 0:
+                # No versioned files, just rename current
+                os.rename(filepath, os.path.join(output_dir, base_filename + "_v1.docx"))
+                max_v = 1
+
+            new_version = max_v + 1
+            filepath = os.path.join(output_dir, f"{base_filename}_v{new_version}.docx")
 
         doc.save(filepath)
-        return {"success": True, "filepath": filepath, "filename": os.path.basename(filepath)}
+
+        # Collect all version files for return
+        all_versions = []
+        for f in os.listdir(output_dir):
+            if f.startswith(base_filename) and f.endswith(".docx"):
+                all_versions.append({"filename": f, "filepath": os.path.join(output_dir, f)})
+        all_versions.sort(key=lambda x: x["filename"])
+
+        return {
+            "success": True,
+            "filepath": filepath,
+            "filename": os.path.basename(filepath),
+            "all_versions": all_versions,
+        }
 
     except Exception as e:
         return {"success": False, "error": str(e)}

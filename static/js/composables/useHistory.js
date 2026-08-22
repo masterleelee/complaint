@@ -13,21 +13,58 @@ export function useHistory() {
 
   // 筛选
   const statusFilter = Vue.ref("");
-  const schoolFilter = Vue.ref("");
-  const schoolCodes = Vue.ref([]);  // 代号列表
-  const dateStart = Vue.ref("");
-  const dateEnd = Vue.ref("");
+  const schoolOptions = Vue.ref([]);  // 代号列表 [{code, name, type}]
+  // 工单列表时间统一跟随看板 chartDateStart / chartDateEnd
+
+  // Detail modal
+  const detailModal = Vue.ref(null);
+	  const detailTicket = Vue.ref(null);
+  const detailDeductions = Vue.ref([]);
+  const detailCommunicationRecords = Vue.ref([]);
+	  const detailDocuments = Vue.ref([]);
+  const detailLoading = Vue.ref(false);
 
   // 统计
   const stats = Vue.ref({
     total: 0, pending: 0, processing: 0, completed: 0,
     refund_sum: 0, repeat_count: 0,
-    by_school: [], by_source: [], by_type: [],
+	    integrity_issues: { archived_not_completed: 0, completed_without_final_outcome: 0, total: 0 },
+	    by_school: [], by_rate: [], by_source: [], by_type: [], by_outcome: [], by_branch_cooperation: [], daily_trend: [],
+	    monthly_trend: [], monthly_compare: {}, total_vehicle_count: 0, total_complaint_rate: null,
     this_month: 0, this_quarter: 0, this_year: 0,
   });
+  // 看板范围：all / branch / store
+  const statScope = Vue.ref("all");
+  // 代号筛选：选择代号后，数据看板与工单列表整体切换到该网点
+  const drillCode = Vue.ref("");            // 当前选中的代号
+  const drill = Vue.computed(() => {
+    const c = drillCode.value;
+    if (!c) return null;
+    const opt = schoolOptions.value.find(o => o.code === c);
+    return opt ? { code: opt.code, name: opt.name, type: opt.type || "" } : { code: c, name: c, type: "" };
+  });
+  // 车辆数维护
+  const vehicleModalOpen = Vue.ref(false);
+  const vehicleItems = Vue.ref([]);
+  const vehicleLoading = Vue.ref(false);
+  const vehicleSaving = Vue.ref(false);
   const chartDateStart = Vue.ref("");
   const chartDateEnd = Vue.ref("");
   const periodStat = Vue.computed(() => stats.value);
+  const durationStats = Vue.ref({ overdue_count: 0, avg_processing_hours: 0, completed_count: 0 });
+
+  async function loadDurationStats() {
+    try {
+      const params = new URLSearchParams();
+      if (chartDateStart.value) params.set("start_date", chartDateStart.value);
+      if (chartDateEnd.value) params.set("end_date", chartDateEnd.value);
+      if (drill.value) params.set("unit_code", drill.value.code);
+      const d = await getJ("/api/statistics/duration?" + params.toString());
+      if (d.success) durationStats.value = d.data;
+    } catch (e) {
+      console.error(e);
+    }
+  }
 
   function _fmt(d) {
     return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -55,6 +92,7 @@ export function useHistory() {
     else if (period === 'year') { const r = getYearRange(); chartDateStart.value = r.start; chartDateEnd.value = r.end; }
     else { chartDateStart.value = ''; chartDateEnd.value = ''; }
     loadStats();
+    loadHist();
   }
 
   let _st = null;
@@ -66,11 +104,11 @@ export function useHistory() {
     _st = setTimeout(loadHist, 300);
   }
 
-  // 加载代号列表
+  // 加载代号列表（含标准字典名称）
   async function loadSchoolCodes() {
     try {
       const d = await getJ("/api/school-codes");
-      schoolCodes.value = d.data || [];
+      schoolOptions.value = d.data || [];
     } catch (e) {
       console.error("加载代号列表失败:", e);
     }
@@ -81,9 +119,9 @@ export function useHistory() {
       const params = new URLSearchParams();
       if (hSearch.value) params.set("search", hSearch.value);
       if (statusFilter.value) params.set("status", statusFilter.value);
-      if (schoolFilter.value) params.set("school", schoolFilter.value);
-      if (dateStart.value) params.set("start_date", dateStart.value);
-      if (dateEnd.value) params.set("end_date", dateEnd.value);
+      if (drill.value) params.set("school", drill.value.code);
+      if (chartDateStart.value) params.set("start_date", chartDateStart.value);
+      if (chartDateEnd.value) params.set("end_date", chartDateEnd.value);
       params.set("limit", String(hLimit.value));
       params.set("offset", String((hPage.value - 1) * hLimit.value));
 
@@ -114,10 +152,114 @@ export function useHistory() {
       const params = new URLSearchParams();
       if (chartDateStart.value) params.set("start_date", chartDateStart.value);
       if (chartDateEnd.value) params.set("end_date", chartDateEnd.value);
+      if (drill.value) params.set("unit_code", drill.value.code);
+      else params.set("scope", statScope.value);
       const d = await getJ("/api/ticket-statistics?" + params.toString());
       if (d.success) stats.value = d.data;
     } catch (e) {
       console.error(e);
+    }
+    await loadDurationStats();
+  }
+
+  /** 切换看板范围（全部/分校/分店） */
+  function setStatScope(scope) {
+    statScope.value = scope;
+    drillCode.value = "";
+    loadStats();
+    loadHist();
+  }
+
+  /** 代号筛选：下拉选择或图表点击网点，看板与工单列表联动切换 */
+  function drillInto(code, name) {
+    drillCode.value = code || "";
+    hPage.value = 1;
+    loadStats();
+    loadHist();
+  }
+
+  /** 代号下拉变化 */
+  function onDrillSelect() {
+    hPage.value = 1;
+    loadStats();
+    loadHist();
+  }
+
+  /** 看板日期变化：列表同步跟随 */
+  function onDateChange() {
+    hPage.value = 1;
+    loadStats();
+    loadHist();
+  }
+
+  /** 清除代号筛选，回到范围筛选 */
+  function closeDrill() {
+    drillCode.value = "";
+    hPage.value = 1;
+    loadStats();
+    loadHist();
+  }
+
+  // 看板当前显示的投诉率：选择代号时取该网点自身投诉率（总投诉率的分母是全机构车辆数，不适用于单网点）
+  const boardComplaintRate = Vue.computed(() => {
+    if (drill.value) {
+      const item = stats.value.by_school && stats.value.by_school[0];
+      return item && item.complaint_rate != null ? item.complaint_rate : null;
+    }
+    return stats.value.total_complaint_rate;
+  });
+
+  // ── 车辆数维护 ──
+  async function loadVehicleCounts() {
+    vehicleLoading.value = true;
+    try {
+      const d = await getJ("/api/org-vehicle-counts");
+      if (d.success) vehicleItems.value = d.data.items || [];
+    } catch (e) {
+      console.error("加载车辆数失败:", e);
+    } finally {
+      vehicleLoading.value = false;
+    }
+  }
+
+  function addVehicleRow() {
+    vehicleItems.value.push({ unit_code: "", unit_name: "", unit_type: "分校", vehicle_count: 0 });
+  }
+
+  function removeVehicleRow(index) {
+    vehicleItems.value.splice(index, 1);
+  }
+
+  async function saveVehicleCounts() {
+    const codes = new Set();
+    for (const item of vehicleItems.value) {
+      const code = String(item.unit_code || "").trim();
+      if (!code) {
+        alert("请填写所有网点的代号");
+        return false;
+      }
+      if (codes.has(code)) {
+        alert("代号重复: " + code);
+        return false;
+      }
+      codes.add(code);
+    }
+    vehicleSaving.value = true;
+    try {
+      const d = await fetch("/api/org-vehicle-counts", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: vehicleItems.value }),
+      }).then(r => r.json());
+      if (!d.success) throw new Error(d.error || "保存失败");
+      loadStats();
+      return true;
+    } catch (e) {
+      console.error("保存车辆数失败:", e);
+      alert("保存失败: " + e.message);
+      return false;
+    } finally {
+      vehicleSaving.value = false;
     }
   }
 
@@ -189,13 +331,14 @@ export function useHistory() {
     }
   }
 
-  // 导出工单数据为 Excel
+  // 导出工单数据为 Excel（跟随代号 + 看板时间筛选）
   async function exportTickets() {
     try {
       const params = new URLSearchParams();
       if (statusFilter.value) params.set("status", statusFilter.value);
-      if (dateStart.value) params.set("date_start", dateStart.value);
-      if (dateEnd.value) params.set("date_end", dateEnd.value);
+      if (drill.value) params.set("school", drill.value.code);
+      if (chartDateStart.value) params.set("date_start", chartDateStart.value);
+      if (chartDateEnd.value) params.set("date_end", chartDateEnd.value);
 
       const url = "/api/tickets/export?" + params.toString();
       
@@ -218,6 +361,26 @@ export function useHistory() {
     } catch (e) {
       console.error("导出失败:", e);
       alert("导出失败: " + e.message);
+    }
+  }
+
+  async function showTicketDetail(ticketId) {
+    detailLoading.value = true;
+    try {
+      const d = await getJ(`/api/tickets/${ticketId}/detail`);
+      if (d.success) {
+        detailTicket.value = d.data.ticket;
+	        detailDeductions.value = d.data.deductions;
+	        detailCommunicationRecords.value = d.data.communication_records || [];
+	        detailDocuments.value = d.data.documents;
+        if (detailModal.value) {
+          detailModal.value.show();
+        }
+      }
+    } catch (e) {
+      console.error("showTicketDetail error:", e);
+    } finally {
+      detailLoading.value = false;
     }
   }
 
@@ -259,16 +422,14 @@ export function useHistory() {
     // 飞书风格配色
     const colors = ['#3370FF', '#34D399', '#FBBF24', '#F87171', '#A78BFA', '#60A5FA', '#2DD4BF'];
     
-    // 1. 趋势图 - 使用模拟数据（后端需要添加趋势接口）
+    // 1. 投诉趋势 - 只展示数据库中的真实案件数量
     if (chartInstances.trend) {
-      const days = [];
-      const data = [];
-      for (let i = 29; i >= 0; i--) {
-        const d = new Date();
-        d.setDate(d.getDate() - i);
-        days.push(`${d.getMonth()+1}/${d.getDate()}`);
-        data.push(Math.floor(Math.random() * 5)); // 模拟数据
-      }
+      const trend = stats.value.daily_trend || [];
+      const days = trend.map(item => {
+        const parts = String(item.date || "").split("-");
+        return parts.length === 3 ? `${Number(parts[1])}/${Number(parts[2])}` : item.date;
+      });
+      const data = trend.map(item => Number(item.count) || 0);
       chartInstances.trend.setOption({
         color: colors,
         grid: { left: 40, right: 20, top: 20, bottom: 30 },
@@ -282,12 +443,12 @@ export function useHistory() {
     // 2. 驾校排行 - 横向柱状图（渐变色）
     if (chartInstances.school && stats.value.by_school) {
       const schoolData = stats.value.by_school.slice(0, 10).reverse();
-      const schoolVals = schoolData.map(i => i.count);
+      const schoolVals = schoolData.map(i => Number(i.count) || 0);
       const maxVal = Math.max(...schoolVals, 1);
       chartInstances.school.setOption({
         grid: { left: 60, right: 30, top: 10, bottom: 20 },
         xAxis: { type: 'value', axisLine: { show: false }, splitLine: { lineStyle: { color: '#F3F4F6' } }, axisLabel: { color: '#6B7280', fontSize: 10 } },
-        yAxis: { type: 'category', data: schoolData.map(i => i.school), axisLine: { lineStyle: { color: '#E5E7EB' } }, axisLabel: { color: '#374151', fontSize: 11 } },
+        yAxis: { type: 'category', data: schoolData.map(i => i.name || i.school || i.code || '未查到分校'), axisLine: { lineStyle: { color: '#E5E7EB' } }, axisLabel: { color: '#374151', fontSize: 11 } },
         series: [{
           data: schoolVals, type: 'bar', barWidth: 16,
           itemStyle: {
@@ -359,11 +520,22 @@ export function useHistory() {
 
   return {
     hList, hTotal, hSearch, hLimit, hPage, hTotalPages, hLoading,
-    statusFilter, schoolFilter, schoolCodes, dateStart, dateEnd,
+    statusFilter, schoolOptions,
     stats, chartDateStart, chartDateEnd, setChartPeriod, periodStat,
+    durationStats, loadDurationStats,
     groupedHistory, toggleGroup,
     debSearch, loadHist, loadStats, loadFromHist, exportTickets, updateTicketStatus,
     loadSchoolCodes,
+    // 看板三态 + 代号筛选 + 车辆数
+    statScope, setStatScope,
+    drill, drillCode, onDrillSelect, onDateChange, boardComplaintRate,
+    drillInto, closeDrill,
+    vehicleItems, vehicleLoading, vehicleSaving,
+    vehicleModalOpen,
+    loadVehicleCounts, saveVehicleCounts,
+    addVehicleRow, removeVehicleRow,
+	    detailModal, detailTicket, detailDeductions, detailCommunicationRecords, detailDocuments, detailLoading,
+    showTicketDetail,
     initCharts, updateCharts, disposeCharts,
   };
 }

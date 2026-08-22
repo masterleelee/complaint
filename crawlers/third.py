@@ -6,6 +6,7 @@ http://jppt.dgcheshang.cn:8899
 """
 import hashlib
 import re
+import requests
 import time
 import urllib.parse
 from typing import Optional
@@ -41,6 +42,7 @@ class ThirdCrawler(BaseCrawler):
     """第三系统爬虫（重构版）"""
 
     STAGE_NAMES = {1: "第一部分(科目一)", 2: "第二部分(科目二)", 3: "第三部分(科目三)", 4: "第四部分(科目四)"}
+    SESSION_MAX_AGE_SECONDS = 25 * 60
 
     def __init__(self):
         cfg = load_config()["third_system"]
@@ -98,32 +100,52 @@ class ThirdCrawler(BaseCrawler):
 
     def query_student(self, id_card: str, _retry: int = 0) -> Optional[ThirdStudentInfo]:
         """查询阶段审核管理"""
-        if not self.ensure_login():
+        if _retry == 0:
+            self._reset_query_metrics()
+        auth_started = time.perf_counter()
+        logged_in = self.ensure_login()
+        self._record_query_phase("auth_wait", (time.perf_counter() - auth_started) * 1000)
+        if not logged_in:
             return None
 
+        lookup_started = time.perf_counter()
+        lookup_recorded = False
         try:
             resp = self.post(
                 f"{self.base_url}/school/schoolOprAction!xsjdshList.action",
                 data={"xyxshzVo.sfzmhm": id_card, "pageNumber": 1, "pagesize": 10},
                 timeout=15,
             )
+            self._record_query_phase(
+                "lookup", (time.perf_counter() - lookup_started) * 1000
+            )
+            lookup_recorded = True
 
-            if resp.status_code != 200 or id_card not in resp.text:
+            if resp.status_code in (401, 403) or "login!login.action" in getattr(resp, "url", ""):
                 if _retry == 0:
+                    self._increment_query_retry()
                     self.logout()
                     if self.ensure_login():
                         return self.query_student(id_card, _retry=1)
                 return None
+            if resp.status_code != 200 or id_card not in resp.text:
+                return None
 
             return self._parse_student_page(resp.text, id_card)
             
-        except Exception as e:
-            # 仅当是登录态过期导致的失败时才重试一次
-            if _retry == 0:
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response is not None else 0
+            if status in (401, 403) and _retry == 0:
+                self._increment_query_retry()
                 self.logout()
                 if self.ensure_login():
                     return self.query_student(id_card, _retry=1)
             raise
+        finally:
+            if not lookup_recorded:
+                self._record_query_phase(
+                    "lookup", (time.perf_counter() - lookup_started) * 1000
+                )
 
     def _parse_student_page(self, html: str, id_card: str) -> Optional[ThirdStudentInfo]:
         """解析阶段审核管理页面"""

@@ -5,9 +5,14 @@ async function _fetch(url, options = {}) {
     const text = await resp.text();
     if (!text) return { error: "服务器返回空响应" };
     try {
-      return JSON.parse(text);
+      const data = JSON.parse(text);
+      if (!resp.ok && !data.error) {
+        data.error = `HTTP ${resp.status} ${resp.statusText || ""}`.trim();
+      }
+      return data;
     } catch {
-      return { error: "服务器返回格式异常" };
+      const preview = text.replace(/\s+/g, " ").trim().slice(0, 160);
+      return { error: `HTTP ${resp.status}，服务器返回非JSON: ${preview || resp.statusText || "无内容"}` };
     }
   } catch (e) {
     return { error: "请求失败，请确认服务是否正常运行（" + e.message + "）" };

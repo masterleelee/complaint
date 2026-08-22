@@ -1,34 +1,371 @@
-"""合同分析服务 - 纯云端 Vision API 方案"""
+"""合同分析服务：文本提取、合同结构化、退费草案计算。"""
 import os
 import json
 import base64
 import requests
 from datetime import datetime, timedelta
-import urllib3
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
-from config import load_config
+from config import load_config, normalize_llm_api_url
+from services.image_compressor import compress_for_vision_api
+from services.file_parser import extract_text as _file_parser_extract_text
+from utils.logger import system_logger
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
+
+
+def _llm_config(section: str) -> dict:
+    """按用途读取模型配置，缺项回退到 legacy llm。"""
+    cfg = load_config()
+    legacy = cfg.get("llm", {}) if isinstance(cfg.get("llm"), dict) else {}
+    specific = cfg.get(section, {}) if isinstance(cfg.get(section), dict) else {}
+    merged = dict(legacy)
+    for key, value in specific.items():
+        if value not in ("", None):
+            merged[key] = value
+    merged["api_url"] = normalize_llm_api_url(merged.get("api_url", ""))
+    return merged
+
+
+def _normalize_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _compact_spaced_digits(text: str) -> str:
+    """东莞驾培 PDF 常把数字拆成 '3 2 8 0'，分析前合并为 '3280'，并先把 '3880 . 00' 桥接为 '3880.00'。"""
+    text = re.sub(r"(?<=\d)\s*\.\s*(?=\d)", ".", text or "")
+    return re.sub(r"(?<=\d)\s+(?=\d)", "", text)
+
+
+def _build_contract_text_preview(text: str) -> str:
+    normalized = _normalize_text(text)
+    if len(normalized) <= 500:
+        return normalized
+
+    snippets = [normalized[:260]]
+    for pattern in ("第三条 培训收费约定", "培训收费约定", "培训费用合计", "退学退费"):
+        idx = normalized.find(pattern)
+        if idx >= 0:
+            start = max(0, idx - 40)
+            snippets.append(normalized[start:start + 420])
+            break
+    return " ... ".join(snippets)[:700]
+
+
+def _extract_pdf_text(filepath: str) -> str:
+    """直接读取文字型 PDF 的文本层。"""
+    import pdfplumber
+
+    with pdfplumber.open(filepath) as pdf:
+        pages_text = []
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                pages_text.append(t)
+    return _compact_spaced_digits("\n".join(pages_text))
+
+
+def _flatten_paddleocr_result(result) -> list[str]:
+    """兼容 PaddleOCR 不同版本的返回结构，抽取识别文本。"""
+    texts = []
+
+    def walk(node):
+        if not node:
+            return
+        if isinstance(node, str):
+            return
+        if isinstance(node, dict):
+            for key in ("rec_texts", "texts"):
+                value = node.get(key)
+                if isinstance(value, list):
+                    texts.extend(str(item) for item in value if item)
+                    return
+            value = node.get("text")
+            if isinstance(value, str):
+                texts.append(value)
+                return
+            for value in node.values():
+                walk(value)
+            return
+        if hasattr(node, "json"):
+            walk(getattr(node, "json"))
+            return
+        if isinstance(node, tuple) and len(node) >= 1 and isinstance(node[0], str):
+            texts.append(node[0])
+            return
+        if isinstance(node, list):
+            if len(node) >= 2 and isinstance(node[1], tuple) and node[1] and isinstance(node[1][0], str):
+                texts.append(node[1][0])
+                return
+            for item in node:
+                walk(item)
+
+    walk(result)
+    return texts
+
+
+def _create_paddle_ocr(PaddleOCR):
+    """优先适配 PaddleOCR 3.x，必要时回退旧版参数。"""
+    init_attempts = [
+        {
+            "lang": "ch",
+            "use_textline_orientation": True,
+            "text_det_limit_side_len": 1600,
+        },
+        {"use_angle_cls": True, "lang": "ch"},
+    ]
+    last_error = None
+    for kwargs in init_attempts:
+        try:
+            return PaddleOCR(**kwargs)
+        except Exception as e:
+            last_error = e
+    raise last_error
+
+
+def _run_paddle_ocr(ocr, path: str):
+    """兼容 PaddleOCR 2.x/3.x 的识别入口。"""
+    if hasattr(ocr, "predict"):
+        try:
+            return ocr.predict(path)
+        except TypeError:
+            pass
+    try:
+        return ocr.ocr(path)
+    except TypeError:
+        return ocr.ocr(path, cls=True)
+
+
+def _extract_contract_text_easyocr(image_paths: list[str]) -> str:
+    ocr_paths = compress_for_vision_api(
+        image_paths,
+        max_size=(1600, 2200),
+        jpeg_quality=88,
+        target_max_mb=1.5,
+    )
+
+    texts = []
+    for idx, path in enumerate(ocr_paths, 1):
+        page_text = _file_parser_extract_text(path)
+        if page_text.strip():
+            texts.append(f"--- 第{idx}页 ---\n{page_text}")
+    return "\n\n".join(texts)
+
+
+def extract_contract_text_ocr(image_paths: list[str]) -> str:
+    """使用本地 PaddleOCR 识别合同图片文本。"""
+    if not image_paths:
+        return ""
+    try:
+        import paddle  # noqa: F401
+    except Exception as e:
+        system_logger.warning("[OCR] paddlepaddle 不可用，直接改用 EasyOCR: %s", e)
+        return _extract_contract_text_easyocr(image_paths)
+
+    try:
+        from paddleocr import PaddleOCR
+    except Exception as e:
+        system_logger.warning("[OCR] PaddleOCR 不可用，改用 EasyOCR: %s", e)
+        return _extract_contract_text_easyocr(image_paths)
+
+    try:
+        ocr = _create_paddle_ocr(PaddleOCR)
+    except Exception as e:
+        system_logger.warning("[OCR] PaddleOCR 初始化失败，改用 EasyOCR: %s", e)
+        return _extract_contract_text_easyocr(image_paths)
+
+    all_texts = []
+    for idx, path in enumerate(image_paths, 1):
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            result = _run_paddle_ocr(ocr, path)
+            page_text = "\n".join(_flatten_paddleocr_result(result))
+            if page_text.strip():
+                all_texts.append(f"--- 第{idx}页 ---\n{page_text}")
+        except Exception as e:
+            system_logger.warning("[OCR] 第%d页识别失败: %s", idx, e)
+
+    return "\n\n".join(all_texts)
+
+
+def _pdf_to_images(filepath: str) -> list[str]:
+    """扫描 PDF 转图片后交给 OCR；缺少 PyMuPDF 时返回空列表。"""
+    try:
+        import fitz
+    except ImportError:
+        return []
+
+    temp_images = []
+    pdf_doc = fitz.open(filepath)
+    try:
+        for page_num in range(len(pdf_doc)):
+            page = pdf_doc[page_num]
+            pix = page.get_pixmap(dpi=200)
+            img_path = filepath.replace(".pdf", f"_p{page_num}.png")
+            pix.save(img_path)
+            temp_images.append(img_path)
+    finally:
+        pdf_doc.close()
+    return temp_images
+
+
+def _detect_unclear_fields(contract_text: str) -> tuple[list[str], list[str]]:
+    """识别是否缺少正式确认费用方案所需的关键字段。"""
+    normalized = _normalize_text(contract_text)
+    unclear_fields = []
+    blockers = []
+
+    has_amount = bool(re.search(r"(培训服务费|培训费|合同金额|总额|已交|实收|费用).{0,20}?\d{3,}(?:\.\d+)?\s*元", normalized))
+    if not has_amount:
+        unclear_fields.append("合同金额")
+
+    has_refund_clause = bool(re.search(r"(退学退费|退费|解除合同|第九条)", normalized))
+    if not has_refund_clause:
+        unclear_fields.append("退费条款")
+
+    if re.search(r"(\[模糊\]|【模糊】|模糊|看不清|无法识别)", normalized):
+        if "合同金额" not in unclear_fields and re.search(r"(金额|费用|元).{0,10}(模糊|看不清|无法识别)", normalized):
+            unclear_fields.append("合同金额")
+        if "手写修改" not in unclear_fields and re.search(r"(手写|修改|补充).{0,10}(模糊|看不清|无法识别)", normalized):
+            unclear_fields.append("手写修改")
+
+    if unclear_fields:
+        blockers.append("合同关键字段识别不完整，不能确认正式费用方案，请重新上传清晰合同或人工补录。")
+
+    return unclear_fields, blockers
+
+
+def _build_extraction_result(text: str, source: str) -> dict:
+    unclear_fields, blockers = _detect_unclear_fields(text)
+    can_confirm = not blockers
+    return {
+        "text": text,
+        "source": source,
+        "extraction_source": source,
+        "contract_text_preview": _build_contract_text_preview(text),
+        "unclear_fields": unclear_fields,
+        "blockers": blockers,
+        "can_confirm_fee_plan": can_confirm,
+        "fee_plan_status": "draft" if can_confirm else "needs_review",
+    }
+
+
+def extract_contract_text_from_file(filepath: str, image_paths: list[str] = None) -> dict:
+    """按文件类型选择最低成本的合同文本提取方式。"""
+    image_paths = image_paths or []
+    if not filepath or not os.path.exists(filepath):
+        return {"error": "合同文件不存在"}
+
+    contract_text = ""
+    source = ""
+    lower_path = filepath.lower()
+
+    if lower_path.endswith(".pdf"):
+        try:
+            contract_text = _extract_pdf_text(filepath)
+            if contract_text and len(contract_text.strip()) > 200:
+                source = "pdf_text"
+                system_logger.info("[PDF] pdfplumber 提取成功: %d 字符", len(contract_text))
+            else:
+                system_logger.warning("[PDF] pdfplumber 提取文本不足(%d字)，尝试本地 OCR", len(contract_text))
+                contract_text = ""
+        except Exception as e:
+            system_logger.warning("[PDF] pdfplumber 提取失败: %s，尝试本地 OCR", e)
+            contract_text = ""
+
+    if not contract_text:
+        ocr_inputs = [
+            p for p in image_paths
+            if p and os.path.exists(p) and p.lower().endswith(IMAGE_EXTS)
+        ]
+        if not ocr_inputs and lower_path.endswith(IMAGE_EXTS):
+            ocr_inputs = [filepath]
+        if not ocr_inputs and lower_path.endswith(".pdf"):
+            try:
+                ocr_inputs = _pdf_to_images(filepath)
+            except Exception as e:
+                system_logger.warning("[PDF→IMG] 转换失败: %s", e)
+        if ocr_inputs:
+            system_logger.info("[VISION] 尝试识别 %d 个合同图片...", len(ocr_inputs))
+            try:
+                contract_text = extract_contract_text_vision(ocr_inputs)
+            except Exception as e:
+                system_logger.warning("[VISION] 识别异常，回退本地 OCR: %s", e)
+                contract_text = ""
+
+            if contract_text and len(contract_text.strip()) >= 20:
+                source = "vision_text"
+            else:
+                system_logger.warning("[OCR] 多模态识别无有效文本，回退本地 OCR 识别 %d 个合同图片...", len(ocr_inputs))
+                contract_text = extract_contract_text_ocr(ocr_inputs)
+                source = "local_ocr"
+
+    if not contract_text or len(contract_text.strip()) < 20:
+        return {"error": "无法从合同文件中提取可分析文本"}
+
+    return _build_extraction_result(contract_text, source or "unknown")
+
+
+def _blank_analysis_result(message: str = "") -> dict:
+    result = _parse_ai_response("{}")
+    result["error"] = message or "合同识别结果不完整，需人工核对登记"
+    if message:
+        result["summary"] = message
+        result["summary_lines"] = [message]
+    return result
+
+
+def _format_llm_error(resp: requests.Response) -> str:
+    """把 LLM API 的 HTTP 错误转换成处理人能执行的中文提示。"""
+    status = getattr(resp, "status_code", "")
+    raw_body = getattr(resp, "text", "") or ""
+    error_code = ""
+    error_type = ""
+    message = raw_body.strip()
+
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+
+    if isinstance(body, dict):
+        err = body.get("error", body)
+        if isinstance(err, dict):
+            error_code = str(err.get("code", "") or "")
+            error_type = str(err.get("type", "") or "")
+            message = str(err.get("message", "") or message)
+
+    normalized = f"{error_code} {error_type} {message}".lower()
+    if "insufficient_quota" in normalized or "free tier" in normalized:
+        return (
+            "大模型免费额度已耗尽。请到阿里云百炼/模型服务控制台关闭“仅使用免费额度”模式，"
+            "开通付费调用或切换到仍有额度的模型/API Key 后重试。"
+        )
+
+    if status in (401, 403):
+        return f"大模型接口鉴权或权限失败（HTTP {status}）：{message or '请检查 API Key、工作空间地址和模型权限'}"
+
+    return f"大模型接口请求失败（HTTP {status}）：{message or raw_body[:300]}"
 
 
 def _recognize_single_image(args):
     """识别单张图片的辅助函数（用于并发）"""
-    idx, img_path, api_url, api_key, model = args
-    
+    idx, img_path, api_url, api_key, model, max_tokens = args
+
     if not os.path.exists(img_path):
         return idx, ""
-    
+
     try:
         with open(img_path, "rb") as f:
             b64_image = base64.b64encode(f.read()).decode('utf-8')
-        
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}"
         }
-        
+
         payload = {
             "model": model,
             "messages": [
@@ -36,31 +373,31 @@ def _recognize_single_image(args):
                     "role": "user",
                     "content": [
                         {
-                            "type": "text", 
-                            "text": f"请详细识别这张驾校培训合同的第{idx}页内容。保持原有的段落和表格结构，不要遗漏任何文字。"
+                            "type": "text",
+                            "text": f"请详细识别这张驾校培训合同的第{idx}页。要求：\n1. 识别所有印刷文字，保持段落和表格结构\n2. **特别注意手写内容**（金额、签名、日期、备注、修改等），逐字识别\n3. 不要遗漏任何文字，包括页眉页脚、表格内文字、印章文字\n4. 手写内容用【手写】标记"
                         },
                         {
-                            "type": "image_url", 
+                            "type": "image_url",
                             "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
                         }
                     ]
                 }
             ],
-            "max_tokens": 2000
+            "max_tokens": max_tokens
         }
-        
-        resp = requests.post(api_url, headers=headers, json=payload, timeout=60, verify=False)
+
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
         result = resp.json()
-        
+
         if "choices" in result and len(result["choices"]) > 0:
             text = result["choices"][0]["message"]["content"]
-            print(f"✅ 第{idx}页识别完成 ({len(text)} 字符)")
+            system_logger.info("✅ 第%d页识别完成 (%d 字符)", idx, len(text))
             return idx, text
         else:
-            print(f"⚠️ 第{idx}页识别失败: {result}")
+            system_logger.warning("⚠️ 第%d页识别失败: %s", idx, result)
             return idx, ""
     except Exception as e:
-        print(f"⚠️ 第{idx}页请求异常: {e}")
+        system_logger.warning("⚠️ 第%d页请求异常: %s", idx, e)
         return idx, ""
 
 
@@ -69,55 +406,59 @@ def extract_contract_text_vision(image_paths: list) -> str:
     使用 Qwen-VL Vision API 并发识别多张合同图片
     返回拼接后的完整合同文本
     """
-    cfg = load_config()
-    api_url = cfg["llm"]["api_url"]
-    api_key = cfg["llm"]["api_key"]
-    model = cfg["llm"]["model"]
+    llm = _llm_config("llm_contract_vision")
+    api_url = llm.get("api_url", "")
+    api_key = llm.get("api_key", "")
+    model = llm.get("model", "")
+    max_tokens = int(llm.get("max_tokens", 2000) or 2000)
 
     if not image_paths:
         return ""
-    
+    if not api_url or not api_key or not model:
+        system_logger.warning("[VISION] 未配置视觉模型，跳过远程识别并回退本地 OCR")
+        return ""
+
     # ── 压缩图片以减少 Token 消耗 ──
     try:
         from services.image_compressor import compress_for_vision_api
         compressed_paths = compress_for_vision_api(image_paths)
     except Exception as e:
-        print(f"[COMPRESS WARNING] 压缩失败，使用原图: {e}")
+        system_logger.warning("[COMPRESS WARNING] 压缩失败，使用原图: %s", e)
         compressed_paths = image_paths
-    
-    print(f"[VISION] 并发识别 {len(compressed_paths)} 张图片...")
-    
+
+    system_logger.info("[VISION] 并发识别 %d 张图片...", len(compressed_paths))
+
     # ── 并发识别所有图片 ──
     all_texts = [""] * len(compressed_paths)
-    
+
     with ThreadPoolExecutor(max_workers=min(len(compressed_paths), 3)) as executor:
         futures = {
-            executor.submit(_recognize_single_image, (i+1, path, api_url, api_key, model)): i 
+            executor.submit(_recognize_single_image, (i+1, path, api_url, api_key, model, max_tokens)): i
             for i, path in enumerate(compressed_paths)
         }
-        
+
         for future in as_completed(futures):
             idx, text = future.result()
             if text:
                 all_texts[idx-1] = text
-    
+
     all_texts = [t for t in all_texts if t]
-    print(f"[VISION] 识别完成: {len(all_texts)}/{len(compressed_paths)} 页成功")
-    
+    system_logger.info("[VISION] 识别完成: %d/%d 页成功", len(all_texts), len(compressed_paths))
+
     return "\n\n--- 下一页 ---\n\n".join(all_texts)
 
 
 def _extract_penalty_rate(text: str) -> float:
     """从合同文本中提取违约金比例"""
     if not text:
-        return 0.20
-    
+        return 0
+
     patterns = [
         r'违约金.*?([\d]+)\s*%',
         r'([\d]+)\s*%\s*违约金',
         r'百分之([一二三四五六七八九十]+)',
     ]
-    
+
     for pattern in patterns:
         match = re.search(pattern, text)
         if match:
@@ -130,98 +471,636 @@ def _extract_penalty_rate(text: str) -> float:
                 return int(num_str) / 100
             except:
                 pass
-    
+
     if re.search(r'无违约金|不收取违约金|不扣违约金|没有违约金', text):
         return 0
-    
-    return 0.20
+
+    return 0
 
 
-def _parse_ai_response(content: str, exam_counts: dict = None) -> dict:
-    """解析 AI 返回的自然语言，提取结构化数据"""
+def _money(pattern: str, text: str) -> float:
+    match = re.search(pattern, text, re.S)
+    if not match:
+        return 0
+    try:
+        return float(str(match.group(1)).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _first_money(text: str, patterns: list[str]) -> float:
+    for pattern in patterns:
+        value = _money(pattern, text)
+        if value > 0:
+            return value
+    return 0
+
+
+def _extract_standard_contract_data(text: str) -> dict:
+    """从东莞驾培标准合同文本层直接提取费用结构，成功则无需调用大模型。"""
+    normalized = _compact_spaced_digits(_normalize_text(text))
+    contract_code_match = re.search(r"合同(?:编号|编码)[:：]?\s*([A-Z0-9]+)", normalized)
+    total_fee = _first_money(normalized, [
+        r"培训费用合计人民币\s*([\d.]+)\s*元",
+        r"培训服务费合计\s*([\d.]+)\s*元",
+    ])
+    service_fee = _first_money(normalized, [
+        r"综合服务费\s*([\d.]+)\s*元",
+        r"综合服务费(?:（[^）]*）)?\s*([\d.]+)\s*元",
+    ])
+    theory_fee = _first_money(normalized, [
+        r"理论培训费\s*([\d.]+)\s*元",
+        r"理论培训费(?:（[^）]*）)?\s*([\d.]+)\s*元",
+    ])
+    subject2_fee = _first_money(normalized, [
+        r"科目二实际操作培训费人民币\s*([\d.]+)\s*元",
+        r"第二部分基础和场地驾驶培训费\s*([\d.]+)\s*元",
+    ])
+    subject3_fee = _first_money(normalized, [
+        r"科目三实际操作培训费人民币\s*([\d.]+)\s*元",
+        r"第三部分道路驾驶培训费\s*([\d.]+)\s*元",
+    ])
+    subject2_unit = _first_money(normalized, [
+        r"科目二实际操作培训费人民币\s*[\d.]+\s*元（学时单价为\s*([\d.]+)\s*元/学时",
+        r"第二部分基础和场地驾驶培训费\s*[\d.]+\s*元，退学退费时折算\s*学时单价\s*([\d.]+)\s*元/学时",
+    ])
+    subject3_unit = _first_money(normalized, [
+        r"科目三实际操作培训费人民币\s*[\d.]+\s*元（学时单价为\s*([\d.]+)\s*元/学时",
+        r"第三部分道路驾驶培训费\s*[\d.]+\s*元(?:（[^）]*）)?，\s*退学退费时折算\s*学时单价\s*([\d.]+)\s*元/学时",
+    ])
+
+    if total_fee <= 0 or service_fee <= 0 or theory_fee <= 0:
+        return {}
+
+    return {
+        "contract_code": contract_code_match.group(1) if contract_code_match else "",
+        "signing_date": "",
+        "total_fee": total_fee,
+        "actual_paid": total_fee,
+        "penalty_rate": _extract_penalty_rate(normalized),
+        "includes_exam_fee": False,
+        "includes_makeup_fee": False,
+        "exam_fee_table": {},
+        "makeup_fee_table": {},
+        "training_fees": {
+            "subject2": {"unit_price": subject2_unit, "cap": subject2_fee},
+            "subject3": {"unit_price": subject3_unit, "cap": subject3_fee},
+        },
+        "clauses_summary": [
+            {"number": "第三条", "summary": "培训费用及学时单价"},
+            {"number": "第七条", "summary": "退学退费扣费规则"},
+        ],
+        "handwritten_annotations": [],
+        "deduction_items": [
+            {"item": "综合服务费", "amount": service_fee, "basis": "合同第三条及第七条：已在平台备案注册的综合服务费按100%扣除"},
+            {"item": "理论培训费", "amount": theory_fee, "basis": "合同第三条及第七条：已发计时IC卡的理论培训费按全额计算"},
+        ],
+        "special_terms": ["本合同不含体检、考前适应性训练、考试及补考费用"],
+    }
+
+
+def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_candidate") -> dict:
+    """Turn extracted contract facts into rules while excluding AI-calculated exam amounts."""
+    total_fee = _as_float(data.get("total_fee", 0))
+    rules = []
+    for item in data.get("deduction_items", []):
+        amount = _as_float(item.get("amount", 0))
+        name = str(item.get("item") or "")
+        dynamic_keywords = ("违约金", "考试费", "补考费", "工本费", "实操", "科目一", "科目二", "科目三")
+        if amount > 0 and not any(keyword in name for keyword in dynamic_keywords):
+            rules.append({
+                "type": "fixed",
+                "item": name or "合同固定费用",
+                "amount": amount,
+                "clause": str(item.get("basis") or "合同退费条款"),
+            })
+    # 违约金：统一为固定金额（元）。优先取 deduction_items 里的违约金金额；
+    # 若仅有比例（penalty_rate），按合同总额折算成金额。
+    penalty_amount = 0.0
+    for item in data.get("deduction_items", []):
+        if "违约金" in str(item.get("item") or ""):
+            penalty_amount = _as_float(item.get("amount", 0))
+            break
+    penalty_rate = _as_float(data.get("penalty_rate", 0))
+    if penalty_rate > 0:
+        if penalty_rate <= 1:
+            penalty_rate *= 100
+        if penalty_amount <= 0 and total_fee > 0:
+            penalty_amount = round(total_fee * penalty_rate / 100, 2)
+    if penalty_amount > 0:
+        rules.append({
+            "type": "fixed_penalty",
+            "item": "违约金",
+            "amount": penalty_amount,
+            "clause": "合同退费违约金条款",
+        })
+
+    for subject_key, subject_label in (("subject2", "科目二"), ("subject3", "科目三")):
+        fee = (data.get("training_fees") or {}).get(subject_key, {})
+        unit_price = _as_float(fee.get("unit_price", 0))
+        cap = _as_float(fee.get("cap", 0))
+        if unit_price > 0:
+            rules.append({
+                "type": "training_hour_fee",
+                "item": f"{subject_label}实操培训费",
+                "subject": subject_label,
+                "hourly_rate": unit_price,
+                "max_amount": cap if cap > 0 else None,
+                "clause": "合同退费实操培训费条款",
+            })
+
+    # 考试费 / 补考费：金额来自 AI 提取的合同考试费表（或人工补录），次数由规则引擎从内部系统考试次数计算
+    includes_exam = bool(data.get("includes_exam_fee", True))
+    includes_makeup = bool(data.get("includes_makeup_fee", True))
+    exam_table = data.get("exam_fee_table") or {}
+    makeup_table = data.get("makeup_fee_table") or {}
+    for subject_key, subject_label in (("subject1", "科目一"), ("subject2", "科目二"), ("subject3", "科目三")):
+        exam_fee = _as_float(exam_table.get(subject_key, 0))
+        if includes_exam and exam_fee > 0:
+            rules.append({
+                "type": "exam_fee",
+                "item": f"{subject_label}考试费",
+                "subject": subject_label,
+                "amount": exam_fee,
+                "clause": "合同退费考试费条款",
+            })
+        makeup_fee = _as_float(makeup_table.get(subject_key, 0))
+        if includes_makeup and makeup_fee > 0:
+            rules.append({
+                "type": "makeup_fee",
+                "item": f"{subject_label}补考费",
+                "subject": subject_label,
+                "amount": makeup_fee,
+                "clause": "合同退费补考费条款",
+            })
+    return {
+        "contracts": [{
+            "contract_id": str(data.get("contract_code") or "extracted-contract"),
+            "title": "东莞驾培电子合同" if source == "local_rules" else "待人工确认合同",
+            "total_fee": total_fee,
+            "evidence": {"file": source_file, "source": source},
+            "rules": rules,
+        }],
+    }
+
+
+def contract_set_from_standard_data(data: dict, source_file: str) -> dict:
+    """Convert deterministic PDF facts into the rule engine's canonical input."""
+    return contract_set_from_ai_data(data, source_file, source="local_rules")
+
+
+def contract_set_from_ai_response(content: str, source_file: str) -> dict:
+    """Decode the structured candidate response without trusting its calculated totals."""
+    json_str = (content or "").strip()
+    if "```json" in json_str:
+        json_str = json_str.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in json_str:
+        json_str = json_str.split("```", 1)[1].split("```", 1)[0].strip()
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", json_str, re.DOTALL)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+    return contract_set_from_ai_data(data, source_file) if isinstance(data, dict) else {}
+
+
+def _as_float(value, default: float = 0) -> float:
+    try:
+        return float(str(value).replace(",", "").replace("元", "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _reviewed_value(fields: dict, name: str, default=0):
+    value = (fields or {}).get(name, default)
+    if isinstance(value, dict):
+        value = value.get("value", default)
+    return value
+
+
+def contract_set_from_reviewed_fields(
+    fields: dict,
+    source_file: str,
+    contract_code: str = "",
+    evidence: dict | None = None,
+) -> dict:
+    """Convert human-reviewed contract facts into canonical dynamic refund rules."""
+    if not isinstance(fields, dict):
+        raise ValueError("contract_fields must be an object")
+    total_fee = _as_float(_reviewed_value(fields, "total_fee"))
+    refund_clause = str(_reviewed_value(fields, "refund_clause", "") or "").strip()
+    if total_fee <= 0:
+        raise ValueError("合同总培训费必须大于0")
+    if not refund_clause:
+        raise ValueError("退费条款不能为空")
+
+    contract_evidence = dict(evidence or {})
+    contract_evidence.setdefault("file", source_file)
+    contract_evidence.setdefault("source", "human_review")
+    rules = []
+
+    for key, item in (
+        ("service_fee", "服务费"),
+        ("archive_fee", "建档费"),
+        ("ic_card_fee", "学员IC卡费"),
+        ("theory_fee", "理论培训费"),
+    ):
+        amount = _as_float(_reviewed_value(fields, key))
+        if amount > 0:
+            rules.append({
+                "type": "fixed",
+                "item": item,
+                "amount": amount,
+                "clause": refund_clause,
+            })
+
+    includes_exam = bool(_reviewed_value(fields, "includes_exam_fee", True))
+    includes_makeup = bool(_reviewed_value(fields, "includes_makeup_fee", True))
+    for subject_key, subject_name in (("subject1", "科目一"), ("subject2", "科目二"), ("subject3", "科目三")):
+        exam_fee = _as_float(_reviewed_value(fields, f"{subject_key}_exam_fee"))
+        makeup_fee = _as_float(_reviewed_value(fields, f"{subject_key}_makeup_fee"))
+        if includes_exam and exam_fee > 0:
+            rules.append({
+                "type": "exam_fee",
+                "item": f"{subject_name}考试费",
+                "subject": subject_name,
+                "amount": exam_fee,
+                "clause": refund_clause,
+            })
+        if includes_makeup and makeup_fee > 0:
+            rules.append({
+                "type": "makeup_fee",
+                "item": f"{subject_name}补考费",
+                "subject": subject_name,
+                "amount": makeup_fee,
+                "clause": refund_clause,
+            })
+
+    for subject_key, subject_name in (("subject2", "科目二"), ("subject3", "科目三")):
+        rate = _as_float(_reviewed_value(fields, f"{subject_key}_unit_price"))
+        cap = _as_float(_reviewed_value(fields, f"{subject_key}_cap"))
+        if rate > 0:
+            rule = {
+                "type": "training_hour_fee",
+                "item": f"{subject_name}实操培训费",
+                "subject": subject_name,
+                "hourly_rate": rate,
+                "clause": refund_clause,
+            }
+            if cap > 0:
+                rule["max_amount"] = cap
+            rules.append(rule)
+
+    license_fee = _as_float(_reviewed_value(fields, "license_fee"))
+    if license_fee > 0:
+        rules.append({
+            "type": "stage_fee",
+            "item": "驾驶证工本费",
+            "stage": 4,
+            "amount": license_fee,
+            "clause": refund_clause,
+        })
+
+    penalty_amount = _as_float(_reviewed_value(fields, "penalty_amount"))
+    if penalty_amount <= 0:
+        # 兼容旧字段 penalty_rate（百分比）：按合同总额折算成固定金额
+        penalty_rate = _as_float(_reviewed_value(fields, "penalty_rate"))
+        if 0 < penalty_rate <= 1:
+            penalty_rate *= 100
+        if penalty_rate > 0 and total_fee > 0:
+            penalty_amount = round(total_fee * penalty_rate / 100, 2)
+    if penalty_amount > 0:
+        rules.append({
+            "type": "fixed_penalty",
+            "item": "违约金",
+            "amount": penalty_amount,
+            "clause": refund_clause,
+        })
+
+    return {
+        "contracts": [{
+            "contract_id": str(contract_code or "reviewed-paper-contract"),
+            "title": "人工核对纸质培训合同",
+            "total_fee": total_fee,
+            "evidence": contract_evidence,
+            "rules": rules,
+        }],
+    }
+
+
+def _deduction_amount(deduction_items: list, keywords: tuple[str, ...]) -> float:
+    for item in deduction_items or []:
+        name = str(item.get("item", ""))
+        if any(keyword in name for keyword in keywords):
+            return _as_float(item.get("amount", 0))
+    return 0
+
+
+def _contract_field(value, source: str = "contract", evidence: str = "") -> dict:
+    return {
+        "value": value,
+        "source": source,
+        "evidence": evidence,
+    }
+
+
+def _build_contract_fields(data: dict, result: dict) -> dict:
+    """给前端字段确认页使用的规范化合同字段。"""
+    deduction_items = data.get("deduction_items", []) if isinstance(data, dict) else []
+    training_fees = data.get("training_fees", {}) if isinstance(data, dict) else {}
+    subject2 = training_fees.get("subject2", {}) if isinstance(training_fees, dict) else {}
+    subject3 = training_fees.get("subject3", {}) if isinstance(training_fees, dict) else {}
+    exam_fee_table = data.get("exam_fee_table", {}) if isinstance(data, dict) else {}
+    makeup_fee_table = data.get("makeup_fee_table", {}) if isinstance(data, dict) else {}
+    clauses = data.get("clauses_summary", data.get("clauses", [])) if isinstance(data, dict) else []
+    special_terms = data.get("special_terms", []) if isinstance(data, dict) else []
+    refund_clause = ""
+    evidence_snippets = []
+
+    for clause in clauses or []:
+        if isinstance(clause, dict):
+            text = f"{clause.get('number', '')} {clause.get('summary', '')}".strip()
+        else:
+            text = str(clause)
+        if text:
+            evidence_snippets.append(text)
+        if not refund_clause and re.search(r"(退费|退学|解除|违约)", text):
+            refund_clause = text
+
+    for term in special_terms or []:
+        term_text = str(term)
+        if term_text:
+            evidence_snippets.append(term_text)
+
+    return {
+        "status": "draft",
+        "total_fee": _contract_field(result.get("total_fee", 0), "contract", "合同总培训费"),
+        "service_fee": _contract_field(_deduction_amount(deduction_items, ("综合服务费", "服务费")), "contract", "固定扣费项目"),
+        "archive_fee": _contract_field(_deduction_amount(deduction_items, ("建档费", "档案费")), "contract", "固定扣费项目"),
+        "ic_card_fee": _contract_field(_deduction_amount(deduction_items, ("IC卡费", "学员IC卡")), "contract", "固定扣费项目"),
+        "theory_fee": _contract_field(_deduction_amount(deduction_items, ("理论培训费", "理论费")), "contract", "固定扣费项目"),
+        "subject2_unit_price": _contract_field(_as_float(subject2.get("unit_price", 0)), "contract", "科目二学时单价"),
+        "subject2_cap": _contract_field(_as_float(subject2.get("cap", 0)), "contract", "科目二扣费上限"),
+        "subject3_unit_price": _contract_field(_as_float(subject3.get("unit_price", 0)), "contract", "科目三学时单价"),
+        "subject3_cap": _contract_field(_as_float(subject3.get("cap", 0)), "contract", "科目三扣费上限"),
+        "penalty_amount": _contract_field(
+            _deduction_amount(result.get("deductions", []), ("违约金",))
+            or _deduction_amount(deduction_items, ("违约金",)),
+            "contract", "违约金金额（元）"),
+        "includes_exam_fee": _contract_field(bool(result.get("includes_exam_fee", True)), "contract", "考试费是否包含在合同总培训费内"),
+        "includes_makeup_fee": _contract_field(bool(result.get("includes_makeup_fee", True)), "contract", "补考费是否包含在合同总培训费内"),
+        "subject1_exam_fee": _contract_field(_as_float(exam_fee_table.get("subject1", 0)), "contract", "科目一考试费"),
+        "subject2_exam_fee": _contract_field(_as_float(exam_fee_table.get("subject2", 0)), "contract", "科目二考试费"),
+        "subject3_exam_fee": _contract_field(_as_float(exam_fee_table.get("subject3", 0)), "contract", "科目三考试费"),
+        "license_fee": _contract_field(_as_float(exam_fee_table.get("license", 0)), "contract", "工本费"),
+        "subject1_makeup_fee": _contract_field(_as_float(makeup_fee_table.get("subject1", 0)), "contract", "科目一补考费"),
+        "subject2_makeup_fee": _contract_field(_as_float(makeup_fee_table.get("subject2", 0)), "contract", "科目二补考费"),
+        "subject3_makeup_fee": _contract_field(_as_float(makeup_fee_table.get("subject3", 0)), "contract", "科目三补考费"),
+        "refund_clause": _contract_field(refund_clause, "contract_clause", "退费/退学/违约相关条款"),
+        "uncertain_fields": [],
+        "blockers": [],
+        "evidence_snippets": evidence_snippets[:6],
+    }
+
+
+def _attach_extraction_review(result: dict, extraction: dict) -> dict:
+    fields = result.get("contract_fields") or _build_contract_fields({}, result)
+    fields["status"] = extraction.get("fee_plan_status", "draft")
+    fields["uncertain_fields"] = extraction.get("unclear_fields", [])
+    fields["blockers"] = extraction.get("blockers", [])
+    fields["extraction_source"] = extraction.get("extraction_source") or extraction.get("source", "")
+    result["contract_fields"] = fields
+    return result
+
+
+def _build_llm_contract_context(contract_text: str) -> str:
+    """只发送费用和退费相关条款，减少模型延迟和超时概率。"""
+    normalized = _normalize_text(contract_text)
+    snippets = []
+    for pattern in ("培训收费约定", "培训费用合计", "退学退费相关约定", "违约金", "第七条", "第九条"):
+        idx = normalized.find(pattern)
+        if idx >= 0:
+            start = max(0, idx - 260)
+            end = min(len(normalized), idx + 1400)
+            snippet = normalized[start:end]
+            if snippet not in snippets:
+                snippets.append(snippet)
+    if not snippets:
+        return normalized[:5000]
+    return "\n\n--- 相关条款 ---\n\n".join(snippets)[:6000]
+
+
+def _parse_hours(hours_str: str) -> float:
+    """将 '12时36分' 格式转为十进制小时数"""
+    if not hours_str:
+        return 0
+    hours = 0
+    m = re.search(r'(\d+(?:\.\d+)?)\s*时', hours_str)
+    if m:
+        hours += float(m.group(1))
+    m = re.search(r'(\d+)\s*分', hours_str)
+    if m:
+        hours += int(m.group(1)) / 60
+    return round(hours, 2)
+
+
+def _bool_from_contract(value, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("true", "1", "yes", "y", "是", "含", "包含", "包括"):
+        return True
+    if text in ("false", "0", "no", "n", "否", "不含", "不包含", "另收"):
+        return False
+    return default
+
+
+def _exam_count(exam_counts: dict, subject: str) -> int:
+    if not exam_counts:
+        return 0
+    aliases = {
+        "subject1": ("科目一", "科一", "subject1", "k1"),
+        "subject2": ("科目二", "科二", "subject2", "k2"),
+        "subject3": ("科目三", "科三", "subject3", "k3"),
+    }.get(subject, ())
+    for key in aliases:
+        if key in exam_counts:
+            try:
+                return max(0, int(float(exam_counts.get(key) or 0)))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _parse_ai_response(content: str, exam_counts: dict = None, training_hours: dict = None) -> dict:
+    """解析 AI 返回的 JSON，提取结构化数据"""
     result = {
         "total_fee": 0,
         "actual_paid": 0,
         "contract_code": "",
-        "penalty_rate": 0.20,
+        "penalty_rate": 0,
         "deductions": [],
         "total_deduction": 0,
         "refund": 0,
         "summary": "",
+        "clauses": [],
+        "handwritten_annotations": [],
+        "special_terms": [],
+        "includes_exam_fee": True,
+        "includes_makeup_fee": True,
+        "exam_fee_table": {},
+        "makeup_fee_table": {},
         "raw_analysis": content,
     }
-    
-    # 提取合同编号
-    code_match = re.search(r'合同编号[：:]\s*([A-Za-z0-9\-]+)', content)
-    if code_match:
-        result["contract_code"] = code_match.group(1)
-    
-    # 提取培训费总额
-    fee_patterns = [
-        r'培训费总额[：:]\s*([\d,]+)',
-        r'合同标价[：:]\s*([\d,]+)',
-        r'总培训费[：:]\s*([\d,]+)',
-    ]
-    for pattern in fee_patterns:
-        match = re.search(pattern, content)
-        if match:
-            result["total_fee"] = float(match.group(1).replace(',', ''))
-            break
-    
-    # 提取实际已交金额
-    paid_patterns = [
-        r'实际已交金额[：:]\s*([\d,]+)',
-        r'首付款[：:]\s*([\d,]+)',
-        r'已付金额[：:]\s*([\d,]+)',
-    ]
-    for pattern in paid_patterns:
-        match = re.search(pattern, content)
-        if match:
-            result["actual_paid"] = float(match.group(1).replace(',', ''))
-            break
-    
-    if result["actual_paid"] == 0:
-        result["actual_paid"] = result["total_fee"]
-    
-    # 提取违约金比例
-    result["penalty_rate"] = _extract_penalty_rate(content)
-    
-    # 提取扣费项目
-    seen_items = set()
-    deduction_patterns = [
-        (r'综合服务费[：:]\s*([\d,]+)', '综合服务费'),
-        (r'建档费[：:]\s*([\d,]+)', '建档费'),
-        (r'IC卡费[：:]\s*([\d,]+)', 'IC卡费'),
-        (r'理论培训费[：:]\s*([\d,]+)', '理论培训费'),
-    ]
-    
-    for pattern, item_name in deduction_patterns:
-        match = re.search(pattern, content)
-        if match and item_name not in seen_items:
-            amount = float(match.group(1).replace(',', ''))
-            if amount > 0:
+
+    # Try to extract JSON from the response (handle possible markdown wrapping)
+    json_str = content.strip()
+    if "```json" in json_str:
+        json_str = json_str.split("```json")[1].split("```")[0].strip()
+    elif "```" in json_str:
+        json_str = json_str.split("```")[1].split("```")[0].strip()
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError:
+        # Fallback: try to find JSON object with braces
+        brace_match = re.search(r'\{.*\}', json_str, re.DOTALL)
+        if brace_match:
+            try:
+                data = json.loads(brace_match.group(0))
+            except json.JSONDecodeError:
+                data = {}
+        else:
+            data = {}
+
+    if not data:
+        return result
+
+    result["contract_code"] = data.get("contract_code", "")
+    result["total_fee"] = float(data.get("total_fee", 0) or 0)
+    result["actual_paid"] = result["total_fee"]
+
+    penalty = data.get("penalty_rate", 0)
+    penalty = float(penalty) if penalty else 0
+    if penalty > 1:
+        penalty /= 100  # LLM 返回整数 10 而非小数 0.10
+    result["penalty_rate"] = penalty
+
+    result["clauses"] = data.get("clauses_summary", data.get("clauses", []))
+    result["handwritten_annotations"] = data.get("handwritten_annotations", [])
+    result["special_terms"] = data.get("special_terms", [])
+    result["includes_exam_fee"] = _bool_from_contract(data.get("includes_exam_fee"), True)
+    result["includes_makeup_fee"] = _bool_from_contract(data.get("includes_makeup_fee"), True)
+    result["exam_fee_table"] = data.get("exam_fee_table", {}) if isinstance(data.get("exam_fee_table", {}), dict) else {}
+    result["makeup_fee_table"] = data.get("makeup_fee_table", {}) if isinstance(data.get("makeup_fee_table", {}), dict) else {}
+
+    # Extract deductions from JSON or compute
+    deduction_items = data.get("deduction_items", [])
+    if deduction_items:
+        for item in deduction_items:
+            amt = float(item.get("amount", 0) or 0)
+            if amt > 0:
+                # 这些项目必须由规则引擎基于合同字段和三系统进度计算，不能直接采用模型金额。
+                name = item.get("item", "")
+                skip_keywords = [
+                    "违约金", "考试费", "补考费", "工本费",
+                    "科目一", "科目二", "科目三", "实操", "场地驾驶", "道路驾驶",
+                ]
+                if any(k in name for k in skip_keywords):
+                    continue
                 result["deductions"].append({
-                    "item": item_name,
+                    "item": name,
+                    "amount": amt,
+                    "reason": item.get("basis", ""),
+                })
+                result["total_deduction"] += amt
+
+    # 从违约金比例计算违约金（如果尚未包含在 deduction_items 中）
+    penalty_rate = result["penalty_rate"]
+    if penalty_rate > 0 and result["total_fee"] > 0:
+        has_penalty = any("违约金" in d.get("item", "") for d in result["deductions"])
+        if not has_penalty:
+            penalty_amount = round(result["total_fee"] * penalty_rate, 2)
+            result["deductions"].append({
+                "item": "违约金",
+                "amount": penalty_amount,
+                "penalty_rate": penalty_rate,
+                "reason": f"违约金={result['total_fee']}×{penalty_rate*100}%={penalty_amount}元",
+            })
+            result["total_deduction"] += penalty_amount
+
+    if result["includes_exam_fee"] and result["exam_fee_table"] and exam_counts:
+        for subject_key, subject_label in [("subject1", "科目一"), ("subject2", "科目二"), ("subject3", "科目三")]:
+            count = _exam_count(exam_counts, subject_key)
+            exam_fee = _as_float(result["exam_fee_table"].get(subject_key, 0))
+            if count > 0 and exam_fee > 0:
+                result["deductions"].append({
+                    "item": f"{subject_label}考试费",
+                    "amount": exam_fee,
+                    "exam_count": count,
+                    "reason": f"三系统显示{subject_label}考试{count}次，合同考试费{exam_fee}元",
+                })
+                result["total_deduction"] += exam_fee
+
+            makeup_fee = _as_float(result["makeup_fee_table"].get(subject_key, 0))
+            makeup_count = max(0, count - 1)
+            if result["includes_makeup_fee"] and makeup_count > 0 and makeup_fee > 0:
+                amount = round(makeup_count * makeup_fee, 2)
+                result["deductions"].append({
+                    "item": f"{subject_label}补考费",
                     "amount": amount,
-                    "reason": f"合同约定的{item_name}",
+                    "exam_count": count,
+                    "makeup_count": makeup_count,
+                    "reason": f"三系统显示{subject_label}补考{makeup_count}次，合同补考费{makeup_fee}元/次",
                 })
                 result["total_deduction"] += amount
-                seen_items.add(item_name)
-    
-    # 计算违约金
-    if result["penalty_rate"] > 0 and result["total_fee"] > 0:
-        penalty_amount = round(result["total_fee"] * result["penalty_rate"], 2)
-        result["deductions"].append({
-            "item": "违约金",
-            "amount": penalty_amount,
-            "reason": f"违约金={result['total_fee']}×{result['penalty_rate']*100}%={penalty_amount}元",
-        })
-        result["total_deduction"] += penalty_amount
-    
-    # 计算应退金额
+
+    # ── 实操培训费：用第三系统实际学时 × 合同单价 ──
+    training_fees = data.get("training_fees", {})
+    if training_hours and training_fees:
+        for subject_key, subject_label in [("subject2", "科目二"), ("subject3", "科目三")]:
+            fee_info = training_fees.get(subject_key, {})
+            unit_price = float(fee_info.get("unit_price", 0) or 0)
+            cap = float(fee_info.get("cap", 0) or 0)
+            if unit_price <= 0:
+                continue
+            # 找对应的培训学时
+            hours_str = ""
+            if subject_label in training_hours:
+                hours_str = training_hours[subject_label]
+            elif "二" in str(training_hours) and subject_key == "subject2":
+                hours_str = training_hours.get(list(training_hours.keys())[0], "")
+            hours_val = _parse_hours(hours_str)
+            if hours_val <= 0:
+                continue
+            calculated = round(hours_val * unit_price, 2)
+            if cap > 0 and calculated > cap:
+                calculated = cap
+            raw_calc = round(hours_val * unit_price, 2)
+            is_capped = cap > 0 and raw_calc > cap
+            result["deductions"].append({
+                "item": f"{subject_label}实操费",
+                "amount": calculated,
+                "duration": hours_str,
+                "unit_price": f"{unit_price}元/学时",
+                "max_amount": cap if is_capped else 0,
+                "raw_amount": raw_calc if is_capped else 0,
+                "reason": f"{hours_val}学时×{unit_price}元/学时{'，已超合同科目上限'+str(cap)+'元' if is_capped else ''}",
+            })
+            result["total_deduction"] += calculated
+
+    # 封顶：总扣费不超过总培训费
+    if result["total_fee"] > 0 and result["total_deduction"] > result["total_fee"]:
+        result["total_deduction"] = result["total_fee"]
+
     result["refund"] = max(0, result["actual_paid"] - result["total_deduction"])
-    
-    # 生成 summary
     result["summary"] = (
         f"合同金额{result['total_fee']}元，"
         f"实际已交{result['actual_paid']}元，"
@@ -229,7 +1108,47 @@ def _parse_ai_response(content: str, exam_counts: dict = None) -> dict:
         f"总扣费{result['total_deduction']}元，"
         f"应退{result['refund']}元"
     )
-    
+    result["contract_fields"] = _build_contract_fields(data, result)
+
+    return result
+
+
+def apply_authoritative_total_fee(result: dict, contract_fee: float) -> dict:
+    """东莞驾培 contract_fee 是权威合同金额：覆盖 AI/规则解析结果并重算扣费与应退。
+
+    AI/规则结果仅作校验对比。违约金按权威金额重算，总扣费封顶、应退金额与摘要同步更新。
+    """
+    if result.get("error") or not contract_fee or contract_fee <= 0:
+        return result
+
+    result["total_fee"] = contract_fee
+    result["actual_paid"] = contract_fee
+
+    penalty_rate = result.get("penalty_rate", 0) or 0
+    for deduction in result.get("deductions", []):
+        if "违约金" in deduction.get("item", ""):
+            amount = round(contract_fee * penalty_rate, 2)
+            deduction["amount"] = amount
+            deduction["reason"] = f"违约金={contract_fee}×{penalty_rate*100}%={amount}元"
+
+    result["total_deduction"] = round(
+        sum(float(d.get("amount", 0) or 0) for d in result.get("deductions", [])), 2
+    )
+    if result["total_deduction"] > contract_fee:
+        result["total_deduction"] = contract_fee
+    result["refund"] = max(0, round(result["actual_paid"] - result["total_deduction"], 2))
+    result["summary"] = (
+        f"合同金额{result['total_fee']}元，"
+        f"实际已交{result['actual_paid']}元，"
+        f"违约金比例{penalty_rate*100}%，"
+        f"总扣费{result['total_deduction']}元，"
+        f"应退{result['refund']}元"
+    )
+
+    total_field = result.get("contract_fields", {}).get("total_fee")
+    if isinstance(total_field, dict):
+        total_field["value"] = contract_fee
+
     return result
 
 
@@ -241,15 +1160,16 @@ def analyze_contract(
     exam_counts: dict = None,
 ) -> dict:
     """调用大模型分析合同文本"""
-    config = load_config()
-    llm = config.get("llm", {})
+    llm = _llm_config("llm_contract_text")
 
     api_url = llm.get("api_url", "").strip()
     api_key = llm.get("api_key", "").strip()
     model = llm.get("model", "").strip()
 
     if not api_url or not api_key or not model:
-        return {"error": "大模型API未配置"}
+        return {
+            "error": "大模型 API 未配置：请到「系统设置 → AI大模型配置」填写 API地址、API Key 和 模型名称后重试。"
+        }
 
     hours_desc = ""
     if training_hours:
@@ -261,24 +1181,54 @@ def analyze_contract(
         for subj, cnt in exam_counts.items():
             exam_counts_desc += f"{subj}：{cnt}次；"
 
+    contract_context = _build_llm_contract_context(contract_text)
+
     prompt = (
-        "请分析这份驾校培训合同，提取以下信息：\n"
+        "你是一名驾校合同审查专家。请分析以下驾校培训合同，\n"
+        "输出 **纯 JSON**（不要包含任何其他文字）：\n"
         "\n"
-        "1. 合同编号、签订日期\n"
-        "2. 培训费总额（合同标价）\n"
-        "3. 学员实际已交金额（看手写'首付款'等标注）\n"
-        "4. 退学退费条款（违约金比例）\n"
-        "5. 扣费项目及金额（综合服务费、建档费、IC卡费等）\n"
+        "```json\n"
+        "{\n"
+        '  "contract_code": "合同编号",\n'
+        '  "signing_date": "签订日期",\n'
+        '  "total_fee": 培训费总金额（数字）,\n'
+        '  "actual_paid": 学员实际已交金额（数字，与总金额相同则填总金额）,\n'
+        '  "penalty_rate": 违约金比例（小数，如10%填0.1）,\n'
+        '  "includes_exam_fee": 培训费是否含考试费（true/false，无法确认默认true）,\n'
+        '  "includes_makeup_fee": 培训费是否含补考费（true/false，无法确认默认true）,\n'
+        '  "exam_fee_table": {"subject1": 科目一考试费, "subject2": 科目二考试费, "subject3": 科目三考试费, "license": 工本费},\n'
+        '  "makeup_fee_table": {"subject1": 科目一补考费, "subject2": 科目二补考费, "subject3": 科目三补考费},\n'
+        '  "training_fees": {\n'
+        '    "subject2": {"unit_price": "科目二单价(数字)", "cap": "科目二上限(数字)"},\n'
+        '    "subject3": {"unit_price": "科目三单价(数字)", "cap": "科目三上限(数字)"}\n'
+        "  },\n"
+        '  "clauses_summary": [\n'
+        '    {"number": "第X条", "summary": "本条核心内容的简短概括（20字以内）"}\n'
+        "  ],\n"
+        '  "handwritten_annotations": [\n'
+        '    {"location": "出现位置", "content": "手写内容原文"}\n'
+        "  ],\n"
+        '  "deduction_items": [\n'
+        '    {"item": "扣费项目名称", "amount": 金额, "basis": "依据条款"}\n'
+        "  ],\n"
+        '  "special_terms": ["特殊/补充条款说明"]\n'
+        "}\n"
+        "```\n"
+        "\n"
+        "**要求：**\n"
+        "1. 提取合同中的**关键费用信息**：培训费总额、基础扣费项目、考试费表、补考费表、违约金比例、各科目学时单价和上限\n"
+        "2. **特别注意**识别合同中的**手写内容**（金额修改、日期、备注、补充条款等），放在 handwritten_annotations\n"
+        "3. deduction_items 只列出合同中明确的固定扣费项目（如服务费、建档费、学员IC卡等），**不要包含考试费、补考费、科目二/科目三实操费、违约金**（由系统根据进度和规则计算）\n"
+        "4. 如果看不清的文字，用 '[模糊]' 标注\n"
+        "5. 金额数字保留原始格式（含小数点）\n"
         "\n"
         "【学员情况】\n"
         f"- 当前阶段：{exam_stage or '未知'}\n"
         f"- 培训学时：{hours_desc or '未提供'}\n"
         f"- 考试次数：{exam_counts_desc or '未提供'}\n"
         "\n"
-        "请用自然语言描述分析结果。\n"
-        "\n"
         "【合同内容】\n"
-        f"{contract_text[:8000]}\n"
+        f"{contract_context}\n"
     )
 
     try:
@@ -289,12 +1239,15 @@ def analyze_contract(
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": llm.get("max_tokens", 4096),
-            "temperature": 0.1,
+            "max_tokens": min(int(llm.get("max_tokens", 2048) or 2048), 2048),
+            "temperature": 0.05,
         }
 
-        resp = requests.post(api_url, headers=headers, json=payload, timeout=120, verify=False)
-        resp.raise_for_status()
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError:
+            return {"error": _format_llm_error(resp)}
         data = resp.json()
 
         if "error" in data:
@@ -304,18 +1257,20 @@ def analyze_contract(
             return {"error": "API返回空结果"}
 
         content = data["choices"][0]["message"]["content"]
-        print(f"[AI分析] {content[:200]}...")
+        system_logger.info("[AI分析] %s...", content[:200])
 
-        # 解析 AI 返回的内容
-        result = _parse_ai_response(content, exam_counts)
+        # 解析 AI 返回的内容（含实操培训费计算）
+        result = _parse_ai_response(content, exam_counts, training_hours)
 
         return result
 
+    except requests.exceptions.ReadTimeout:
+        return {"error": "分析失败: 大模型响应超过60秒。已优先尝试本地规则解析；请稍后重试或切换更快模型。"}
     except Exception as e:
         return {"error": f"分析失败: {str(e)}"}
 
 
-def _detect_special_cases(registration_date: str, exam_counts: dict = None) -> list[dict]:
+def _detect_special_cases(registration_date: str, exam_counts: dict = None, skill_cert_date: str = "") -> list[dict]:
     """检测 4 种特殊退费情况，返回警告列表"""
     warnings = []
     today = datetime.now().date()
@@ -334,7 +1289,19 @@ def _detect_special_cases(registration_date: str, exam_counts: dict = None) -> l
         except (ValueError, AttributeError):
             pass
 
-    # 2. 技能证时间 > 3年（从考试次数和时间轴推断）
+    # 2. 技能证时间 > 3年
+    if skill_cert_date:
+        try:
+            sc_date = datetime.strptime(skill_cert_date[:10], "%Y-%m-%d").date()
+            if sc_date < three_years_ago:
+                warnings.append({
+                    "type": "skill_cert_expired",
+                    "message": "该学员技能证（科目一通过日期）已超过3年，此种情况下没有费用退还。",
+                    "reply_text": "该学员技能证（科目一通过日期）已超过3年，根据合同约定，此种情况下没有费用退还。",
+                })
+        except (ValueError, AttributeError):
+            pass
+
     # 3. 科二不合格 > 5 次
     # 4. 科三不合格 > 5 次
     if exam_counts:
@@ -364,21 +1331,33 @@ def analyze_contract_from_file(
     image_paths: list = None,
     exam_counts: dict = None,
     registration_date: str = "",
+    skill_cert_date: str = "",
 ) -> dict:
-    """从合同图片文件进行分析"""
-    contract_text = ""
-    
-    if image_paths and len(image_paths) > 0:
-        print(f"🔍 识别 {len(image_paths)} 张图片...")
-        contract_text = extract_contract_text_vision(image_paths)
-    elif filepath and os.path.exists(filepath):
-        print(f"🔍 识别单张图片...")
-        contract_text = extract_contract_text_vision([filepath])
-    
-    if not contract_text or len(contract_text) < 50:
-        return {"error": "无法从图片中提取合同文本"}
+    """从合同文件进行分析：先提取文本，再让文本模型结构化。"""
+    extraction = extract_contract_text_from_file(filepath, image_paths=image_paths)
+    if extraction.get("error"):
+        return extraction
 
-    print(f"✅ 识别完成，{len(contract_text)} 字符")
+    contract_text = extraction["text"]
+    system_logger.info("✅ 识别完成，%d 字符，来源: %s", len(contract_text), extraction.get("source"))
+
+    if not extraction.get("can_confirm_fee_plan", True):
+        result = _blank_analysis_result("合同关键字段识别不完整，请补充清晰合同或人工补录后再确认费用方案。")
+        result.update({k: v for k, v in extraction.items() if k != "text"})
+        _attach_extraction_review(result, extraction)
+        result["special_warnings"] = _detect_special_cases(registration_date, exam_counts, skill_cert_date)
+        return result
+
+    standard_data = _extract_standard_contract_data(contract_text)
+    if standard_data:
+        result = _parse_ai_response(json.dumps(standard_data, ensure_ascii=False), exam_counts, training_hours)
+        result["contract_set"] = contract_set_from_standard_data(standard_data, filepath)
+        result["analysis_source"] = "local_rules"
+        result["summary_lines"] = [line.strip() for line in result["summary"].split("\n") if line.strip()]
+        result["special_warnings"] = _detect_special_cases(registration_date, exam_counts, skill_cert_date)
+        result.update({k: v for k, v in extraction.items() if k != "text"})
+        _attach_extraction_review(result, extraction)
+        return result
 
     result = analyze_contract(
         contract_text=contract_text,
@@ -387,7 +1366,20 @@ def analyze_contract_from_file(
         total_fee=total_fee,
         exam_counts=exam_counts,
     )
+    if not result.get("error"):
+        result["contract_set"] = contract_set_from_ai_response(
+            result.get("raw_analysis", ""),
+            filepath,
+        )
+
+    # Build multi-line summary
+    summary_lines = []
+    if result.get("summary"):
+        summary_lines = [line.strip() for line in result["summary"].split("\n") if line.strip()]
+    result["summary_lines"] = summary_lines
 
     # 注入特殊退费检测警告
-    result["special_warnings"] = _detect_special_cases(registration_date, exam_counts)
+    result["special_warnings"] = _detect_special_cases(registration_date, exam_counts, skill_cert_date)
+    result.update({k: v for k, v in extraction.items() if k != "text"})
+    _attach_extraction_review(result, extraction)
     return result

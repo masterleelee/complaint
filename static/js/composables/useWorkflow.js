@@ -1,5 +1,5 @@
-// 工作流程组合式函数：合同 → AI分析 → 回复函 → 飞书
-import { postJ, uploadFile } from "api";
+// 工作流程组合式函数：合同 → 退费分析 → 沟通记录 → 结果归档/文档 → 飞书可选归档
+import { getJ, postJ } from "api";
 
 /** 计算考试费
  * examCounts: { subject1: 2, subject2: 1, subject3: 0 }
@@ -11,8 +11,12 @@ import { postJ, uploadFile } from "api";
  * - 科目三：280元/次，补考140元
  * - 工本费：10元（固定）
  */
-function calcExamFees(examCounts, includesExam) {
-  if (includesExam) {
+function examCount(examCounts, key, label) {
+  return Number(examCounts?.[key] ?? examCounts?.[label] ?? 0) || 0;
+}
+
+function calcExamFees(examCounts, includesExam, includesMakeup = true) {
+  if (!includesExam) {
     return { total: 0, fees: [] };
   }
   
@@ -22,32 +26,41 @@ function calcExamFees(examCounts, includesExam) {
     subject3: { name: "科目三", normal: 280, retake: 140 },
   };
   
-  let total = 10; // 工本费
-  const feeItems = [{ item: "工本费", amount: 10, reason: "固定费用" }];
-  
-  for (const [subject, count] of Object.entries(examCounts || {})) {
-    if (count <= 0 || !fees[subject]) continue;
-    
+  let total = 0;
+  const feeItems = [];
+
+  for (const [subject, fee] of Object.entries(fees)) {
+    const count = examCount(examCounts, subject, fee.name);
+    if (count <= 0) continue;
+
     const { name, normal, retake } = fees[subject];
-    // 第一次正常费用，后续补考费
-    const subjectTotal = normal + (count - 1) * retake;
-    total += subjectTotal;
+    total += normal;
     feeItems.push({
       item: `${name}考试费`,
-      amount: subjectTotal,
-      reason: `${name}考试${count}次（第1次${normal}元${count > 1 ? `，补考${count-1}次×${retake}元` : ''}）`,
-      max_amount: subjectTotal
+      amount: normal,
+      reason: `三系统显示${name}考试${count}次，合同考试费${normal}元`,
+      generated_progress_fee: true,
     });
+    if (includesMakeup && count > 1) {
+      const makeupTotal = (count - 1) * retake;
+      total += makeupTotal;
+      feeItems.push({
+        item: `${name}补考费`,
+        amount: makeupTotal,
+        reason: `三系统显示${name}补考${count - 1}次，合同补考费${retake}元/次`,
+        generated_progress_fee: true,
+      });
+    }
   }
   
   return { total, fees: feeItems };
 }
 
-export function useWorkflow(toast, getQr) {
-  // 工作流步骤：1=合同，2=AI分析，3=回复函，4=飞书
+export function useWorkflow(toast, getQr, getTicketId) {
+  // 工作流步骤：1=合同获取，2=退费分析，3=沟通记录，4=结果归档/文档，5=飞书可选归档
   const workflowStep = Vue.ref(1);
   const workflowStatusText = Vue.computed(() => {
-    const m = { 1: "待获取合同", 2: "待AI分析", 3: "待生成回复函", 4: "待提交飞书" };
+    const m = { 1: "待合同获取", 2: "待退费分析", 3: "待沟通记录", 4: "待结果归档", 5: "待飞书归档" };
     return m[workflowStep.value] || "已完成";
   });
 
@@ -60,15 +73,56 @@ export function useWorkflow(toast, getQr) {
   const cCachedAt = Vue.ref("");   // 缓存时间
   const contractInput = Vue.ref(null);  // 合同文件上传 input ref
   const uploadedFiles = Vue.ref([]);  // 已上传文件列表
+  const contractManifest = Vue.ref({});
 
-  // 回访管理
-  const visitStatus = Vue.ref("");
-  const visitRemark = Vue.ref("");
-  const visitLoading = Vue.ref(false);
+  // 回访管理（已弃用：统一为 communications）
+  const fromHistoryLabel = Vue.ref("");
+  const OUTCOME_OPTIONS = [
+    "投诉撤销",
+    "同意合同扣费",
+    "不同意合同扣费但协商一致",
+    "不同意合同扣费且协商失败",
+    "无法联系",
+    "继续培训/转校",
+  ];
+  const COOPERATION_OPTIONS = ["配合", "一般", "沟通困难", "不配合"];
+  const NEGOTIATION_OPTIONS = ["协商一致", "协商失败", "其他情形"];
+  const feeConfirmed = Vue.ref(false);
+  const feeConfirming = Vue.ref(false);
+  const feeConfirmedAt = Vue.ref("");
+  const communications = Vue.ref([]);
+  const communicationsLoading = Vue.ref(false);
+  const commForm = Vue.reactive({
+    contact_time: "",
+    contact_method: "电话",
+    summary: "",
+    student_intention: "继续协商",
+    next_follow_up: "",
+  });
+  const finalOutcome = Vue.ref("");
+  const negotiationOutcome = Vue.ref("");      // 协商结果三类
+  const withdrawStatus = Vue.ref("未撤诉");     // 撤诉状态，默认未撤诉
+  const withdrawUpdatedAt = Vue.ref("");
+  const branchCooperation = Vue.ref("");
+  const branchCooperationNote = Vue.ref("");
+  const archiveSaving = Vue.ref(false);
+  const archivedCase = Vue.ref(false);
+  const feeReopenReason = Vue.ref("");
+  const feeReopening = Vue.ref(false);
+  const feePlanVersion = Vue.ref(0);  // 当前工单费用方案版本，用于归档前沟通记录版本校验
 
   // 投诉登记表
   const formLoading = Vue.ref(false);
   const formResult = Vue.ref(null);
+
+  // 合同预览
+  const previewVisible = Vue.ref(false);
+  const previewUrl = Vue.ref("");
+  const previewFilename = Vue.ref("");
+  const previewIsPdf = Vue.computed(() => {
+    const name = previewFilename.value || "";
+    return name.endsWith(".pdf") || name.endsWith(".PDF");
+  });
 
   // AI分析
   const aLoading = Vue.ref(false);
@@ -86,15 +140,18 @@ export function useWorkflow(toast, getQr) {
   const deductionMismatch = Vue.computed(() => {
     if (!ar.value) return false;
     const td = Number(ar.value.total_deduction) || 0;
-    return Math.abs(deductionSum.value - td) > 0.01;
+    const tf = Number(ar.value.total_fee) || 0;
+    const rawSum = deductionSum.value;
+    if (rawSum <= tf) return Math.abs(rawSum - td) > 0.01;
+    return false; // 超过总费用时，封顶是正常行为
   });
-
   // 手动填写合同信息
   const manualContract = Vue.reactive({
     total_fee: 0,      // 合同总金额
     paid_amount: 0,    // 实际已缴金额
     contract_code: "", // 合同编号（可选）
-    includes_exam: false, // 合同是否包含考试费
+    includes_exam: true, // 合同总培训费是否包含考试费
+    includes_makeup: true, // 合同总培训费是否包含补考费
   });
 
   const canProceedToAnalysis = Vue.computed(() => {
@@ -102,6 +159,18 @@ export function useWorkflow(toast, getQr) {
     if (cSrc.value === "download") return cPath.value !== "";
     // 手动填写：需要合同总金额和已缴金额
     return manualContract.total_fee > 0 && manualContract.paid_amount > 0;
+  });
+
+  // 三系统数据是否就绪：用于进入退费分析前的阻断，避免陈旧/缺失数据流入金额计算
+  const threeSystemReady = Vue.computed(() => {
+    const q = getQr ? getQr() : null;
+    if (!q || !q.id_card) return false;
+    const th = q.training_hours || {};
+    const ec = q.exam_counts || {};
+    const hasHours = Object.values(th).some(v => v && String(v).replace(/[^\d]/g, "") !== "0");
+    const hasExam = Object.values(ec).some(v => Number(v) > 0);
+    const hasDriving = Boolean(q.driving_fee && (q.driving_fee.contract_fee || q.driving_fee.fee_plan_status));
+    return hasHours || hasExam || hasDriving;
   });
 
   // 回复函
@@ -113,15 +182,48 @@ export function useWorkflow(toast, getQr) {
   const fsLoading = Vue.ref(false);
   const fsResult = Vue.ref(null);
 
+  // Load saved analysis (check cache + history inheritance)
+  async function loadSavedAnalysis(ticketId) {
+    try {
+      const d = await getJ(`/api/contract/analysis/${ticketId}`);
+      if (d.success && d.cached) {
+        ar.value = d.data;
+        if (d.from_history) {
+          fromHistoryLabel.value = `已从历史工单（${d.history_ticket_id}）加载分析结果`;
+        }
+        return true;
+      }
+    } catch (e) {
+      console.error("loadSavedAnalysis error:", e);
+    }
+    return false;
+  }
+
+  // Save analysis to ticket
+  async function saveAnalysis(ticketId) {
+    if (!ar.value || !ticketId) return;
+    try {
+      await postJ("/api/contract/save_analysis", {
+        ticket_id: ticketId,
+        analysis_data: ar.value,
+      });
+    } catch (e) {
+      console.error("saveAnalysis error:", e);
+    }
+  }
+
   // ── 合同操作 ──
 
   async function dlContract(idCard, name, schoolShort) {
     cLoading.value = true;
     try {
+      const currentQr = getQr ? getQr() : null;
       const d = await postJ("/api/contract/download", {
         id_card: idCard,
         name: name,
         school_short: schoolShort || "",
+        ticket_id: getTicketId ? getTicketId() : "",
+        registration_date: (currentQr && currentQr.registration_date) || "",
       });
       if (d.success) {
         cPath.value = d.data?.filepath || d.filepath;
@@ -129,6 +231,16 @@ export function useWorkflow(toast, getQr) {
         cCached.value = d.data?.cached || false;
         cCachedAt.value = d.data?.downloaded_at || "";
         const cacheLabel = cCached.value ? `（缓存于 ${cCachedAt.value}）` : "";
+        const dlFilepath = d.data?.filepath || d.filepath;
+        const dlFilename = d.data?.filename || d.filename;
+        // 用下载结果重建最小 manifest，保持与上传路径一致（避免前端状态与后端脱节）
+        contractManifest.value = {
+          source_files: [{ filepath: dlFilepath, filename: dlFilename, page_index: 0 }],
+          merged_pdf_path: dlFilepath,
+          analysis_image_paths: [],
+          upload_count: 1,
+        };
+        uploadedFiles.value = [{ filepath: dlFilepath, filename: dlFilename }];
         toast("下载成功", cName.value + cacheLabel, "success");
       } else {
         toast("下载失败", d.error, "danger");
@@ -141,100 +253,108 @@ export function useWorkflow(toast, getQr) {
   }
 
   async function ulContract(ev) {
-    console.log("=== Upload Debug ===");
-    console.log("Event type:", ev?.type);
-    console.log("Event target:", ev?.target);
-    console.log("Event target tagName:", ev?.target?.tagName);
-    console.log("Event target files:", ev?.target?.files);
-    console.log("Event target files length:", ev?.target?.files?.length);
-    
     const files = ev?.target?.files;
     
     if (!files || files.length === 0) {
-      console.warn("No files selected - user may have cancelled");
-      // 不显示错误，可能是用户点了取消
       return;
     }
     
-    console.log("Files to upload:", Array.from(files).map(f => f.name));
-    
     cLoading.value = true;
     try {
-      // 构建 FormData，支持多文件
       const formData = new FormData();
       for (let i = 0; i < files.length; i++) {
         formData.append("file", files[i]);
       }
       
-      // 清空 input（必须在 FormData 构建完成后）
       ev.target.value = '';
       
-      // 添加学员信息（用于归档）
       const currentQr = getQr ? getQr() : null;
-      console.log("Current QR data:", currentQr);
       if (currentQr) {
         formData.append("id_card", currentQr.id_card || "");
         formData.append("name", currentQr.name || "");
         formData.append("school_short", currentQr.school_short || "");
-      } else {
-        console.warn("QR data is null or undefined!");
       }
-
-      console.log("FormData entries:");
-      for (let pair of formData.entries()) {
-        console.log("  ", pair[0], ":", pair[1] instanceof File ? `File(${pair[1].name})` : pair[1]);
-      }
+      const ticketId = getTicketId ? getTicketId() : "";
+      if (ticketId) formData.append("ticket_id", ticketId);
 
       const resp = await fetch("/api/contract/upload", {
         method: "POST",
         body: formData,
       });
-      console.log("Response status:", resp.status, "ok:", resp.ok);
       
       const text = await resp.text();
-      console.log("Raw response text:", text.substring(0, 500));
       
       let d;
       try {
         d = JSON.parse(text);
       } catch (parseErr) {
-        console.error("JSON parse error:", parseErr, "text:", text);
         toast("上传失败", "服务器返回格式错误: " + text.substring(0, 100), "danger");
         return;
       }
-      
-      console.log("Parsed response:", d);
 
       if (d.success) {
         cPath.value = d.data?.filepath || d.filepath;
-        const count = d.data?.count || 1;
-        cName.value = count > 1 ? `${count}个文件` : (d.data?.filename || d.filename);
-        
-        // 保存上传的文件列表，用于 AI 分析时传递所有图片路径
-        uploadedFiles.value = d.data?.all_files || [{ filepath: cPath.value, filename: cName.value }];
+        contractManifest.value = d.data?.manifest || {};
+        const count = contractManifest.value.upload_count || d.data?.count || 1;
+        cName.value = d.data?.filename || d.filename;
+        uploadedFiles.value = contractManifest.value.source_files || d.data?.all_files || [{ filepath: cPath.value, filename: cName.value }];
         
         toast(`上传成功`, count > 1 ? `已保存 ${count} 个文件并生成合并PDF` : cName.value, "success");
       } else {
         toast("上传失败", d.error || "未知错误", "danger");
-        console.error("Upload Error:", d);
       }
     } catch (e) {
       toast("上传失败", e.message, "danger");
-      console.error("Upload Exception:", e);
     } finally {
       cLoading.value = false;
     }
   }
 
+  function openPreview(filepath, filename) {
+    previewUrl.value = `/api/contract/preview?path=${encodeURIComponent(filepath)}`;
+    previewFilename.value = filename || "";
+    previewVisible.value = true;
+  }
+  function closePreview() {
+    previewVisible.value = false;
+    previewUrl.value = "";
+    previewFilename.value = "";
+  }
+
   // ── 流程控制 ──
 
-  /** 步骤1 → 步骤2，自动触发AI分析 */
+  /** 步骤1 → 步骤2，并自动启动 AI 分析（手动填写模式除外） */
   function confirmContract() {
     if (!canProceedToAnalysis.value) {
       toast("请先获取合同信息", "", "warning");
       return;
     }
+
+    if (cSrc.value === "manual") {
+      workflowStep.value = 2;
+      return;
+    }
+
+    // 非手动模式必须等三系统数据就绪，否则退费计算会用陈旧/缺失数据
+    if (!threeSystemReady.value) {
+      toast("三系统数据未就绪", "请先在受理页完成「查询三系统」（身份证/手机号），再进入退费分析", "warning");
+      return;
+    }
+
     workflowStep.value = 2;
+
+    const qr = getQr ? getQr() : null;
+    if (!qr || !qr.id_card) {
+      toast("暂无法自动分析", "三系统学员信息尚未就绪，请等待查询完成", "warning");
+      return;
+    }
+
+    doAnalyze(
+      qr.id_card || "",
+      qr.exam_stage || "",
+      qr.training_hours || {},
+      getTicketId ? getTicketId() : ""
+    );
   }
 
   /** 手动填写模式：直接进入扣费明细编辑 */
@@ -256,34 +376,45 @@ export function useWorkflow(toast, getQr) {
     const examCounts = qr?.exam_counts || {};
     
     // 计算考试费
-    const examFees = calcExamFees(examCounts, manualContract.includes_exam);
+    const examFees = calcExamFees(
+      examCounts,
+      manualContract.includes_exam,
+      manualContract.includes_makeup,
+    );
     
-    ar.value = {
-      total_fee: totalFee,
-      paid_amount: paidAmount,
-      deductions: [
-        { item: "报名费", amount: 0, max_amount: 1000, reason: "" },
-        { item: "档案费", amount: 300, max_amount: 300, reason: "固定费用" },
-        { item: "IC卡费", amount: 100, max_amount: 100, reason: "固定费用" },
-        { item: "理论培训费", amount: 0, duration: "", unit_price: "", reason: "" },
-        { item: "科目二", amount: 0, duration: qr?.training_hours?.subject2 || "", unit_price: "", reason: "" },
-        { item: "科目三", amount: 0, duration: qr?.training_hours?.subject3 || "", unit_price: "", reason: "" },
+	    ar.value = {
+	      total_fee: totalFee,
+	      paid_amount: paidAmount,
+	      actual_paid: paidAmount,
+	      deductions: [
+        { item: "综合服务费", amount: 0, reason: "" },
+        { item: "建档费", amount: 0, reason: "" },
+        { item: "学员IC卡费", amount: 0, reason: "" },
+        { item: "理论培训费", amount: 0, reason: "" },
+        { item: "科目二实操费", amount: 0, duration: qr?.training_hours?.subject2 || "", unit_price: "", reason: "" },
+        { item: "科目三实操费", amount: 0, duration: qr?.training_hours?.subject3 || "", unit_price: "", reason: "" },
         ...(examFees.fees.length > 0 ? examFees.fees : []),
-        { item: "违约金", amount: Math.round(totalFee * 0.2 * 100) / 100, max_amount: Math.round(totalFee * 0.2 * 100) / 100, reason: `违约金=${totalFee}×20%`, penalty_rate: 0.2 }
+        { item: "违约金", amount: 0, reason: "合同约定违约金（元），人工填写" }
       ],
       total_deduction: 0,
       refund: paidAmount,
       summary: "手动填写模式，请编辑下方扣费明细",
-      contract_code: manualContract.contract_code || "",
-    };
+	      contract_code: manualContract.contract_code || "",
+	      penalty_amount: 0,
+	      includes_exam_fee: manualContract.includes_exam,
+	      includes_makeup_fee: manualContract.includes_makeup,
+	      exam_fee_table: { subject1: 70, subject2: 130, subject3: 280 },
+	      makeup_fee_table: { subject1: 35, subject2: 65, subject3: 140 },
+	      fee_plan_status: "draft",
+	    };
     
-    // 直接进入步骤3（扣费明细编辑）
-    workflowStep.value = 3;
-    recalc(); // 确保总数同步
+    // 进入退费分析步骤
+    workflowStep.value = 2;
+    recalc();
     toast("已进入扣费明细编辑", "请逐项填写或调整金额", "success");
   }
 
-  /** 运行AI分析（自动触发） */
+  /** 运行合同分析（由用户显式启动或重试） */
   async function doAnalyze(idCard, examStage, trainingHours, ticketId) {
     // AI 模式：必须上传/下载合同后才能分析
     if (!cPath.value) {
@@ -309,9 +440,13 @@ export function useWorkflow(toast, getQr) {
       // 获取当前学员信息
       const currentQr = getQr ? getQr() : null;
       
-      const d = await postJ("/api/contract/analyze", {
+      const start = await postJ("/api/contract/analyze/start", {
         filepath: cPath.value,
-        image_paths: uploadedFiles.value.map(f => f.filepath),
+        image_paths: (contractManifest.value.analysis_image_paths || []).length
+          ? contractManifest.value.analysis_image_paths
+          : uploadedFiles.value
+              .filter(f => /\.(jpe?g|png)$/i.test(f.filepath || ""))
+              .map(f => f.filepath),
         exam_stage: examStage,
         training_hours: trainingHours,
         total_fee: manualContract.total_fee || 0,
@@ -319,6 +454,22 @@ export function useWorkflow(toast, getQr) {
         ticket_id: ticketId,
         exam_counts: currentQr?.exam_counts || {},  // 传入考试次数，辅助 AI 判断哪些费用已实际发生
       });
+      if (!start.success) throw new Error(start.error || "启动分析失败");
+
+      let d = null;
+      for (let i = 0; i < 180; i++) {
+        const status = await getJ(`/api/contract/analyze/status/${start.job_id}`);
+        if (!status.success) throw new Error(status.error || "查询分析进度失败");
+        if (status.status === "done") {
+          d = status.result;
+          break;
+        }
+        if (status.status === "failed" || status.status === "interrupted") {
+          throw new Error(status.error || status.result?.error || "分析失败");
+        }
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+      if (!d) throw new Error("分析任务超时，请稍后在当前案件重试");
 
       if (aTimerId) { clearInterval(aTimerId); aTimerId = null; }
 
@@ -364,16 +515,27 @@ export function useWorkflow(toast, getQr) {
 
             // 单价：从 reason 中提取
             const priceMatch = reason.match(/(\d+(?:\.\d+)?)\s*元\/学时/) || reason.match(/单价\s*(\d+(?:\.\d+)?)\s*元/);
-            if (priceMatch) ded.unit_price = priceMatch[1] + "元/学时";
+            if (priceMatch) ded.unit_price = priceMatch[1];
           });
         }
         
-        ar.value = d;
+	        ar.value = d;
+	        if (!ar.value.actual_paid && ar.value.paid_amount) ar.value.actual_paid = ar.value.paid_amount;
+	        if (!ar.value.actual_paid && manualContract.paid_amount) ar.value.actual_paid = manualContract.paid_amount;
+	        // 注意：不再用三系统 contract_fee 静默兜底 actual_paid —— 学员未必 100% 已缴，
+	        // 必须人工确认实际已交金额（见 step 2 UI 的 actual_paid 输入）。
+	        const drivingContractFee = currentQr?.driving_fee?.contract_fee;
+	        if (!ar.value.total_fee && drivingContractFee) ar.value.total_fee = drivingContractFee;
+	        feeConfirmed.value = false;
         
         // 强制同步：用明细之和覆盖 AI 返回的 total_deduction，避免不一致警告
         recalc();
         
-        toast("分析完成", "应退 " + ar.value.refund + " 元", "success");
+        if (ar.value.can_confirm_fee_plan === false) {
+          toast("合同需补充确认", "关键字段识别不完整，暂不能确认正式费用方案", "warning");
+        } else {
+          toast("分析完成", "应退 " + ar.value.refund + " 元", "success");
+        }
       }
     } catch (e) {
       if (aTimerId) { clearInterval(aTimerId); aTimerId = null; }
@@ -383,18 +545,160 @@ export function useWorkflow(toast, getQr) {
     }
   }
 
-  // 进入步骤2时自动触发AI分析（由 app.js 中的外部 watcher 负责调用 doAnalyze）
-  // 本 composables 不重复注册 watcher，避免双重触发
-
-  /** 确认AI分析结果 → 步骤3 */
+  /** 确认AI分析结果 → 步骤3（沟通记录） */
   function confirmAnalysis() {
     if (!ar.value) {
       toast("请先进行AI分析", "", "warning");
       return;
     }
     workflowStep.value = 3;
-    toast("退费结果已确认", "请生成回复函", "success");
-  }
+	    toast("退费结果已确认", "请联系学员并记录沟通情况", "success");
+	  }
+
+	  function buildManualContractSet() {
+	    const rules = (ar.value?.deductions || [])
+	      .filter(deduction => deduction.item && Number(deduction.amount) > 0)
+	      .map(deduction => {
+	        if (deduction.item === "违约金") {
+	          return {
+	            type: "fixed_penalty",
+	            item: "违约金",
+	            amount: Number(deduction.amount),
+	            clause: deduction.reason || "人工核对合同违约金条款",
+	          };
+	        }
+	        if (/^(科目一|科目二|科目三)(考试费|补考费)$/.test(deduction.item || "")) {
+	          const m = (deduction.item || "").match(/^(科目[一二三])(考试费|补考费)$/);
+	          return {
+	            type: m[2] === "补考费" ? "makeup_fee" : "exam_fee",
+	            item: deduction.item,
+	            subject: m[1],
+	            amount: Number(deduction.amount),
+	            clause: deduction.reason || "人工核对合同考试费条款",
+	          };
+	        }
+	        return {
+	          type: "fixed",
+	          item: deduction.item,
+	          amount: Number(deduction.amount),
+	          clause: deduction.reason || "人工核对合同原件后录入",
+	        };
+	      });
+	    return {
+	      contracts: [{
+	        contract_id: "manual-training",
+	        title: "人工录入培训合同",
+	        total_fee: Number(ar.value.total_fee) || 0,
+	        evidence: {
+	          source: "manual",
+	          contract_code: manualContract.contract_code || "",
+	          note: "人工填写并核对合同原件",
+	        },
+	        rules,
+	      }],
+	    };
+	  }
+
+    function buildReviewedContractSet() {
+      const fields = ar.value?.contract_fields || {};
+      const valueOf = (key, fallback = 0) => fields[key]?.value ?? fallback;
+      const refundClause = String(valueOf("refund_clause", "") || "").trim() || "人工核对合同退费条款";
+      const rules = [];
+      [
+        ["service_fee", "服务费"],
+        ["archive_fee", "建档费"],
+        ["ic_card_fee", "学员IC卡费"],
+        ["theory_fee", "理论培训费"],
+      ].forEach(([key, item]) => {
+        const amount = Number(valueOf(key)) || 0;
+        if (amount > 0) rules.push({ type: "fixed", item, amount, clause: refundClause });
+      });
+      [["subject1", "科目一"], ["subject2", "科目二"], ["subject3", "科目三"]].forEach(([key, label]) => {
+        const examFee = Number(valueOf(`${key}_exam_fee`)) || 0;
+        const makeupFee = Number(valueOf(`${key}_makeup_fee`)) || 0;
+        if (valueOf("includes_exam_fee", true) !== false && examFee > 0) {
+          rules.push({ type: "exam_fee", item: `${label}考试费`, subject: label, amount: examFee, clause: refundClause });
+        }
+        if (valueOf("includes_makeup_fee", true) !== false && makeupFee > 0) {
+          rules.push({ type: "makeup_fee", item: `${label}补考费`, subject: label, amount: makeupFee, clause: refundClause });
+        }
+      });
+      [["subject2", "科目二"], ["subject3", "科目三"]].forEach(([key, label]) => {
+        const hourlyRate = Number(valueOf(`${key}_unit_price`)) || 0;
+        const maxAmount = Number(valueOf(`${key}_cap`)) || 0;
+        if (hourlyRate > 0) {
+          const rule = { type: "training_hour_fee", item: `${label}实操培训费`, subject: label, hourly_rate: hourlyRate, clause: refundClause };
+          if (maxAmount > 0) rule.max_amount = maxAmount;
+          rules.push(rule);
+        }
+      });
+      const penaltyAmount = Number(valueOf("penalty_amount")) || 0;
+      if (penaltyAmount > 0) {
+        rules.push({ type: "fixed_penalty", item: "违约金", amount: penaltyAmount, clause: refundClause });
+      }
+      return {
+        contracts: [{
+          contract_id: ar.value?.contract_code || "reviewed-paper-contract",
+          title: "人工核对纸质培训合同",
+          total_fee: Number(valueOf("total_fee")) || 0,
+          evidence: {
+            source: "human_review",
+            file: cPath.value,
+            pages: (contractManifest.value.source_files || []).map(item => item.filepath).filter(Boolean),
+          },
+          rules,
+        }],
+      };
+    }
+
+	  async function handleSaveAndConfirm(ticketId, planStatus = "confirmed") {
+    if (!ar.value) {
+      toast("请先进行AI分析", "", "warning");
+      return;
+    }
+    if (ar.value.can_confirm_fee_plan === false) {
+      toast("暂不能确认费用方案", "合同关键字段识别不完整，请重新上传清晰合同或人工补录", "warning");
+      return;
+    }
+	    if (!ticketId) {
+	      toast("缺少案件ID", "请先完成工单受理和学员查询", "warning");
+	      return;
+	    }
+	    recalc();
+	    const actualPaid = Number(ar.value.actual_paid || ar.value.paid_amount || manualContract.paid_amount || 0);
+	    if (actualPaid <= 0) {
+	      toast("请填写实际已交金额", "应退金额必须基于实际已交金额计算", "warning");
+	      return;
+	    }
+	    feeConfirming.value = true;
+	    try {
+	      const d = await postJ(`/api/tickets/${ticketId}/fee-confirm`, {
+	        plan_status: planStatus,
+	        total_fee: Number(ar.value.total_fee) || 0,
+	        actual_paid: actualPaid,
+	        contract_fields: ar.value.contract_fields || {},
+	        clauses: ar.value.clauses || [],
+	        contract_code: ar.value.contract_code || manualContract.contract_code || "",
+	        contract_set: cSrc.value === "manual" ? buildManualContractSet() : buildReviewedContractSet(),
+	      });
+	      if (!d.success) throw new Error(d.error || "确认失败");
+	      const confirmed = d.data || {};
+	      ar.value.actual_paid = confirmed.actual_paid;
+	      ar.value.total_deduction = confirmed.total_deduction;
+	      ar.value.refund = confirmed.refund;
+	      ar.value.fee_plan_status = confirmed.fee_plan_status || "confirmed";
+	      feePlanVersion.value = Number(confirmed.fee_plan_version) || 0;
+	      feeConfirmed.value = ar.value.fee_plan_status === "confirmed";
+	      feeConfirmedAt.value = new Date().toLocaleString();
+	      await loadCommunications(ticketId);
+	      workflowStep.value = 3;
+	      toast(planStatus === "provisional" ? "阶段费用方案已确认" : "正式费用方案已确认", "已进入沟通记录", "success");
+	    } catch (e) {
+	      toast("保存失败", e.message, "danger");
+	    } finally {
+	      feeConfirming.value = false;
+	    }
+	  }
 
   // ── 扣费明细编辑 ──
 
@@ -403,19 +707,12 @@ export function useWorkflow(toast, getQr) {
     
     // 遍历所有扣费项，如果有时长和单价，自动重新计算金额
     ar.value.deductions.forEach(ded => {
-      const durationStr = String(ded.duration || "").trim();
-      const priceStr = String(ded.unit_price || "").trim();
-
-      // 违约金：基数 × 比例% = 金额
+      // 违约金为固定金额（元），人工直接填写，不做比例计算
       if (ded.item === '违约金') {
-        const base = parseFloat(durationStr.replace(/[^\d.]/g, ""));
-        const rateMatch = priceStr.match(/(\d+(?:\.\d+)?)/);
-        const rate = rateMatch ? parseFloat(rateMatch[1]) : 0;
-        if (base > 0 && rate > 0) {
-          ded.amount = Math.round(base * rate / 100 * 100) / 100;
-        }
         return;
       }
+      const durationStr = String(ded.duration || "").trim();
+      const priceStr = String(ded.unit_price || "").trim();
       
       // 提取时长数字（支持 "16时43分" 或 "16.5"）
       let hours = 0;
@@ -450,15 +747,19 @@ export function useWorkflow(toast, getQr) {
       }
     });
     
-    const sum = ar.value.deductions.reduce((a, d) => a + (Number(d.amount) || 0), 0);
-    ar.value.total_deduction = Math.round(sum * 100) / 100;
-    const refund = (ar.value.total_fee || 0) - ar.value.total_deduction;
-    ar.value.refund = refund > 0 ? Math.round(refund * 100) / 100 : 0;
-  }
+	    const sum = ar.value.deductions.reduce((a, d) => a + (Number(d.amount) || 0), 0);
+	    const totalFee = Number(ar.value.total_fee) || 0;
+	    const actualPaid = Number(ar.value.actual_paid || ar.value.paid_amount || manualContract.paid_amount || 0) || 0;
+	    ar.value.total_deduction = totalFee > 0 ? Math.min(Math.round(sum * 100) / 100, totalFee) : Math.round(sum * 100) / 100;
+	    ar.value.actual_paid = actualPaid;
+	    const refund = actualPaid - ar.value.total_deduction;
+	    ar.value.refund = refund > 0 ? Math.round(refund * 100) / 100 : 0;
+	  }
 
   function addDeduction() {
     if (!ar.value) return;
     ar.value.deductions.push({ item: "", amount: 0, reason: "" });
+    recalc();
   }
 
   function removeDeduction(i) {
@@ -467,37 +768,169 @@ export function useWorkflow(toast, getQr) {
     recalc();
   }
 
-  // 更新违约金比例（用户手动修正）
-  function updatePenaltyRate(newRate) {
+  function upsertDeductionFromField(itemName, amount, reason) {
+    if (!ar.value) return;
+    if (!Array.isArray(ar.value.deductions)) ar.value.deductions = [];
+    const value = Number(amount) || 0;
+    const existing = ar.value.deductions.find(d => d.item === itemName);
+    if (existing) {
+      existing.amount = value;
+      existing.reason = reason || existing.reason || "";
+      return;
+    }
+    if (value > 0) {
+      ar.value.deductions.push({ item: itemName, amount: value, reason: reason || "合同字段人工核对" });
+    }
+  }
+
+  function syncSubjectTrainingFee(itemName, unitPrice, cap) {
+    if (!ar.value || !Array.isArray(ar.value.deductions)) return;
+    const existing = ar.value.deductions.find(d => d.item === itemName);
+    if (!existing) return;
+    const price = Number(unitPrice) || 0;
+    const maxAmount = Number(cap) || 0;
+    if (price > 0) existing.unit_price = `${price}元/学时`;
+    existing.max_amount = maxAmount;
+  }
+
+  function syncProgressFeeDeductions() {
+    if (!ar.value || !Array.isArray(ar.value.deductions)) return;
+    ar.value.deductions = ar.value.deductions.filter(
+      deduction => !/^(科目一|科目二|科目三)(考试费|补考费)$/.test(deduction.item || ""),
+    );
+    if (ar.value.includes_exam_fee === false) return;
+
+    const qr = getQr ? getQr() : null;
+    const counts = qr?.exam_counts || {};
+    const examTable = ar.value.exam_fee_table || {};
+    const makeupTable = ar.value.makeup_fee_table || {};
+    for (const [key, label] of [["subject1", "科目一"], ["subject2", "科目二"], ["subject3", "科目三"]]) {
+      const count = examCount(counts, key, label);
+      const examFee = Number(examTable[key]) || 0;
+      if (count > 0 && examFee > 0) {
+        ar.value.deductions.push({
+          item: `${label}考试费`,
+          amount: examFee,
+          exam_count: count,
+          reason: `三系统显示${label}考试${count}次，合同考试费${examFee}元`,
+          generated_progress_fee: true,
+        });
+      }
+      const makeupFee = Number(makeupTable[key]) || 0;
+      if (ar.value.includes_makeup_fee !== false && count > 1 && makeupFee > 0) {
+        ar.value.deductions.push({
+          item: `${label}补考费`,
+          amount: (count - 1) * makeupFee,
+          exam_count: count,
+          makeup_count: count - 1,
+          reason: `三系统显示${label}补考${count - 1}次，合同补考费${makeupFee}元/次`,
+          generated_progress_fee: true,
+        });
+      }
+    }
+  }
+
+  function refreshContractReviewStatus() {
+    if (!ar.value || !ar.value.contract_fields) return;
+    const fields = ar.value.contract_fields;
+    const valueOf = (key) => fields[key]?.value;
+    const missing = [];
+    if (!(Number(valueOf("total_fee")) > 0)) missing.push("合同总培训费");
+    if (!(Number(ar.value.actual_paid) > 0)) missing.push("实际已交金额");
+    if (!String(valueOf("refund_clause") || "").trim()) missing.push("退费条款");
+    fields.uncertain_fields = missing;
+    fields.status = missing.length ? "needs_review" : "draft";
+    ar.value.unclear_fields = missing;
+    ar.value.blockers = missing.length ? [`人工补录仍缺少：${missing.join("、")}`] : [];
+    ar.value.can_confirm_fee_plan = missing.length === 0;
+    ar.value.fee_plan_status = missing.length ? "needs_review" : "draft";
+  }
+
+  function applyContractFields() {
+    if (!ar.value || !ar.value.contract_fields) return;
+    const fields = ar.value.contract_fields;
+    const fieldValue = (key) => Number(fields[key]?.value) || 0;
+
+    ar.value.total_fee = fieldValue("total_fee");
+    ar.value.penalty_amount = fieldValue("penalty_amount");
+    ar.value.includes_exam_fee = fields.includes_exam_fee?.value !== false;
+    ar.value.includes_makeup_fee = fields.includes_makeup_fee?.value !== false;
+    ar.value.exam_fee_table = {
+      subject1: fieldValue("subject1_exam_fee"),
+      subject2: fieldValue("subject2_exam_fee"),
+      subject3: fieldValue("subject3_exam_fee"),
+      license: fieldValue("license_fee"),
+    };
+    ar.value.makeup_fee_table = {
+      subject1: fieldValue("subject1_makeup_fee"),
+      subject2: fieldValue("subject2_makeup_fee"),
+      subject3: fieldValue("subject3_makeup_fee"),
+    };
+    syncProgressFeeDeductions();
+
+    upsertDeductionFromField("综合服务费", fieldValue("service_fee"), "合同字段核对：综合服务费");
+    upsertDeductionFromField("建档费", fieldValue("archive_fee"), "合同字段核对：建档费");
+    upsertDeductionFromField("IC卡费", fieldValue("ic_card_fee"), "合同字段核对：IC卡费");
+    upsertDeductionFromField("理论培训费", fieldValue("theory_fee"), "合同字段核对：理论培训费");
+    syncSubjectTrainingFee("科目二实操费", fieldValue("subject2_unit_price"), fieldValue("subject2_cap"));
+    syncSubjectTrainingFee("科目三实操费", fieldValue("subject3_unit_price"), fieldValue("subject3_cap"));
+
+    const penaltyAmount = fieldValue("penalty_amount");
+    const penaltyDed = ar.value.deductions.find(d => d.item === "违约金");
+    if (penaltyDed && penaltyAmount >= 0) {
+      penaltyDed.amount = Math.round(penaltyAmount * 100) / 100;
+      penaltyDed.reason = `合同字段核对：违约金 ${penaltyDed.amount} 元`;
+    }
+
+    if (ar.value.includes_exam_fee === false || ar.value.includes_makeup_fee === false) {
+      ar.value.fee_basis_warning = "考试费/补考费已改为不默认包含在合同总培训费内，请核对扣费明细和实际已交金额后再确认。";
+    } else {
+      ar.value.fee_basis_warning = "";
+    }
+
+    feeConfirmed.value = false;
+    recalc();
+    refreshContractReviewStatus();
+  }
+
+  // 更新违约金金额（用户手动修正，单位：元）
+  function updatePenaltyRate(newAmount) {
     if (!ar.value) return;
     
-    const rate = parseFloat(newRate);
-    ar.value.penalty_rate = rate;
+    const amount = Math.round((parseFloat(newAmount) || 0) * 100) / 100;
+    ar.value.penalty_amount = amount;
     
     // 找到违约金项目并更新
     const penaltyDed = ar.value.deductions.find(d => d.item === '违约金');
     if (penaltyDed) {
-      const base = ar.value.total_fee || 0;
-      const oldRate = (penaltyDed.reason.match(/(\d+(?:\.\d+)?)%/) || [null, '20'])[1];
-      penaltyDed.amount = Math.round(base * rate * 100) / 100;
-      penaltyDed.reason = `违约金=${base}元×${rate*100}%=${penaltyDed.amount}元（手动修正，原识别${oldRate}%）`;
+      penaltyDed.amount = amount;
+      penaltyDed.reason = `违约金=${amount}元（手动填写）`;
     }
     
     // 重新计算总扣费和应退金额
     recalc();
     
-    toast("违约金比例已更新", `当前比例: ${rate*100}%`, "success");
+    toast("违约金已更新", `违约金: ${amount} 元`, "success");
   }
 
   // ── 回复函 ──
 
-  async function genReply(idCard, qr, ticketId, templateId) {
-    rpLoading.value = true;
+	  async function genReply(idCard, qr, ticketId, templateId, documentType = "formal") {
+	    const feeStatus = ar.value?.fee_plan_status || "";
+	    const canUseFeePlan = documentType === "progress"
+	      ? ["provisional", "confirmed"].includes(feeStatus)
+	      : feeStatus === "confirmed";
+	    if (!canUseFeePlan) {
+	      toast("请先确认费用方案", documentType === "progress" ? "进展回复可使用阶段或正式费用方案" : "正式回复函必须使用正式确认后的扣费方案", "warning");
+	      return;
+	    }
+	    rpLoading.value = true;
     rpErr.value = "";
     rpResult.value = null;
 
     try {
       const body = {
+        document_type: documentType,
         ticket_id: ticketId,
         name: qr.name || "",
         id_card: idCard,
@@ -506,19 +939,21 @@ export function useWorkflow(toast, getQr) {
         registration_date: qr.registration_date || "",
         license_type: qr.license_type || "",
         exam_stage: qr.exam_stage || "",
-        total_fee: ar.value?.total_fee || 0,
-        deductions: ar.value?.deductions || [],
-        total_deduction: ar.value?.total_deduction || 0,
-        refund: ar.value?.refund || 0,
-        contract_code: ar.value?.contract_code || "",
-        training_hours: qr.training_hours || {},
-        template_id: templateId || "",
-      };
+	        total_fee: ar.value?.total_fee || 0,
+	        actual_paid: ar.value?.actual_paid || ar.value?.paid_amount || 0,
+	        deductions: ar.value?.deductions || [],
+	        total_deduction: ar.value?.total_deduction || 0,
+	        refund: ar.value?.refund || 0,
+	        contract_code: ar.value?.contract_code || "",
+	        training_hours: qr.training_hours || {},
+	        final_outcome: finalOutcome.value || "",
+	        branch_cooperation: branchCooperation.value || "",
+	        template_id: templateId || "",
+	      };
       const d = await postJ("/api/reply/generate", body);
       if (d.success) {
         rpResult.value = d;
         toast("回复函已生成", d.filename, "success");
-        workflowStep.value = 4;
       } else {
         rpErr.value = d.error;
       }
@@ -526,6 +961,186 @@ export function useWorkflow(toast, getQr) {
       rpErr.value = e.message;
     } finally {
       rpLoading.value = false;
+    }
+  }
+
+  async function loadCommunications(ticketId) {
+    if (!ticketId) return;
+    communicationsLoading.value = true;
+    try {
+      const d = await getJ(`/api/tickets/${ticketId}/communications`);
+      if (d.success) {
+        communications.value = d.data || [];
+      }
+    } catch (e) {
+      toast("沟通记录加载失败", e.message, "danger");
+    } finally {
+      communicationsLoading.value = false;
+    }
+  }
+
+  async function addCommunication(ticketId) {
+    if (!ticketId) {
+      toast("缺少案件ID", "", "warning");
+      return;
+    }
+    if (!commForm.summary.trim()) {
+      toast("请填写沟通摘要", "", "warning");
+      return;
+    }
+    communicationsLoading.value = true;
+    try {
+      const d = await postJ(`/api/tickets/${ticketId}/communications`, {
+        contact_time: commForm.contact_time || "",
+        contact_method: commForm.contact_method || "",
+        summary: commForm.summary.trim(),
+        student_intention: commForm.student_intention || "",
+        next_follow_up: commForm.next_follow_up || "",
+      });
+      if (!d.success) throw new Error(d.error || "保存沟通记录失败");
+      commForm.contact_time = "";
+      commForm.summary = "";
+      commForm.next_follow_up = "";
+      await loadCommunications(ticketId);
+      toast("沟通记录已保存", "", "success");
+    } catch (e) {
+      toast("保存失败", e.message, "danger");
+    } finally {
+      communicationsLoading.value = false;
+    }
+  }
+
+  /** 协商结果三类 + 撤诉状态 → 六类最终结果映射 */
+  function mapNegotiationToOutcome(negotiation, withdraw) {
+    const w = withdraw || "未撤诉";
+    if (negotiation === "协商失败" && w !== "已撤诉") return "不同意合同扣费且协商失败";
+    if (negotiation === "其他情形") return "继续培训/转校";
+    // 协商一致（或协商失败但学员已撤诉）→ 撤诉即投诉撤销，否则同意合同扣费
+    if (w === "已撤诉") return "投诉撤销";
+    return "同意合同扣费";
+  }
+
+  /** 协商结果变化时自动映射最终结果（用户仍可在归档卡片手动改） */
+  function syncOutcomeFromNegotiation() {
+    if (!negotiationOutcome.value) return;
+    finalOutcome.value = mapNegotiationToOutcome(negotiationOutcome.value, withdrawStatus.value);
+  }
+
+  // ── 归档卡片：高频结果卡片 + 其他情况下拉（2026-08-19 重构） ──
+  const otherOutcome = Vue.ref("");  // 低频结果：无法联系 / 继续培训/转校
+  const remarkOpen = Vue.ref(false);      // 配合度备注折叠
+  const commFormOpen = Vue.ref(false);    // 新增沟通表单折叠
+
+  /** 点击高频结果卡片：直接设最终结果；投诉撤销自动切已撤诉 */
+  function selectOutcomeCard(outcome) {
+    finalOutcome.value = outcome;
+    otherOutcome.value = "";
+    if (outcome === "投诉撤销") withdrawStatus.value = "已撤诉";
+  }
+
+  /** 低频结果下拉变化：设最终结果，清空卡片选中态 */
+  function onOtherOutcomeChange() {
+    finalOutcome.value = otherOutcome.value || "";
+  }
+
+  async function saveCaseOutcome(ticketId) {
+    if (!ticketId) {
+      toast("缺少案件ID", "", "warning");
+      return;
+    }
+    if (!finalOutcome.value) {
+      toast("请选择最终结果", "", "warning");
+      return;
+    }
+    // 投诉撤销必须联动"已撤诉"，与 updateWithdrawStatus 路径保持一致，避免矛盾态
+    if (finalOutcome.value === "投诉撤销" && withdrawStatus.value !== "已撤诉") {
+      toast("请先更新撤诉状态", "投诉撤销必须对应学员已撤诉（withdraw_status=已撤诉）", "warning");
+      return;
+    }
+    if (finalOutcome.value !== "投诉撤销") {
+      if (ar.value?.fee_plan_status !== "confirmed") {
+        toast("请先确认正式费用方案", "非撤销案件归档必须基于正式确认后的费用方案", "warning");
+        return;
+      }
+      // 与后端 _completion_gate 对齐：至少 1 条沟通 + 沟通记录版本含当前方案版本
+      if (!communications.value.length) {
+        toast("请至少登记一次沟通记录", "再完结归档案件", "warning");
+        return;
+      }
+      const cur = feePlanVersion.value || 0;
+      const versions = communications.value.map(r => Number(r.fee_plan_version) || 0);
+      const hasCurrent = cur === 0 ? versions.includes(0)
+        : cur === 1 ? versions.some(v => v === 0 || v === 1)
+        : versions.includes(cur);
+      if (!hasCurrent) {
+        toast("缺少当前费用方案版本的沟通记录", `请先登记 v${cur} 方案的沟通记录再归档`, "warning");
+        return;
+      }
+    }
+    archiveSaving.value = true;
+    try {
+      const d = await fetch(`/api/tickets/${ticketId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          final_outcome: finalOutcome.value,
+          negotiation_outcome: negotiationOutcome.value || "",
+          withdraw_status: withdrawStatus.value || "未撤诉",
+          branch_cooperation: branchCooperation.value || "",
+          branch_cooperation_note: branchCooperationNote.value || "",
+          archive_status: "已归档",
+          handle_status: "已完结",
+        }),
+      }).then(r => r.json());
+      if (!d.success) throw new Error(d.error || "归档失败");
+      archivedCase.value = true;
+      workflowStep.value = 4;
+      toast("案件结果已归档", "可按需生成登记表或回复函", "success");
+    } catch (e) {
+      toast("归档失败", e.message, "danger");
+    } finally {
+      archiveSaving.value = false;
+    }
+  }
+
+  /** 独立更新撤诉状态（归档后仍可用，不重新打开案件） */
+  async function updateWithdrawStatus(ticketId) {
+    if (!ticketId) return;
+    try {
+      const d = await fetch(`/api/tickets/${ticketId}/withdraw-status`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ withdraw_status: withdrawStatus.value || "未撤诉" }),
+      }).then(r => r.json());
+      if (!d.success) throw new Error(d.error || "更新撤诉状态失败");
+      withdrawUpdatedAt.value = d.data.withdraw_updated_at || "";
+      syncOutcomeFromNegotiation();
+      toast("撤诉状态已更新", `当前: ${withdrawStatus.value}`, "success");
+    } catch (e) {
+      toast("更新失败", e.message, "danger");
+    }
+  }
+
+  async function reopenFeePlan(ticketId) {
+    const reason = feeReopenReason.value.trim();
+    if (!reason) {
+      toast("请填写修改原因", "费用更正必须保留可审计原因", "warning");
+      return;
+    }
+    feeReopening.value = true;
+    try {
+      const d = await postJ(`/api/tickets/${ticketId}/fee-reopen`, { reason });
+      if (!d.success) throw new Error(d.error || "重新打开失败");
+      archivedCase.value = false;
+      feeConfirmed.value = false;
+      if (ar.value) ar.value.fee_plan_status = "draft";
+      feeReopenReason.value = "";
+      workflowStep.value = 2;
+      toast("费用方案已重新打开", "请复核费用并重新确认、沟通和归档", "success");
+    } catch (e) {
+      toast("重新打开失败", e.message, "danger");
+    } finally {
+      feeReopening.value = false;
     }
   }
 
@@ -547,39 +1162,6 @@ export function useWorkflow(toast, getQr) {
       toast("提交失败", e.message, "danger");
     } finally {
       fsLoading.value = false;
-    }
-  }
-
-  // ── 回访管理 ──
-
-  async function submitVisit(ticketId, doUpdateStatus) {
-    if (!visitStatus.value) {
-      toast("请选择回访状态", "", "warning");
-      return;
-    }
-    if (!visitRemark.value.trim()) {
-      toast("请填写回访备注", "", "warning");
-      return;
-    }
-    visitLoading.value = true;
-    try {
-      const d = await postJ(`/api/tickets/${ticketId}/visit`, {
-        visit_status: visitStatus.value,
-        visit_remark: visitRemark.value,
-      });
-      if (d.success) {
-        toast("回访已保存", "", "success");
-        // 自动→已完结
-        if (doUpdateStatus) {
-          await doUpdateStatus("已完结");
-        }
-      } else {
-        toast("保存失败", d.error, "danger");
-      }
-    } catch (e) {
-      toast("保存失败", e.message, "danger");
-    } finally {
-      visitLoading.value = false;
     }
   }
 
@@ -608,6 +1190,8 @@ export function useWorkflow(toast, getQr) {
     cSrc.value = "upload";
     cPath.value = "";
     cName.value = "";
+    contractManifest.value = {};
+    uploadedFiles.value = [];
     ar.value = null;
     aErr.value = "";
     analysisProgress.value = 0;
@@ -615,11 +1199,22 @@ export function useWorkflow(toast, getQr) {
     if (aTimerId) { clearInterval(aTimerId); aTimerId = null; }
     rpResult.value = null;
     rpErr.value = "";
-    fsResult.value = null;
-    visitStatus.value = "";
-    visitRemark.value = "";
-    formResult.value = null;
-  }
+	    fsResult.value = null;
+	    feeConfirmed.value = false;
+	    feeConfirmedAt.value = "";
+	    communications.value = [];
+	    commForm.contact_time = "";
+	    commForm.contact_method = "电话";
+	    commForm.summary = "";
+	    commForm.student_intention = "继续协商";
+	    commForm.next_follow_up = "";
+	    finalOutcome.value = "";
+	    branchCooperation.value = "";
+	    branchCooperationNote.value = "";
+	    archivedCase.value = false;
+	    feeReopenReason.value = "";
+	    formResult.value = null;
+	  }
 
   // 重置工作流状态（查询新学员时调用）
   function resetWorkflow() {
@@ -629,12 +1224,70 @@ export function useWorkflow(toast, getQr) {
     cName.value = "";
     cCached.value = false;
     cCachedAt.value = "";
+    contractManifest.value = {};
     uploadedFiles.value = [];  // 清空已上传文件列表
-    ar.value = null;
-    rpLoading.value = false;
+	    ar.value = null;
+	    feeConfirmed.value = false;
+	    feeConfirmedAt.value = "";
+	    communications.value = [];
+	    finalOutcome.value = "";
+	    branchCooperation.value = "";
+	    branchCooperationNote.value = "";
+	    archivedCase.value = false;
+	    feeReopenReason.value = "";
+	    rpLoading.value = false;
     rpErr.value = "";
     fsLoading.value = false;
-    fsErr.value = "";
+  }
+
+  function restore(detail) {
+    const ticket = detail.ticket || {};
+    const deductions = detail.deductions || [];
+    const manifest = ticket.contract_manifest || {};
+    contractManifest.value = manifest;
+    const sourceFiles = manifest.source_files || [];
+    cPath.value = manifest.merged_pdf_path || ticket.contract_path || sourceFiles[0]?.filepath || "";
+    cName.value = cPath.value ? cPath.value.split(/[\\/]/).pop() : "";
+    uploadedFiles.value = sourceFiles.length
+      ? sourceFiles
+      : (cPath.value ? [{ filepath: cPath.value, filename: cName.value }] : []);
+    cSrc.value = cPath.value ? "upload" : "upload";
+    ar.value = deductions.length || ticket.fee_plan_status ? {
+      total_fee: Number(ticket.total_fee) || 0,
+      actual_paid: Number(ticket.actual_paid) || 0,
+      total_deduction: Number(ticket.deduction_fee) || 0,
+      refund: Number(ticket.refund_fee) || 0,
+      deductions,
+      contract_code: ticket.contract_code || "",
+      fee_plan_status: ticket.fee_plan_status || "draft",
+    } : null;
+    feeConfirmed.value = ticket.fee_plan_status === "confirmed";
+    feePlanVersion.value = Number(ticket.fee_plan_version) || 0;
+    feeConfirmedAt.value = ticket.fee_confirmed_at || "";
+    communications.value = detail.communication_records || [];
+    finalOutcome.value = ticket.final_outcome || "";
+    otherOutcome.value = (ticket.final_outcome === "无法联系" || ticket.final_outcome === "继续培训/转校") ? ticket.final_outcome : "";
+    branchCooperation.value = ticket.branch_cooperation || "";
+    branchCooperationNote.value = ticket.branch_cooperation_note || "";
+    negotiationOutcome.value = ticket.negotiation_outcome || "";
+    withdrawStatus.value = ticket.withdraw_status || "未撤诉";
+    withdrawUpdatedAt.value = ticket.withdraw_updated_at || "";
+    archivedCase.value = ticket.archive_status === "已归档";
+    rpResult.value = ticket.reply_path
+      ? { filepath: ticket.reply_path, filename: ticket.reply_path.split(/[\\/]/).pop(), outdated: Boolean(ticket.reply_outdated) }
+      : null;
+    formResult.value = ticket.registration_form_path
+      ? { filepath: ticket.registration_form_path, filename: ticket.registration_form_path.split(/[\\/]/).pop() }
+      : null;
+    if (ticket.archive_status === "已归档" || ticket.handle_status === "已完结" || ticket.final_outcome) {
+      workflowStep.value = 4;
+    } else if (feeConfirmed.value || communications.value.length) {
+      workflowStep.value = 3;
+    } else if (cPath.value || ar.value) {
+      workflowStep.value = 2;
+    } else {
+      workflowStep.value = 1;
+    }
   }
 
   return {
@@ -653,6 +1306,7 @@ export function useWorkflow(toast, getQr) {
     aErr,
     manualContract,
     canProceedToAnalysis,
+    threeSystemReady,
     rpLoading,
     rpResult,
     rpErr,
@@ -660,22 +1314,40 @@ export function useWorkflow(toast, getQr) {
     fsResult,
     contractInput,
     uploadedFiles,
-    dlContract,
-    ulContract,
-    confirmContract,
-    doAnalyze,
+    contractManifest,
+	    dlContract,
+	    ulContract,
+	    confirmContract,
+	    startManualEdit,
+	    doAnalyze,
     confirmAnalysis,
+    previewVisible, previewUrl, previewFilename, previewIsPdf,
+    openPreview, closePreview,
+    handleSaveAndConfirm,
     recalc,
+    applyContractFields,
     addDeduction,
     removeDeduction,
     updatePenaltyRate,  // 导出违约金比例修正方法
     genReply,
     submitFeishu,
-    // 回访
-    visitStatus, visitRemark, visitLoading,
-    formLoading, formResult,
-    submitVisit, genRegistrationForm,
+	    // 沟通/归档
+	    fromHistoryLabel,
+	    OUTCOME_OPTIONS, COOPERATION_OPTIONS, NEGOTIATION_OPTIONS,
+	    feeConfirmed, feeConfirming, feeConfirmedAt,
+	    communications, communicationsLoading, commForm,
+	    finalOutcome, negotiationOutcome, withdrawStatus, withdrawUpdatedAt,
+	    syncOutcomeFromNegotiation, updateWithdrawStatus,
+	    otherOutcome, selectOutcomeCard, onOtherOutcomeChange,
+	    remarkOpen, commFormOpen,
+	    branchCooperation, branchCooperationNote, archiveSaving,
+	    archivedCase, feeReopenReason, feeReopening, feePlanVersion,
+	    formLoading, formResult,
+	    loadSavedAnalysis, saveAnalysis,
+	    loadCommunications, addCommunication, saveCaseOutcome, reopenFeePlan,
+    genRegistrationForm,
     reset,
     resetWorkflow,  // 导出重置方法，用于查询新学员时清空旧状态
+    restore,
   };
 }

@@ -15,6 +15,26 @@ BASE_DIR = Path(__file__).parent.resolve()
 DATA_DIR = BASE_DIR / "data"
 CONFIG_FILE = DATA_DIR / "config.json"
 
+
+def normalize_llm_api_url(api_url: str) -> str:
+    """兼容 OpenAI SDK base_url 和直接 HTTP endpoint 两种填写方式。"""
+    url = (api_url or "").strip().rstrip("/")
+    if not url:
+        return ""
+    if url.endswith("/chat/completions") or url.endswith("/responses"):
+        return url
+    if url.endswith("/compatible-mode/v1") or url.endswith("/v1"):
+        return f"{url}/chat/completions"
+    return url
+
+
+def _normalize_runtime_config(config: dict) -> dict:
+    for section in ("llm", "llm_intake", "llm_contract_vision", "llm_contract_text"):
+        llm = config.get(section)
+        if isinstance(llm, dict):
+            llm["api_url"] = normalize_llm_api_url(llm.get("api_url", ""))
+    return config
+
 # 默认配置（空哨兵值，实际值由 .env 或 data/config.json 提供）
 DEFAULT_CONFIG = {
     "internal_system": {
@@ -37,6 +57,24 @@ DEFAULT_CONFIG = {
         "api_key": os.getenv("LLM_API_KEY", ""),
         "model": os.getenv("LLM_MODEL", "qwen-plus"),
         "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "4096")),
+    },
+    "llm_intake": {
+        "api_url": os.getenv("LLM_INTAKE_API_URL", ""),
+        "api_key": os.getenv("LLM_INTAKE_API_KEY", ""),
+        "model": os.getenv("LLM_INTAKE_MODEL", ""),
+        "max_tokens": int(os.getenv("LLM_INTAKE_MAX_TOKENS", "1024")),
+    },
+    "llm_contract_vision": {
+        "api_url": os.getenv("LLM_CONTRACT_VISION_API_URL", ""),
+        "api_key": os.getenv("LLM_CONTRACT_VISION_API_KEY", ""),
+        "model": os.getenv("LLM_CONTRACT_VISION_MODEL", ""),
+        "max_tokens": int(os.getenv("LLM_CONTRACT_VISION_MAX_TOKENS", "2048")),
+    },
+    "llm_contract_text": {
+        "api_url": os.getenv("LLM_CONTRACT_TEXT_API_URL", ""),
+        "api_key": os.getenv("LLM_CONTRACT_TEXT_API_KEY", ""),
+        "model": os.getenv("LLM_CONTRACT_TEXT_MODEL", ""),
+        "max_tokens": int(os.getenv("LLM_CONTRACT_TEXT_MAX_TOKENS", "2048")),
     },
     "feishu": {
         "app_id": os.getenv("FEISHU_APP_ID", ""),
@@ -65,7 +103,7 @@ def load_config() -> dict:
     DATA_DIR.mkdir(exist_ok=True)
     if not CONFIG_FILE.exists():
         save_config(DEFAULT_CONFIG)
-        return DEFAULT_CONFIG.copy()
+        return _normalize_runtime_config(DEFAULT_CONFIG.copy())
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         cfg = json.load(f)
     # 合并缺失的默认值（深度合并一层）
@@ -76,7 +114,7 @@ def load_config() -> dict:
                 merged[section] = {**defaults, **cfg[section]}
             else:
                 merged[section] = cfg[section]
-    return merged
+    return _normalize_runtime_config(merged)
 
 
 def save_config(config: dict):

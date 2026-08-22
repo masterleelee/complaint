@@ -6,6 +6,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from contextlib import contextmanager
+from services.org_unit_service import ORGANIZATION_UNITS, normalize_ticket_org_fields, resolve_org_unit
+from utils.logger import system_logger
 
 DB_PATH = Path(__file__).parent / "data" / "complaints.db"
 _MIGRATED_KEY = "schema_migrated_to_tickets"
@@ -52,7 +54,7 @@ def init_db():
             )
             if not cursor.fetchone():
                 conn.execute("ALTER TABLE complaints RENAME TO complaints_v1")
-                print("[数据库] 已迁移: complaints → complaints_v1")
+                system_logger.info("[数据库] 已迁移: complaints → complaints_v1")
 
         # ── 创建 complaint_tickets 表 ──
         conn.executescript("""
@@ -78,9 +80,12 @@ def init_db():
                 contract_path TEXT DEFAULT '',
                 contract_code TEXT DEFAULT '',
                 total_fee REAL DEFAULT 0,
+                actual_paid REAL DEFAULT 0,
                 deduction_fee REAL DEFAULT 0,
                 refund_fee REAL DEFAULT 0,
                 deduction_detail TEXT DEFAULT '[]',
+                contract_set TEXT DEFAULT '{}',
+                contract_manifest TEXT DEFAULT '{}',
 
                 -- 处理状态
                 handle_status TEXT DEFAULT '待处理',
@@ -89,6 +94,7 @@ def init_db():
 
                 -- 产出物
                 reply_path TEXT DEFAULT '',
+                reply_outdated INTEGER DEFAULT 0,
                 feishu_record_id TEXT DEFAULT '',
                 feishu_handle_no TEXT DEFAULT '',
 
@@ -96,10 +102,32 @@ def init_db():
                 license_type TEXT DEFAULT '',
                 school_name TEXT DEFAULT '',
                 school_short TEXT DEFAULT '',
+                organization_unit_id TEXT DEFAULT '',
+                organization_unit_type TEXT DEFAULT '',
+                organization_unit_name TEXT DEFAULT '',
+                organization_unit_code TEXT DEFAULT '',
                 registration_date TEXT DEFAULT '',
                 exam_stage TEXT DEFAULT '',
                 student_status TEXT DEFAULT '',
                 training_hours TEXT DEFAULT '{}',
+
+                -- 案件闭环工作台
+                handler_name TEXT DEFAULT '',
+                complaint_summary TEXT DEFAULT '',
+                final_outcome TEXT DEFAULT '',
+                fee_plan_status TEXT DEFAULT '',
+                fee_plan_version INTEGER DEFAULT 0,
+                fee_plan_history TEXT DEFAULT '[]',
+                fee_plan_snapshot TEXT DEFAULT '{}',
+                fee_confirmed_by TEXT DEFAULT '',
+                fee_confirmed_at TEXT DEFAULT '',
+                fee_confirm_note TEXT DEFAULT '',
+                branch_cooperation TEXT DEFAULT '',
+                branch_cooperation_note TEXT DEFAULT '',
+                archive_status TEXT DEFAULT '',
+                cancellation_date TEXT DEFAULT '',
+                cancellation_source TEXT DEFAULT '',
+                cancellation_note TEXT DEFAULT '',
 
                 remarks TEXT DEFAULT '',
                 created_at TEXT DEFAULT '',
@@ -111,6 +139,45 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_tickets_source ON complaint_tickets(source_channel);
             CREATE INDEX IF NOT EXISTS idx_tickets_date ON complaint_tickets(complaint_date);
             CREATE INDEX IF NOT EXISTS idx_tickets_ticket_no ON complaint_tickets(ticket_no);
+
+            CREATE TABLE IF NOT EXISTS contract_analysis_jobs (
+                id TEXT PRIMARY KEY,
+                ticket_id TEXT NOT NULL DEFAULT '',
+                fingerprint TEXT NOT NULL DEFAULT '',
+                filepath TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                result TEXT DEFAULT '{}',
+                error TEXT DEFAULT '',
+                created_at TEXT DEFAULT '',
+                started_at TEXT DEFAULT '',
+                finished_at TEXT DEFAULT '',
+                updated_at TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_contract_analysis_jobs_active
+                ON contract_analysis_jobs(fingerprint, status);
+
+            -- 沟通记录表（多轮联系学员，取代旧版回访记录表）
+            CREATE TABLE IF NOT EXISTS communication_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL,
+                fee_plan_version INTEGER NOT NULL DEFAULT 0,
+                contact_time TEXT NOT NULL DEFAULT '',
+                contact_method TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL DEFAULT '',
+                student_intention TEXT NOT NULL DEFAULT '',
+                next_follow_up TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                FOREIGN KEY (ticket_id) REFERENCES complaint_tickets(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_communication_records_ticket ON communication_records(ticket_id);
+
+            -- 网点车辆数配置表（投诉率分母，人工维护）
+            CREATE TABLE IF NOT EXISTS org_vehicle_counts (
+                unit_code TEXT PRIMARY KEY,
+                unit_name TEXT NOT NULL DEFAULT '',
+                vehicle_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
 
             -- 回复模板表
             CREATE TABLE IF NOT EXISTS reply_templates (
@@ -156,7 +223,7 @@ def init_db():
         if "ticket_id" not in columns:
             try:
                 conn.execute("ALTER TABLE operation_logs ADD COLUMN ticket_id TEXT DEFAULT ''")
-                print("[数据库] 已迁移: operation_logs 增加 ticket_id 列")
+                system_logger.info("[数据库] 已迁移: operation_logs 增加 ticket_id 列")
             except Exception:
                 pass
 
@@ -173,12 +240,40 @@ def init_db():
 
         # ── 新增字段迁移（回访 + 文档 + 特殊退费检测）──
         new_fields = [
+            ("actual_paid", "REAL DEFAULT 0"),
+            ("reply_outdated", "INTEGER DEFAULT 0"),
+            ("contract_set", "TEXT DEFAULT '{}'"),
+            ("contract_manifest", "TEXT DEFAULT '{}'"),
             ("visit_status", "TEXT DEFAULT ''"),
             ("visit_remark", "TEXT DEFAULT ''"),
             ("visit_time", "TEXT DEFAULT ''"),
             ("registration_form_path", "TEXT DEFAULT ''"),
             ("special_warnings", "TEXT DEFAULT '[]'"),
             ("completed_at", "TEXT DEFAULT ''"),
+            ("processing_started_at", "TEXT DEFAULT ''"),
+            ("handler_name", "TEXT DEFAULT ''"),
+            ("complaint_summary", "TEXT DEFAULT ''"),
+            ("final_outcome", "TEXT DEFAULT ''"),
+            ("fee_plan_status", "TEXT DEFAULT ''"),
+            ("fee_plan_version", "INTEGER DEFAULT 0"),
+            ("fee_plan_history", "TEXT DEFAULT '[]'"),
+            ("fee_plan_snapshot", "TEXT DEFAULT '{}'"),
+            ("fee_confirmed_by", "TEXT DEFAULT ''"),
+            ("fee_confirmed_at", "TEXT DEFAULT ''"),
+            ("fee_confirm_note", "TEXT DEFAULT ''"),
+            ("branch_cooperation", "TEXT DEFAULT ''"),
+            ("branch_cooperation_note", "TEXT DEFAULT ''"),
+            ("archive_status", "TEXT DEFAULT ''"),
+            ("organization_unit_id", "TEXT DEFAULT ''"),
+            ("organization_unit_type", "TEXT DEFAULT ''"),
+            ("organization_unit_name", "TEXT DEFAULT ''"),
+            ("organization_unit_code", "TEXT DEFAULT ''"),
+            ("cancellation_date", "TEXT DEFAULT ''"),
+            ("cancellation_source", "TEXT DEFAULT ''"),
+            ("cancellation_note", "TEXT DEFAULT ''"),
+            ("withdraw_status", "TEXT DEFAULT '未撤诉'"),
+            ("withdraw_updated_at", "TEXT DEFAULT ''"),
+            ("negotiation_outcome", "TEXT DEFAULT ''"),
         ]
         cursor = conn.execute("PRAGMA table_info(complaint_tickets)")
         existing_columns = [row[1] for row in cursor.fetchall()]
@@ -186,9 +281,50 @@ def init_db():
             if col_name not in existing_columns:
                 try:
                     conn.execute(f"ALTER TABLE complaint_tickets ADD COLUMN {col_name} {col_def}")
-                    print(f"[数据库] 已迁移: complaint_tickets 增加 {col_name} 列")
+                    system_logger.info("[数据库] 已迁移: complaint_tickets 增加 %s 列", col_name)
                 except Exception as e:
-                    print(f"[数据库] 迁移 {col_name} 失败: {e}")
+                    system_logger.error("[数据库] 迁移 %s 失败: %s", col_name, e)
+
+        communication_columns = [
+            row[1] for row in conn.execute("PRAGMA table_info(communication_records)").fetchall()
+        ]
+        if "fee_plan_version" not in communication_columns:
+            conn.execute(
+                "ALTER TABLE communication_records ADD COLUMN fee_plan_version INTEGER NOT NULL DEFAULT 0"
+            )
+
+        # ── 网点车辆数表：增加 unit_type 列（空表时用经营单位字典初始化）──
+        vc_columns = [row[1] for row in conn.execute("PRAGMA table_info(org_vehicle_counts)").fetchall()]
+        if "unit_type" not in vc_columns:
+            try:
+                conn.execute("ALTER TABLE org_vehicle_counts ADD COLUMN unit_type TEXT NOT NULL DEFAULT ''")
+                system_logger.info("[数据库] 已迁移: org_vehicle_counts 增加 unit_type 列")
+            except Exception:
+                pass
+        for u in ORGANIZATION_UNITS:
+            conn.execute(
+                "UPDATE org_vehicle_counts SET unit_type=? WHERE unit_code=? AND unit_type=''",
+                (u["type"], u["code"]),
+            )
+        vc_cnt = conn.execute("SELECT COUNT(*) AS cnt FROM org_vehicle_counts").fetchone()["cnt"] or 0
+        if vc_cnt == 0:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.executemany(
+                "INSERT OR IGNORE INTO org_vehicle_counts (unit_code, unit_name, unit_type, updated_at)"
+                " VALUES (?, ?, ?, ?)",
+                [(u["code"], u["name"], u["type"], now) for u in ORGANIZATION_UNITS],
+            )
+            system_logger.info("[数据库] 已初始化: org_vehicle_counts 载入 %d 个网点", len(ORGANIZATION_UNITS))
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute("""
+            UPDATE contract_analysis_jobs
+            SET status='interrupted',
+                error='服务重启，任务已中断，可重试',
+                finished_at=?,
+                updated_at=?
+            WHERE status IN ('queued', 'running')
+        """, (now, now))
 
 
 # ═══════════════════════════════════════════════════
@@ -199,9 +335,16 @@ def save_ticket(data: dict) -> str:
     """保存或更新投诉工单，返回 id"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     record_id = data.get("id") or str(uuid.uuid4())
+    data = normalize_ticket_org_fields(dict(data))
+
+    # 自动设置处理时长相关时间戳
+    if data.get("handle_status") == "处理中" and not data.get("processing_started_at"):
+        data["processing_started_at"] = now
+    if data.get("handle_status") == "已完结" and not data.get("completed_at"):
+        data["completed_at"] = now
 
     # 序列化嵌套字段
-    for key in ("deduction_detail", "training_hours", "query_result", "handle_steps", "attachments"):
+    for key in ("deduction_detail", "training_hours", "query_result", "handle_steps", "attachments", "special_warnings", "fee_plan_history", "fee_plan_snapshot", "contract_set", "contract_manifest"):
         val = data.get(key)
         if isinstance(val, (list, dict)):
             data[key] = json.dumps(val, ensure_ascii=False)
@@ -212,29 +355,46 @@ def save_ticket(data: dict) -> str:
         "complaint_content", "complaint_demands", "source_channel",
         "forwarding_dept", "caller_number", "complaint_date",
         "complaint_type", "priority", "query_result",
-        "contract_path", "contract_code", "total_fee",
-        "deduction_fee", "refund_fee", "deduction_detail",
+        "contract_path", "contract_code", "total_fee", "actual_paid",
+        "deduction_fee", "refund_fee", "deduction_detail", "contract_set", "contract_manifest",
         "handle_status", "handle_steps", "attachments",
-        "reply_path", "feishu_record_id", "feishu_handle_no",
+        "reply_path", "reply_outdated", "feishu_record_id", "feishu_handle_no",
         "license_type", "school_name", "school_short",
+        "organization_unit_id", "organization_unit_type",
+        "organization_unit_name", "organization_unit_code",
         "registration_date", "exam_stage", "student_status",
         "training_hours", "remarks", "created_at", "updated_at",
+        "visit_status", "visit_remark", "visit_time",
+        "registration_form_path", "special_warnings",
+        "processing_started_at", "completed_at",
+        "handler_name", "complaint_summary", "final_outcome",
+        "fee_plan_status", "fee_plan_version", "fee_plan_history", "fee_plan_snapshot",
+        "fee_confirmed_by", "fee_confirmed_at", "fee_confirm_note",
+        "branch_cooperation",
+        "branch_cooperation_note", "archive_status",
+        "cancellation_date", "cancellation_source",
+        "cancellation_note",
+        "withdraw_status", "withdraw_updated_at",
+        "negotiation_outcome",
     }
 
     with get_db() as conn:
-        # 检查同一天同一人是否已有记录（去重逻辑）
-        complaint_date = data.get("complaint_date", "")
-        id_card = data.get("id_card", "")
-        if complaint_date and id_card:
-            date_only = complaint_date[:10]  # 取日期部分 YYYY-MM-DD
-            existing_same_day = conn.execute(
-                "SELECT id FROM complaint_tickets WHERE id_card=? AND date(complaint_date)=? ORDER BY created_at ASC LIMIT 1",
-                (id_card, date_only),
-            ).fetchone()
-            if existing_same_day and existing_same_day[0] != record_id:
-                # 同一天已有记录，更新最早的记录
-                record_id = existing_same_day[0]
-                data["id"] = record_id
+        # 去重逻辑：仅在「新建工单」（data 未显式携带 id）时生效，
+        # 避免更新既有工单时把改动静默串写到同日最早工单。
+        if not data.get("id"):
+            # 检查同一天同一人是否已有记录（去重逻辑）
+            complaint_date = data.get("complaint_date", "")
+            id_card = data.get("id_card", "")
+            if complaint_date and id_card:
+                date_only = complaint_date[:10]  # 取日期部分 YYYY-MM-DD
+                existing_same_day = conn.execute(
+                    "SELECT id FROM complaint_tickets WHERE id_card=? AND date(complaint_date)=? ORDER BY created_at ASC LIMIT 1",
+                    (id_card, date_only),
+                ).fetchone()
+                if existing_same_day and existing_same_day[0] != record_id:
+                    # 同一天已有记录，更新最早的记录
+                    record_id = existing_same_day[0]
+                    data["id"] = record_id
 
         existing = conn.execute("SELECT id FROM complaint_tickets WHERE id=?", (record_id,)).fetchone()
         if existing:
@@ -269,6 +429,87 @@ def get_ticket(record_id: str) -> dict | None:
         if row:
             return _row_to_dict_ticket(row)
     return None
+
+
+def _row_to_contract_analysis_job(row: sqlite3.Row | None) -> dict | None:
+    if not row:
+        return None
+    job = dict(row)
+    try:
+        job["result"] = json.loads(job.get("result") or "{}")
+    except json.JSONDecodeError:
+        job["result"] = {}
+    return job
+
+
+def create_contract_analysis_job(data: dict) -> str:
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    job_id = data.get("id") or uuid.uuid4().hex
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO contract_analysis_jobs (
+                id, ticket_id, fingerprint, filepath, status, result, error,
+                created_at, started_at, finished_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            job_id,
+            data.get("ticket_id", ""),
+            data.get("fingerprint", ""),
+            data.get("filepath", ""),
+            data.get("status", "queued"),
+            json.dumps(data.get("result", {}), ensure_ascii=False),
+            data.get("error", ""),
+            data.get("created_at", now),
+            data.get("started_at", ""),
+            data.get("finished_at", ""),
+            now,
+        ))
+    return job_id
+
+
+def get_contract_analysis_job(job_id: str) -> dict | None:
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT id, ticket_id, fingerprint, filepath, status, result, error,"
+            " created_at, started_at, finished_at, updated_at"
+            " FROM contract_analysis_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+    return _row_to_contract_analysis_job(row)
+
+
+def find_active_contract_analysis_job(fingerprint: str) -> dict | None:
+    with get_db() as conn:
+        row = conn.execute("""
+            SELECT id, ticket_id, fingerprint, filepath, status, result, error,
+                   created_at, started_at, finished_at, updated_at
+            FROM contract_analysis_jobs
+            WHERE fingerprint=? AND status IN ('queued', 'running')
+            ORDER BY created_at DESC LIMIT 1
+        """, (fingerprint,)).fetchone()
+    return _row_to_contract_analysis_job(row)
+
+
+def update_contract_analysis_job(job_id: str, **updates) -> None:
+    allowed = {"status", "result", "error", "started_at", "finished_at"}
+    fields = []
+    values = []
+    for key, value in updates.items():
+        if key not in allowed:
+            continue
+        if key == "result" and isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False)
+        fields.append(f"{key}=?")
+        values.append(value)
+    if not fields:
+        return
+    fields.append("updated_at=?")
+    values.append(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    values.append(job_id)
+    with get_db() as conn:
+        conn.execute(
+            f"UPDATE contract_analysis_jobs SET {','.join(fields)} WHERE id=?",
+            values,
+        )
 
 
 def get_ticket_by_idcard(id_card: str) -> list[dict]:
@@ -342,13 +583,14 @@ def update_ticket(record_id: str, data: dict) -> bool:
 def _row_to_dict_ticket(row: sqlite3.Row) -> dict:
     """将数据库行转为字典，反序列化 JSON 字段"""
     d = dict(row)
-    for key in ("deduction_detail", "training_hours", "query_result", "handle_steps", "attachments"):
+    for key in ("deduction_detail", "training_hours", "query_result", "handle_steps", "attachments", "special_warnings", "fee_plan_history", "fee_plan_snapshot", "contract_set", "contract_manifest"):
         val = d.get(key, "")
         if isinstance(val, str) and val:
             try:
                 d[key] = json.loads(val)
             except json.JSONDecodeError:
                 pass
+    d["reply_outdated"] = bool(d.get("reply_outdated", 0))
     return d
 
 
@@ -396,14 +638,21 @@ def save_template(data: dict) -> str:
 def list_templates() -> list[dict]:
     """列出所有回复模板"""
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM reply_templates ORDER BY is_default DESC, created_at DESC").fetchall()
+        rows = conn.execute(
+            "SELECT id, name, description, template_path, variables, is_default,"
+            " created_at, updated_at FROM reply_templates"
+            " ORDER BY is_default DESC, created_at DESC"
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
 def get_default_template() -> dict | None:
     """获取默认回复模板"""
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM reply_templates WHERE is_default=1 LIMIT 1").fetchone()
+        row = conn.execute(
+            "SELECT id, name, description, template_path, variables, is_default,"
+            " created_at, updated_at FROM reply_templates WHERE is_default=1 LIMIT 1"
+        ).fetchone()
         return dict(row) if row else None
 
 
@@ -415,39 +664,157 @@ def delete_template(template_id: str) -> bool:
 
 
 # ═══════════════════════════════════════════════════
+#  网点车辆数配置（投诉率分母）
+# ═══════════════════════════════════════════════════
+
+def get_org_vehicle_counts() -> dict[str, int]:
+    """获取所有网点的车辆数配置 {unit_code: count}"""
+    with get_db() as conn:
+        rows = conn.execute("SELECT unit_code, vehicle_count FROM org_vehicle_counts").fetchall()
+        return {r["unit_code"]: r["vehicle_count"] for r in rows}
+
+
+def get_org_vehicle_count_items() -> list[dict]:
+    """获取所有网点的车辆数配置列表（类型/名称/代号/车辆数）"""
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT unit_code, unit_name, unit_type, vehicle_count FROM org_vehicle_counts"
+            " ORDER BY unit_type DESC, unit_code"
+        ).fetchall()
+        return [
+            {
+                "unit_code": r["unit_code"],
+                "unit_name": r["unit_name"],
+                "unit_type": r["unit_type"],
+                "vehicle_count": r["vehicle_count"] or 0,
+            }
+            for r in rows
+        ]
+
+
+def save_org_vehicle_count(unit_code: str, unit_name: str = "", unit_type: str = "", vehicle_count: int = 0) -> bool:
+    """保存单个网点车辆数（upsert）"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO org_vehicle_counts (unit_code, unit_name, unit_type, vehicle_count, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(unit_code) DO UPDATE SET
+                unit_name=excluded.unit_name,
+                unit_type=excluded.unit_type,
+                vehicle_count=excluded.vehicle_count,
+                updated_at=excluded.updated_at
+            """,
+            (unit_code, unit_name, unit_type, int(vehicle_count or 0), now),
+        )
+        return True
+
+
+def save_org_vehicle_counts(items: list[dict]) -> int:
+    """全量保存网点车辆数配置（不在列表中的网点将被删除），返回成功条数"""
+    saved = 0
+    codes: set[str] = set()
+    for item in items or []:
+        code = str(item.get("unit_code") or "").strip()
+        if not code or code in codes:
+            continue
+        codes.add(code)
+        save_org_vehicle_count(
+            code,
+            str(item.get("unit_name") or ""),
+            str(item.get("unit_type") or ""),
+            int(item.get("vehicle_count") or 0),
+        )
+        saved += 1
+    with get_db() as conn:
+        if codes:
+            placeholders = ",".join("?" for _ in codes)
+            conn.execute(
+                f"DELETE FROM org_vehicle_counts WHERE unit_code NOT IN ({placeholders})",
+                tuple(codes),
+            )
+        else:
+            conn.execute("DELETE FROM org_vehicle_counts")
+    return saved
+
+
+# ═══════════════════════════════════════════════════
 #  投诉统计
 # ═══════════════════════════════════════════════════
 
-def get_ticket_statistics(start_date: str = "", end_date: str = "") -> dict:
-    """获取投诉工单统计数据，支持按时间筛选（合并查询减少数据库调用）"""
+def _previous_month(ym: str) -> str:
+    """返回 YYYY-MM 的上一个月（如 2026-01 → 2025-12）"""
+    try:
+        year, month = int(ym[:4]), int(ym[5:7])
+        month -= 1
+        if month == 0:
+            year -= 1
+            month = 12
+        return f"{year:04d}-{month:02d}"
+    except (ValueError, IndexError):
+        return ym
+
+
+def get_ticket_statistics(
+    start_date: str = "",
+    end_date: str = "",
+    scope: str = "all",
+    unit_code: str = "",
+) -> dict:
+    """获取投诉工单统计数据，支持按时间筛选、网点类型（all/branch/store）与单网点过滤。
+
+    scope: all=全部网点 / branch=仅分校 / store=仅分店
+    unit_code: 指定单个网点代号时，只统计该网点（下钻详情用）
+    """
     with get_db() as conn:
-        # 时间条件
+        # 时间条件 + 网点范围条件
         conditions = []
+        params = []
         if start_date:
-            conditions.append(f"complaint_date >= '{start_date}'")
+            conditions.append("complaint_date >= ?")
+            params.append(start_date)
         if end_date:
-            conditions.append(f"complaint_date <= '{end_date}'")
+            conditions.append("complaint_date <= ?")
+            params.append(end_date)
+        if unit_code:
+            conditions.append("(organization_unit_code = ? OR school_short = ?)")
+            params.extend([unit_code, unit_code])
+        elif scope == "branch":
+            conditions.append("organization_unit_type = '分校'")
+        elif scope == "store":
+            conditions.append("organization_unit_type = '分店'")
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else "WHERE 1=1"
 
-        # 一条 SQL 聚合：总数 + 各状态 + 退费总额 + 重复投诉数
+        # 一条 SQL 聚合：总数 + 各状态 + 有效投诉量 + 撤销量
         agg_row = conn.execute(f"""
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN handle_status='待处理' THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN handle_status='处理中' THEN 1 ELSE 0 END) AS processing,
-                SUM(CASE WHEN handle_status IN ('已完结','已归档') THEN 1 ELSE 0 END) AS completed,
-                COALESCE(SUM(refund_fee), 0) AS refund_sum
+                SUM(CASE WHEN handle_status='已完结' OR archive_status='已归档' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN final_outcome='投诉撤销' THEN 1 ELSE 0 END) AS cancelled_total,
+                SUM(CASE WHEN final_outcome!='投诉撤销' OR final_outcome='' THEN 1 ELSE 0 END) AS effective_total
             FROM complaint_tickets {where_clause}
-        """).fetchone()
+        """, params).fetchone()
 
-        # 一条 SQL 聚合：驾校 / 渠道 / 类型分组
+        integrity_row = conn.execute(f"""
+            SELECT
+                SUM(CASE WHEN archive_status='已归档' AND handle_status!='已完结' THEN 1 ELSE 0 END) AS archived_not_completed,
+                SUM(CASE WHEN handle_status='已完结' AND TRIM(final_outcome)='' THEN 1 ELSE 0 END) AS completed_without_final_outcome
+            FROM complaint_tickets {where_clause}
+        """, params).fetchone()
+
+        # 一条 SQL 聚合：经营单位 / 渠道 / 类型 / 结果 / 配合度分组
         group_rows = conn.execute(f"""
-            SELECT school_short, source_channel, complaint_type,
+            SELECT school_short, organization_unit_name, organization_unit_code, organization_unit_type,
+                   source_channel, complaint_type, final_outcome, branch_cooperation,
                    COUNT(*) as cnt
             FROM complaint_tickets {where_clause}
-            GROUP BY school_short, source_channel, complaint_type
-        """).fetchall()
+            GROUP BY school_short, organization_unit_name, organization_unit_code, organization_unit_type,
+                     source_channel, complaint_type, final_outcome, branch_cooperation
+        """, params).fetchall()
 
         # 重复投诉（一次查询）
         repeat_rows = conn.execute(f"""
@@ -455,30 +822,107 @@ def get_ticket_statistics(start_date: str = "", end_date: str = "") -> dict:
             FROM complaint_tickets {where_clause} AND id_card != ''
             GROUP BY id_card HAVING cnt > 1
             ORDER BY cnt DESC LIMIT 10
-        """).fetchall()
+        """, params).fetchall()
+
+        daily_rows = conn.execute(f"""
+            SELECT date(complaint_date) AS complaint_day, COUNT(*) AS cnt
+            FROM complaint_tickets {where_clause}
+            AND complaint_date != ''
+            GROUP BY date(complaint_date)
+            ORDER BY complaint_day ASC
+        """, params).fetchall()
+
+        # 月度聚合（YYYY-MM），供看板趋势图与环比/同比使用
+        month_rows = conn.execute(f"""
+            SELECT substr(complaint_date, 1, 7) AS ym, COUNT(*) AS cnt
+            FROM complaint_tickets {where_clause}
+            AND complaint_date != ''
+            GROUP BY ym
+            ORDER BY ym ASC
+        """, params).fetchall()
+
+        # 上一自然月（环比基准）与去年同月（同比基准）的投诉量
+        if month_rows:
+            last_ym = month_rows[-1]["ym"]
+            prev_ym = _previous_month(last_ym)
+            prev_rows = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM complaint_tickets WHERE substr(complaint_date,1,7)=? AND complaint_date != ''",
+                (prev_ym,),
+            ).fetchone()
+            prev_month_count = prev_rows["cnt"] or 0
+        else:
+            last_ym = ""
+            prev_month_count = 0
+
+        # 车辆数配置（投诉率分母）
+        vehicle_counts = get_org_vehicle_counts()
 
         total = agg_row["total"] or 0
         pending = agg_row["pending"] or 0
         processing = agg_row["processing"] or 0
         completed = agg_row["completed"] or 0
-        refund_sum = round(agg_row["refund_sum"], 2)
+        effective_total = agg_row["effective_total"] or 0
+        cancelled_total = agg_row["cancelled_total"] or 0
+        archived_not_completed = integrity_row["archived_not_completed"] or 0
+        completed_without_final_outcome = integrity_row["completed_without_final_outcome"] or 0
 
         # 解析分组结果
         type_map = {"A": "退费纠纷", "B": "教学服务", "C": "考试安排", "D": "合同争议", "E": "其他"}
-        school_counts: dict[str, int] = {}
+        school_counts: dict[str, dict] = {}
         source_counts: dict[str, int] = {}
         type_counts: dict[str, int] = {}
+        outcome_counts: dict[str, int] = {}
+        cooperation_counts: dict[str, int] = {}
         for row in group_rows:
-            s = row["school_short"] or "未知"
-            school_counts[s] = school_counts.get(s, 0) + row["cnt"]
+            code = row["organization_unit_code"] or row["school_short"] or ""
+            unit = resolve_org_unit(code, row["organization_unit_name"] or "")
+            name = row["organization_unit_name"] or (unit or {}).get("name") or code or "未知"
+            unit_type = row["organization_unit_type"] or (unit or {}).get("type") or "未知"
+            key = (unit_type, name, code or (unit or {}).get("code", ""))
+            school_counts.setdefault(key, {
+                "school": name,
+                "code": code or (unit or {}).get("code", ""),
+                "unit_type": unit_type,
+                "count": 0,
+                "total_count": 0,
+                "cancelled_count": 0,
+            })
+            school_counts[key]["total_count"] += row["cnt"]
+            if row["final_outcome"] == "投诉撤销":
+                school_counts[key]["cancelled_count"] += row["cnt"]
+            else:
+                school_counts[key]["count"] += row["cnt"]
             src = row["source_channel"] or "未知"
             source_counts[src] = source_counts.get(src, 0) + row["cnt"]
             t = type_map.get(row["complaint_type"], row["complaint_type"] or "未知")
             type_counts[t] = type_counts.get(t, 0) + row["cnt"]
+            outcome = row["final_outcome"] or "未定结果"
+            outcome_counts[outcome] = outcome_counts.get(outcome, 0) + row["cnt"]
+            cooperation = row["branch_cooperation"] or "未评价"
+            cooperation_counts[cooperation] = cooperation_counts.get(cooperation, 0) + row["cnt"]
 
-        by_school = sorted([{"school": k, "count": v} for k, v in school_counts.items()], key=lambda x: x["count"], reverse=True)[:10]
+        # 给每个网点挂车辆数与投诉率（有效投诉 ÷ 车辆数）
+        for item in school_counts.values():
+            code = item["code"]
+            vc = vehicle_counts.get(code) or 0
+            item["vehicle_count"] = vc
+            item["complaint_rate"] = round(item["count"] / vc * 100, 2) if vc > 0 else None
+        school_items = list(school_counts.values())
+        by_school = sorted(school_items, key=lambda x: x["count"], reverse=True)[:10]
+        by_rate = sorted(
+            [x for x in school_items if x["complaint_rate"] is not None],
+            key=lambda x: x["complaint_rate"],
+            reverse=True,
+        )[:10]
+
         by_source = sorted([{"source": k, "count": v} for k, v in source_counts.items()], key=lambda x: x["count"], reverse=True)
         by_type = sorted([{"type": k, "count": v} for k, v in type_counts.items()], key=lambda x: x["count"], reverse=True)
+        by_outcome = sorted([{"outcome": k, "count": v} for k, v in outcome_counts.items()], key=lambda x: x["count"], reverse=True)
+        by_branch_cooperation = sorted(
+            [{"cooperation": k, "count": v} for k, v in cooperation_counts.items()],
+            key=lambda x: x["count"],
+            reverse=True,
+        )
 
         return {
             "this_total": total,
@@ -486,12 +930,117 @@ def get_ticket_statistics(start_date: str = "", end_date: str = "") -> dict:
             "pending": pending,
             "processing": processing,
             "completed": completed,
-            "refund_sum": refund_sum,
+            "effective_total": effective_total,
+            "cancelled_total": cancelled_total,
+            "integrity_issues": {
+                "archived_not_completed": archived_not_completed,
+                "completed_without_final_outcome": completed_without_final_outcome,
+                "total": archived_not_completed + completed_without_final_outcome,
+            },
+            "refund_sum": 0,
             "by_school": by_school,
+            "by_rate": by_rate,
             "by_source": by_source,
             "by_type": by_type,
+            "by_outcome": by_outcome,
+            "by_branch_cooperation": by_branch_cooperation,
+            "monthly_trend": [
+                {"month": row["ym"], "count": row["cnt"]}
+                for row in month_rows
+            ],
+            "monthly_compare": {
+                "current_month": last_ym,
+                "current_month_count": month_rows[-1]["cnt"] if month_rows else 0,
+                "previous_month_count": prev_month_count,
+                "previous_month": _previous_month(last_ym) if last_ym else "",
+                "mom_change": (
+                    round((month_rows[-1]["cnt"] - prev_month_count) / prev_month_count * 100, 1)
+                    if month_rows and prev_month_count > 0
+                    else None
+                ),
+            },
+            "total_vehicle_count": sum(vehicle_counts.values()),
+            "total_complaint_rate": (
+                round(effective_total / sum(vehicle_counts.values()) * 100, 2)
+                if sum(vehicle_counts.values()) > 0
+                else None
+            ),
+            "daily_trend": [
+                {"date": row["complaint_day"], "count": row["cnt"]}
+                for row in daily_rows
+            ],
             "repeat_count": len(repeat_rows),
             "repeat_tickets": [{"id_card": r[0], "count": r[1]} for r in repeat_rows],
+        }
+
+
+# ═══════════════════════════════════════════════════
+#  处理时长统计
+# ═══════════════════════════════════════════════════
+
+def get_processing_duration_stats(date_start: str = "", date_end: str = "", unit_code: str = "") -> dict:
+    """获取处理时长统计"""
+    with get_db() as conn:
+        conditions = []
+        params = []
+        if date_start:
+            conditions.append("complaint_date >= ?")
+            params.append(date_start)
+        if date_end:
+            conditions.append("complaint_date <= ?")
+            params.append(date_end)
+        if unit_code:
+            conditions.append("(organization_unit_code = ? OR school_short = ?)")
+            params.extend([unit_code, unit_code])
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+
+        row = conn.execute(f"""
+            SELECT
+                COUNT(*) as completed_count,
+                AVG(
+                    CASE
+                        WHEN completed_at != '' AND created_at != ''
+                        THEN (julianday(completed_at) - julianday(created_at)) * 24
+                        ELSE NULL
+                    END
+                ) as avg_hours
+            FROM complaint_tickets
+            WHERE handle_status = '已完结' AND {where}
+        """, params).fetchone()
+
+        overdue = conn.execute(f"""
+            SELECT COUNT(*) FROM complaint_tickets
+            WHERE handle_status IN ('待处理', '处理中')
+            AND created_at != ''
+            AND julianday('now') - julianday(created_at) > 2
+            AND {where}
+        """, params).fetchone()[0]
+
+        by_school = conn.execute(f"""
+            SELECT school_short,
+                COUNT(*) as count,
+                AVG(
+                    CASE
+                        WHEN completed_at != '' AND created_at != ''
+                        THEN (julianday(completed_at) - julianday(created_at)) * 24
+                        ELSE NULL
+                    END
+                ) as avg_hours
+            FROM complaint_tickets
+            WHERE handle_status = '已完结' AND {where}
+            GROUP BY school_short
+            ORDER BY avg_hours DESC
+        """, params).fetchall()
+
+        return {
+            "completed_count": row[0] or 0,
+            "avg_processing_hours": round(row[1], 1) if row[1] else 0,
+            "overdue_count": overdue,
+            "by_school": [
+                {"school": r[0], "count": r[1], "avg_hours": round(r[2], 1) if r[2] else 0}
+                for r in by_school
+            ],
         }
 
 
@@ -503,7 +1052,9 @@ def get_complaint_by_idcard(id_card: str) -> dict | None:
     """按身份证号获取旧版投诉记录"""
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM complaints_v1 WHERE id_card=? ORDER BY created_at DESC LIMIT 1",
+            "SELECT id, id_card, student_name, registration_fee, deduction_fee,"
+            " refund_fee, deduction_detail, contract_code, contract_path, created_at"
+            " FROM complaints_v1 WHERE id_card=? ORDER BY created_at DESC LIMIT 1",
             (id_card,),
         ).fetchone()
         if row:
@@ -537,7 +1088,8 @@ def get_recent_logs(limit: int = 20) -> list[dict]:
     """获取最近的操作日志"""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM operation_logs ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, complaint_id, ticket_id, operation, detail, success, created_at"
+            " FROM operation_logs ORDER BY created_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -557,6 +1109,7 @@ def save_complaint(data: dict) -> str:
         "complaint_type": data.get("complaint_type", ""),
         "source_channel": data.get("complaint_channel", ""),
         "total_fee": data.get("registration_fee", 0) or data.get("total_fee", 0),
+        "actual_paid": data.get("actual_paid", 0),
         "deduction_fee": data.get("deduction_fee", 0),
         "refund_fee": data.get("refund_fee", 0),
         "deduction_detail": data.get("deduction_detail", []),
@@ -596,7 +1149,8 @@ def contract_cache_get(id_card: str) -> dict | None:
     """获取合同缓存，返回 dict 或 None"""
     with get_db() as conn:
         row = conn.execute(
-            "SELECT * FROM contract_cache WHERE id_card=?",
+            "SELECT id_card, student_name, file_path, file_size, downloaded_at"
+            " FROM contract_cache WHERE id_card=?",
             (id_card.upper(),)
         ).fetchone()
         if row:
@@ -639,7 +1193,8 @@ def contract_cache_list() -> list[dict]:
     """列出所有缓存的合同"""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT * FROM contract_cache ORDER BY downloaded_at DESC"
+            "SELECT id_card, student_name, file_path, file_size, downloaded_at"
+            " FROM contract_cache ORDER BY downloaded_at DESC"
         ).fetchall()
         return [
             {
@@ -660,6 +1215,90 @@ def get_distinct_school_short() -> list[str]:
             "SELECT DISTINCT school_short FROM complaint_tickets WHERE school_short != '' ORDER BY school_short"
         ).fetchall()
         return [row["school_short"] for row in rows]
+
+
+# ═══════════════════════════════════════════════════
+#  回访记录（已弃用，统一为沟通记录 communication_records）
+# ═══════════════════════════════════════════════════
+
+def save_visit_record(ticket_id: str, visit_date: str, visit_status: str, visit_remark: str) -> int:
+    """Deprecated: 回访记录模型已移除，统一使用 communication_records。保留签名避免外部误用。"""
+    return None
+
+
+def get_visit_records(ticket_id: str) -> list[dict]:
+    """Deprecated: 回访记录模型已移除，返回空列表。"""
+    return []
+
+
+def delete_visit_record(record_id: int) -> bool:
+    """Deprecated: 回访记录模型已移除。"""
+    return False
+
+
+# ═══════════════════════════════════════════════════
+#  沟通记录 CRUD
+# ═══════════════════════════════════════════════════
+
+def save_communication_record(
+    ticket_id: str,
+    fee_plan_version: int = 0,
+    contact_time: str = "",
+    contact_method: str = "",
+    summary: str = "",
+    student_intention: str = "",
+    next_follow_up: str = "",
+) -> int:
+    """保存一次学员沟通记录。"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if not contact_time:
+        contact_time = now
+    with get_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO communication_records
+            (ticket_id, fee_plan_version, contact_time, contact_method, summary, student_intention, next_follow_up, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticket_id, int(fee_plan_version or 0), contact_time, contact_method,
+                summary, student_intention, next_follow_up, now,
+            ),
+        )
+        conn.execute(
+            "UPDATE complaint_tickets SET updated_at=? WHERE id=?",
+            (now, ticket_id),
+        )
+        return cursor.lastrowid
+
+
+def get_communication_records(ticket_id: str) -> list[dict]:
+    """获取某个投诉案件的所有沟通记录。"""
+    with get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, ticket_id, fee_plan_version, contact_time, contact_method, summary,
+                   student_intention, next_follow_up, created_at
+            FROM communication_records
+            WHERE ticket_id=?
+            ORDER BY contact_time ASC, id ASC
+            """,
+            (ticket_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+def delete_communication_record(record_id: int, ticket_id: str = "") -> bool:
+    """删除沟通记录，可限定所属案件。"""
+    with get_db() as conn:
+        if ticket_id:
+            cursor = conn.execute(
+                "DELETE FROM communication_records WHERE id=? AND ticket_id=?",
+                (record_id, ticket_id),
+            )
+        else:
+            cursor = conn.execute("DELETE FROM communication_records WHERE id=?", (record_id,))
+        return cursor.rowcount > 0
 
 
 # 模块加载时初始化

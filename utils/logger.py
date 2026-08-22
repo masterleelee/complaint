@@ -125,7 +125,8 @@ class OperationLogger:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
-                f"""SELECT * FROM operation_logs 
+                f"""SELECT id, timestamp, log_type, action, user_id, details, status,
+                           duration_ms, ip_address FROM operation_logs 
                     {where_clause}
                     ORDER BY timestamp DESC 
                     LIMIT ?""",

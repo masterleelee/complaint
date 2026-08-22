@@ -23,3 +23,14 @@ __pycache__/
 
 # 操作系统与编辑器
 .DS_Store
+
+# Agent 工具状态与临时产物
+.omo/
+.sisyphus/
+.superpowers/
+.workbuddy/
+tmp/
+页面源码/
+
+# 学员合同原件（含个人信息）
+合同文件/

@@ -279,13 +279,55 @@ BaseCrawler (core/auth_manager.py)
       "identity": "身份证号",
       "mobile": "手机号",
       "licenseType": "车型(C1/C2)",
-      "createTime": "报名时间"
+      "createTime": "报名时间",
+      "contractFee": 4000,
+      "payFee": 1500,
+      "textTrainFee": 800,
+      "serviceFee": 1200,
+      "operateFee": 1000,
+      "operateFee2": 1000,
+      "studyTimeFee": 120,
+      "studyTimeFee2": 220,
+      "phase2Fee1": 150,
+      "phase3Fee1": 250,
+      "jiesongFee": 899,
+      "superviseFee": 1486,
+      "residueSuperviseAmt": 0,
+      "superviseDate": "2025-04-20 11:51:13"
     }
   ]
 }
 ```
 
-### 4.4 检查电子合同是否存在
+**费用字段含义**（已用 5 份真实合同 PDF 文本层逐项验证，拆分之和精确等于合同总额）：
+
+| 字段 | 含义 |
+|------|------|
+| `contractFee` | 合同总额（培训费用合计） |
+| `payFee` | 通过"东莞驾培"平台支付金额 |
+| `serviceFee` | 综合服务费（档案资料/IC卡/办公等） |
+| `textTrainFee` | 理论培训费（科目一+安全文明驾驶常识） |
+| `operateFee` / `operateFee2` | 科目二 / 科目三实际操作培训费 |
+| `studyTimeFee` / `studyTimeFee2` | 科目二 / 科目三学时单价（元/学时，退费折算依据） |
+| `phase2Fee1` / `phase3Fee1` | 科目二 / 科目三补训费（元/次） |
+| `jiesongFee` | 接送服务费（元/次，不计入合同总额） |
+| `superviseFee` | 监管资金（= payFee − 平台手续费） |
+| `residueSuperviseAmt` | 监管资金余额 |
+| `superviseDate` | 监管日期（资金进入监管时间） |
+
+### 4.4 查询交费订单明细
+
+**接口**: `POST /business/divsionOrder/list`
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `pageNum` | int | 固定 1 |
+| `pageSize` | int | 固定 20 |
+| `studentIdcard` | string | 身份证号 |
+
+**返回**: `rows` 数组，每行字段：`orderNo` 订单号、`orderTime` 下单时间、`payTime` 支付时间、`totalFee` 交易金额、`superviseFee` 科二科三监管费、`commissionFee` 平台手续费、`schoolFee` 总校学费、`registrationFee` 门店学费、`isPay`（1 已支付 / 2 未支付）
+
+### 4.5 检查电子合同是否存在
 
 **接口**: `POST /business/student/checkContract`
 
@@ -295,7 +337,7 @@ BaseCrawler (core/auth_manager.py)
 
 **返回**: `{"code": 0}` 表示有合同
 
-### 4.5 获取电子合同 PDF 路径
+### 4.6 获取电子合同 PDF 路径
 
 **接口**: `GET /business/student/viewContract/{student_id}`
 
@@ -303,7 +345,7 @@ BaseCrawler (core/auth_manager.py)
 
 **PDF 下载**: 从页面中正则提取 `.pdf` 路径，拼接完整 URL 后下载
 
-### 4.6 完整合同下载流程
+### 4.7 完整合同下载流程
 
 1. `query_student(id_card)` → 获取 `student_id` 和 `contract_available`
 2. `_get_contract_info(student_id)` → 获取合同 PDF URL

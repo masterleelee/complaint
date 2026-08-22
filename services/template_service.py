@@ -1,6 +1,7 @@
 """回复函模板管理服务 - 基于 .docx 模板变量替换"""
 import os
 import re
+import json
 import uuid
 from datetime import datetime
 from docx import Document
@@ -21,6 +22,7 @@ SUPPORTED_VARIABLES = {
     "license_type": "车型",
     "exam_stage": "当前考试阶段",
     "total_fee": "培训服务费总额",
+    "actual_paid": "学员实际已交金额",
     "total_deduction": "总扣费",
     "refund": "应退金额",
     "contract_code": "合同编号",
@@ -81,6 +83,9 @@ def generate_reply_from_template(
                         item_name = d.get("item", "")
                         amount = d.get("amount", 0)
                         reason = d.get("reason", "")
+                        formula = d.get("formula", "")
+                        if formula and ("封顶" in formula or "调整" in formula):
+                            reason = f"{reason}；计算：{formula}"
                         _add_deduction_row(table, row_idx + i - 1, i, item_name, amount, reason)
                     break
 
@@ -215,10 +220,6 @@ def _get_template_dir() -> str:
     return d
 
 
-# 需要导入 json
-import json
-
-
 def create_default_template() -> str:
     """
     创建默认 .docx 模板并存入数据库。
@@ -254,8 +255,8 @@ def create_default_template() -> str:
 
     _add_t_para(doc, "东莞市交通运输局：")
     _add_t_para(doc, f"经我驾校调查核实，投诉人{{{{name}}}}（身份证号：{{{{id_card}}}}），于{{{{registration_date}}}}在{{{{school_name}}}}网点报名{{{{license_type}}}}驾照培训。现收到学员投诉，要求退费。")
-    _add_t_para(doc, f"据了解，学员报名共交培训服务费{{{{total_fee}}}}元，目前进度处于：{{{{exam_stage}}}}阶段，{{{{training_hours}}}}。")
-    _add_t_para(doc, f"按照《东莞市机动车驾驶员培训服务合同》（合同编码：{{{{contract_code}}}}）第九条退学退费相关约定，扣费如下：")
+    _add_t_para(doc, f"据了解，学员签订合同培训服务费总额为{{{{total_fee}}}}元，实际已交费用{{{{actual_paid}}}}元，目前进度处于：{{{{exam_stage}}}}阶段，{{{{training_hours}}}}。")
+    _add_t_para(doc, f"按照《东莞市机动车驾驶员培训服务合同》（合同编码：{{{{contract_code}}}}）退学退费相关约定及已确认的扣费明细，核算扣费如下：")
 
     # 扣费明细表格
     table = doc.add_table(rows=1, cols=4)
@@ -272,8 +273,8 @@ def create_default_template() -> str:
     doc.add_paragraph()
     _add_t_para(doc, f"总扣费：{{{{total_deduction}}}}元")
     doc.add_paragraph()
-    _add_t_para(doc, f"学员已交费用{{{{total_fee}}}}元，应退回：{{{{refund}}}}元。")
-    _add_t_para(doc, "以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》第三条、第九条相关条款执行，我驾校愿意按合同约定配合办理退学退费手续。")
+    _add_t_para(doc, f"学员实际已交费用{{{{actual_paid}}}}元，应退回：{{{{refund}}}}元。")
+    _add_t_para(doc, "以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》、已确认的扣费明细及已核实的学员培训、考试进度计算，我驾校愿意按案件最终处理结果继续办理。")
 
     for _ in range(3):
         doc.add_paragraph()

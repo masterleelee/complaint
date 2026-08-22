@@ -3,7 +3,9 @@
 支持并发查询多个系统，自动处理登录态，统一结果合并
 """
 import asyncio
+import re
 import time
+from datetime import date, datetime
 from typing import Optional, Dict, Any, Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -13,6 +15,11 @@ from core.auth_manager import AuthManager, SystemType, auth_manager
 from crawlers.internal import InternalCrawler, InternalStudentInfo
 from crawlers.third import ThirdCrawler, ThirdStudentInfo
 from crawlers.driving import DrivingCrawler, DrivingStudentInfo
+from utils.logger import system_logger
+
+
+# 东莞驾培电子合同上线日期：此前报名的学员系统中无电子合同，无需登录查询
+DRIVING_ECONTRACT_START_DATE = date(2024, 3, 15)
 
 
 class QueryStatus(Enum):
@@ -21,6 +28,7 @@ class QueryStatus(Enum):
     RUNNING = "running"
     SUCCESS = "success"
     NOT_FOUND = "not_found"
+    NO_CONTRACT = "no_contract"
     ERROR = "error"
     TIMEOUT = "timeout"
 
@@ -33,6 +41,8 @@ class QueryResult:
     data: Any = None
     error: str = ""
     duration_ms: int = 0
+    phase_durations_ms: Dict[str, int] = field(default_factory=dict)
+    retry_count: int = 0
 
 
 @dataclass
@@ -62,8 +72,12 @@ class MergedStudentInfo:
     fees: list = field(default_factory=list)
     timeline: list = field(default_factory=list)
     
+    # 东莞驾培费用信息（合同金额/监管/交费订单）
+    driving_fee: Dict = field(default_factory=dict)
+    
     # 合同信息
     contract_available: bool = False
+    contract_check_deferred: bool = False
     contract_code: str = ""
     contract_url: str = ""
     
@@ -77,6 +91,46 @@ class MergedStudentInfo:
     contract_status: str = ""   # "valid" | "expired"
     skill_cert_status: str = "" # "valid" | "expired" | "no_subject1"
     skill_cert_date: str = ""   # 科目一通过日期（技能证起始日期）
+    query_durations_ms: Dict[str, int] = field(default_factory=dict)
+    system_phase_durations_ms: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    query_retry_counts: Dict[str, int] = field(default_factory=dict)
+    system_errors: Dict[str, str] = field(default_factory=dict)
+
+
+def _parse_date_str(s: str) -> Optional[date]:
+    """解析报名/考试日期，支持多种格式，失败返回 None：
+    - "2024-05-03" / "2024/05/03" / "2024.05.03"（含更长串中的子串）
+    - 紧凑 "20240503"（8 位纯数字）
+    - Unix 时间戳（10~13 位，秒或毫秒）
+    """
+    s = (s or "").strip()
+    if not s:
+        return None
+
+    # 紧凑 YYYYMMDD
+    if re.fullmatch(r"\d{8}", s):
+        try:
+            return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+        except ValueError:
+            return None
+
+    # Unix 时间戳（秒 / 毫秒）
+    if re.fullmatch(r"\d{10,13}", s):
+        try:
+            ts = int(s)
+            if ts > 10_000_000_000:  # 毫秒
+                ts = ts / 1000
+            return datetime.fromtimestamp(ts).date()
+        except (ValueError, OSError, OverflowError):
+            return None
+
+    m = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", s)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
 
 
 class QueryEngine:
@@ -95,6 +149,10 @@ class QueryEngine:
         self.auth_manager = auth_mgr or auth_manager
         self.max_workers = max_workers
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
+        self._system_executors = {
+            system_type: ThreadPoolExecutor(max_workers=1)
+            for system_type in SystemType
+        }
         self._crawlers: Dict[SystemType, Any] = {}
         self._query_cache: Dict[str, tuple] = {}  # key -> (timestamp, result)
         self._cache_ttl = 300  # 5分钟缓存
@@ -125,8 +183,19 @@ class QueryEngine:
     
     def _get_driving(self) -> DrivingCrawler:
         return self._crawlers[SystemType.DRIVING]
+
+    @staticmethod
+    def _get_query_metrics(crawler) -> dict:
+        if hasattr(crawler, "get_last_query_metrics"):
+            return crawler.get_last_query_metrics()
+        return {"phase_durations_ms": {}, "retry_count": 0}
     
-    async def query_all(self, id_card: str, timeout: float = 60.0) -> MergedStudentInfo:
+    async def query_all(
+        self,
+        id_card: str,
+        timeout: float = 60.0,
+        on_update: Callable[[MergedStudentInfo], None] = None,
+    ) -> MergedStudentInfo:
         """
         并行查询所有系统（带结果缓存）
         
@@ -143,6 +212,8 @@ class QueryEngine:
         if cached:
             ts, result = cached
             if time.time() - ts < self._cache_ttl:
+                if on_update:
+                    on_update(result)
                 return result  # 直接返回缓存结果
             else:
                 del self._query_cache[cache_key]  # 过期清除
@@ -150,53 +221,79 @@ class QueryEngine:
         loop = asyncio.get_event_loop()
         
         # 创建查询任务
+        executors = getattr(self, "_system_executors", {})
+        internal_task = loop.run_in_executor(
+            executors.get(SystemType.INTERNAL, self._executor),
+            self._query_internal,
+            id_card,
+        )
         tasks = {
-            SystemType.INTERNAL: loop.run_in_executor(
-                self._executor, self._query_internal, id_card
-            ),
+            SystemType.INTERNAL: internal_task,
             SystemType.THIRD: loop.run_in_executor(
-                self._executor, self._query_third, id_card
+                executors.get(SystemType.THIRD, self._executor),
+                self._query_third,
+                id_card,
             ),
-            SystemType.DRIVING: loop.run_in_executor(
-                self._executor, self._query_driving, id_card
-            ),
+            # 东莞驾培等待内部结果后再决定是否查询（2024-03-15 前报名无需登录）
+            SystemType.DRIVING: asyncio.ensure_future(self._driving_task(id_card, internal_task)),
         }
         
-        # 等待所有任务完成（带超时）
         results = {}
-        start_time = time.time()
-        
-        for system_type, task in tasks.items():
-            remaining = timeout - (time.time() - start_time)
+        task_systems = {task: system_type for system_type, task in tasks.items()}
+        pending = set(tasks.values())
+        deadline = loop.time() + timeout
+
+        while pending:
+            remaining = deadline - loop.time()
             if remaining <= 0:
-                results[system_type] = QueryResult(
-                    system=system_type.value,
-                    status=QueryStatus.TIMEOUT,
-                    error="查询超时"
-                )
-                continue
-            
-            try:
-                result = await asyncio.wait_for(task, timeout=remaining)
-                results[system_type] = result
-            except asyncio.TimeoutError:
-                results[system_type] = QueryResult(
-                    system=system_type.value,
-                    status=QueryStatus.TIMEOUT,
-                    error="查询超时"
-                )
-            except Exception as e:
-                results[system_type] = QueryResult(
-                    system=system_type.value,
-                    status=QueryStatus.ERROR,
-                    error=str(e)
-                )
+                break
+            done, pending = await asyncio.wait(
+                pending,
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for task in done:
+                system_type = task_systems[task]
+                try:
+                    results[system_type] = task.result()
+                except Exception as e:
+                    results[system_type] = QueryResult(
+                        system=system_type.value,
+                        status=QueryStatus.ERROR,
+                        error=str(e),
+                    )
+
+            if on_update:
+                progressive_results = dict(results)
+                for task in pending:
+                    system_type = task_systems[task]
+                    progressive_results[system_type] = QueryResult(
+                        system=system_type.value,
+                        status=QueryStatus.RUNNING,
+                    )
+                on_update(self._merge_results(id_card, progressive_results))
+
+        for task in pending:
+            task.cancel()
+            system_type = task_systems[task]
+            results[system_type] = QueryResult(
+                system=system_type.value,
+                status=QueryStatus.TIMEOUT,
+                error="查询超时",
+            )
         
         # 合并结果
         merged = self._merge_results(id_card, results)
+        if on_update:
+            on_update(merged)
         
-        # 写入缓存（仅当查到学员信息时）
-        if merged.name:
+        # 缓存结果（含“查无此人/无合同”，避免重复触发慢查询），超时或错误结果不缓存。
+        if not any(
+            result.status in (QueryStatus.ERROR, QueryStatus.TIMEOUT)
+            for result in results.values()
+        ):
             self._query_cache[f"query:{id_card}"] = (time.time(), merged)
         
         return merged
@@ -204,93 +301,167 @@ class QueryEngine:
     def _query_internal(self, id_card: str) -> QueryResult:
         """查询内部系统"""
         start_time = time.time()
+        crawler = None
         try:
             crawler = self._get_internal()
             result = crawler.query_student(id_card)
             duration = int((time.time() - start_time) * 1000)
+            metrics = self._get_query_metrics(crawler)
             
             if result:
                 return QueryResult(
                     system="internal",
                     status=QueryStatus.SUCCESS,
                     data=result,
-                    duration_ms=duration
+                    duration_ms=duration,
+                    phase_durations_ms=metrics["phase_durations_ms"],
+                    retry_count=metrics["retry_count"],
                 )
             else:
                 return QueryResult(
                     system="internal",
                     status=QueryStatus.NOT_FOUND,
-                    duration_ms=duration
+                    duration_ms=duration,
+                    phase_durations_ms=metrics["phase_durations_ms"],
+                    retry_count=metrics["retry_count"],
                 )
         except Exception as e:
             duration = int((time.time() - start_time) * 1000)
+            metrics = self._get_query_metrics(crawler) if crawler else self._get_query_metrics(None)
             return QueryResult(
                 system="internal",
                 status=QueryStatus.ERROR,
                 error=str(e),
-                duration_ms=duration
+                duration_ms=duration,
+                phase_durations_ms=metrics["phase_durations_ms"],
+                retry_count=metrics["retry_count"],
             )
     
     def _query_third(self, id_card: str) -> QueryResult:
         """查询第三系统"""
         start_time = time.time()
+        crawler = None
         try:
             crawler = self._get_third()
             result = crawler.query_student(id_card)
             duration = int((time.time() - start_time) * 1000)
+            metrics = self._get_query_metrics(crawler)
             
             if result:
                 return QueryResult(
                     system="third",
                     status=QueryStatus.SUCCESS,
                     data=result,
-                    duration_ms=duration
+                    duration_ms=duration,
+                    phase_durations_ms=metrics["phase_durations_ms"],
+                    retry_count=metrics["retry_count"],
                 )
             else:
                 return QueryResult(
                     system="third",
                     status=QueryStatus.NOT_FOUND,
-                    duration_ms=duration
+                    duration_ms=duration,
+                    phase_durations_ms=metrics["phase_durations_ms"],
+                    retry_count=metrics["retry_count"],
                 )
         except Exception as e:
             duration = int((time.time() - start_time) * 1000)
+            metrics = self._get_query_metrics(crawler) if crawler else self._get_query_metrics(None)
             return QueryResult(
                 system="third",
                 status=QueryStatus.ERROR,
                 error=str(e),
-                duration_ms=duration
+                duration_ms=duration,
+                phase_durations_ms=metrics["phase_durations_ms"],
+                retry_count=metrics["retry_count"],
             )
     
     def _query_driving(self, id_card: str) -> QueryResult:
         """查询东莞驾培系统"""
         start_time = time.time()
+        crawler = None
         try:
             crawler = self._get_driving()
-            result = crawler.query_student(id_card)
+            result = crawler.query_student(id_card, include_contract_check=True)
             duration = int((time.time() - start_time) * 1000)
+            metrics = self._get_query_metrics(crawler)
             
             if result:
                 return QueryResult(
                     system="driving",
                     status=QueryStatus.SUCCESS,
                     data=result,
-                    duration_ms=duration
+                    duration_ms=duration,
+                    phase_durations_ms=metrics["phase_durations_ms"],
+                    retry_count=metrics["retry_count"],
                 )
             else:
                 return QueryResult(
                     system="driving",
                     status=QueryStatus.NOT_FOUND,
-                    duration_ms=duration
+                    duration_ms=duration,
+                    phase_durations_ms=metrics["phase_durations_ms"],
+                    retry_count=metrics["retry_count"],
                 )
         except Exception as e:
             duration = int((time.time() - start_time) * 1000)
+            metrics = self._get_query_metrics(crawler) if crawler else self._get_query_metrics(None)
+            system_logger.error("[Query] driving 查询失败: %s", e)
             return QueryResult(
                 system="driving",
                 status=QueryStatus.ERROR,
                 error=str(e),
-                duration_ms=duration
+                duration_ms=duration,
+                phase_durations_ms=metrics["phase_durations_ms"],
+                retry_count=metrics["retry_count"],
             )
-    
+
+    @staticmethod
+    def _should_skip_driving(internal_result: Optional[QueryResult]) -> bool:
+        """2024-03-15 前报名（内部系统提供报名日期）的学员，东莞驾培无电子合同，跳过查询"""
+        if not internal_result or internal_result.status != QueryStatus.SUCCESS:
+            return False
+        reg_date = getattr(getattr(internal_result, "data", None), "registration_date", "")
+        parsed = _parse_date_str(reg_date)
+        if parsed is None:
+            return False
+        return parsed < DRIVING_ECONTRACT_START_DATE
+
+    def _warm_driving_login(self) -> bool:
+        """预热驾培登录态：登录不依赖内部系统结果，提前并行执行以隐藏耗时"""
+        try:
+            return self._get_driving().ensure_login()
+        except Exception:
+            return False
+
+    async def _driving_task(self, id_card: str, internal_task) -> QueryResult:
+        """东莞驾培查询任务：登录与内部系统查询并行；是否跳过仍等内部报名日期决定。
+        跳过时预热登录作废（后台自行结束，不影响结果）。"""
+        loop = asyncio.get_event_loop()
+        executors = getattr(self, "_system_executors", {})
+        driving_executor = executors.get(SystemType.DRIVING, self._executor)
+        login_task = loop.run_in_executor(driving_executor, self._warm_driving_login)
+        try:
+            internal_result = await internal_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            internal_result = None
+
+        if self._should_skip_driving(internal_result):
+            return QueryResult(
+                system="driving",
+                status=QueryStatus.NO_CONTRACT,
+                duration_ms=0,
+                phase_durations_ms={},
+                retry_count=0,
+            )
+        return await loop.run_in_executor(
+            driving_executor,
+            self._query_driving,
+            id_card,
+        )
+
     def _merge_results(self, id_card: str, results: Dict[SystemType, QueryResult]) -> MergedStudentInfo:
         """合并三系统查询结果"""
         internal_result = results.get(SystemType.INTERNAL)
@@ -309,6 +480,27 @@ class QueryEngine:
             "internal": results.get(SystemType.INTERNAL, QueryResult("internal", QueryStatus.ERROR)).status.value,
             "third": results.get(SystemType.THIRD, QueryResult("third", QueryStatus.ERROR)).status.value,
             "driving": results.get(SystemType.DRIVING, QueryResult("driving", QueryStatus.ERROR)).status.value,
+        }
+        info.query_durations_ms = {
+            "internal": results.get(SystemType.INTERNAL, QueryResult("internal", QueryStatus.ERROR)).duration_ms,
+            "third": results.get(SystemType.THIRD, QueryResult("third", QueryStatus.ERROR)).duration_ms,
+            "driving": results.get(SystemType.DRIVING, QueryResult("driving", QueryStatus.ERROR)).duration_ms,
+        }
+        info.system_phase_durations_ms = {
+            "internal": results.get(SystemType.INTERNAL, QueryResult("internal", QueryStatus.ERROR)).phase_durations_ms,
+            "third": results.get(SystemType.THIRD, QueryResult("third", QueryStatus.ERROR)).phase_durations_ms,
+            "driving": results.get(SystemType.DRIVING, QueryResult("driving", QueryStatus.ERROR)).phase_durations_ms,
+        }
+        info.query_retry_counts = {
+            "internal": results.get(SystemType.INTERNAL, QueryResult("internal", QueryStatus.ERROR)).retry_count,
+            "third": results.get(SystemType.THIRD, QueryResult("third", QueryStatus.ERROR)).retry_count,
+            "driving": results.get(SystemType.DRIVING, QueryResult("driving", QueryStatus.ERROR)).retry_count,
+        }
+        # 系统查询错误详情（落库便于排查）
+        info.system_errors = {
+            result.system: result.error
+            for result in results.values()
+            if result.error
         }
         
         # 基本信息优先级：内部系统 > 东莞驾培 > 第三系统
@@ -344,19 +536,9 @@ class QueryEngine:
             stage_map = {1: "科目一", 2: "科目二", 3: "科目三", 4: "科目四"}
             for stage in third.stages:
                 subject = stage_map.get(stage.stage_no, f"阶段{stage.stage_no}")
-                # 优先用"审核有效总学时"，其次"平台总学时"，最后"培训时间"
-                display_time = stage.audit_time or stage.platform_time or stage.training_time or "0时0分"
+                # 扣费以审核有效学时为准；无审核数据时才回退到平台展示值。
+                display_time = stage.audit_time or stage.training_time or stage.platform_time or "0时0分"
                 info.training_hours[subject] = display_time
-
-                # 如果内部没提供考试阶段但有培训数据，用培训最多的阶段推断
-                if stage.training_time and stage.training_time not in ("0时0分", "-"):
-                    if not info.exam_stage or info.exam_stage in ("未知", "报名", ""):
-                        for s_num, s_name in [
-                            (4, "科目四"), (3, "科目三"), (2, "科目二"), (1, "科目一")
-                        ]:
-                            if stage.stage_no >= s_num and display_time not in ("0时0分", "-"):
-                                info.exam_stage = s_name
-                                break
                 
                 # 保存详细数据用于前端展示
                 info.training_details.append({
@@ -371,8 +553,18 @@ class QueryEngine:
         # 合同信息（来自东莞驾培）
         if driving:
             info.contract_available = driving.contract_available
+            info.contract_check_deferred = not driving.contract_checked
             info.contract_code = driving.contract_code
             info.contract_url = driving.contract_url
+            info.driving_fee = {
+                "contract_fee": driving.contract_fee,
+                "pay_fee": driving.pay_fee,
+                "supervise_fee": driving.supervise_fee,
+                "residue_supervise_amt": driving.residue_supervise_amt,
+                "supervise_date": driving.supervise_date,
+                "breakdown": driving.fee_breakdown,
+                "orders": driving.pay_orders,
+            }
         
         # 构建时间轴展示
         info.timeline_display = self._build_timeline_display(info.timeline)
@@ -414,17 +606,14 @@ class QueryEngine:
             skill_cert_date: 科目一通过日期字符串，为空表示未过文科
         """
         from datetime import date, timedelta
-        import re
 
         today = date.today()
 
         # ── 合同状态：报名日期 + 3年 ──
         contract_status = ""
         if registration_date:
-            # 支持 "2024-05-03" 或 "2024/05/03" 或 "2024.05.03"
-            m = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", registration_date)
-            if m:
-                reg = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            reg = _parse_date_str(registration_date)
+            if reg:
                 expire = date(reg.year + 3, reg.month, reg.day)
                 contract_status = "expired" if today >= expire else "valid"
 
@@ -436,9 +625,9 @@ class QueryEngine:
             if ("科目1" in title or "科一" in title or "科目一" in title) and "通过" in title:
                 # 找到科目一通过节点，提取日期
                 date_str = event.get("NodeTime", "") or event.get("NodeDate", "")
-                m2 = re.search(r"(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})", date_str)
+                m2 = _parse_date_str(date_str)
                 if m2:
-                    s1_date = date(int(m2.group(1)), int(m2.group(2)), int(m2.group(3)))
+                    s1_date = m2
                     cert_expire = date(s1_date.year + 3, s1_date.month, s1_date.day)
                     skill_cert_status = "expired" if today >= cert_expire else "valid"
                     # 格式化日期用于展示
@@ -502,7 +691,10 @@ def query_all_systems_sync(id_card: str, timeout: float = 60.0) -> dict:
             "training_hours": {},
             "training_details": [],
             "fees": [],
+            "timeline": [],
+            "driving_fee": {},
             "contract_available": False,
+            "contract_check_deferred": False,
             "contract_code": "",
             "contract_url": "",
             "timeline_display": [],

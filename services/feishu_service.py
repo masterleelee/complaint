@@ -80,31 +80,22 @@ class FeishuService:
         name = complaint_data.get("name", "")
         handle_no = f"TS-{school_short}-{date_part}-{name}-{serial:03d}"
 
-        # 应退金额优先使用服务端计算的值
-        refund_amount = float(complaint_data.get("refund", 0) or 0)
-        if not refund_amount:
-            # 支持多种字段名：total_fee / registration_fee, total_deduction / deduction_fee / deduction
-            registration_fee = float(
-                complaint_data.get("registration_fee") or
-                complaint_data.get("total_fee") or 0
-            )
-            deduction = float(
-                complaint_data.get("deduction") or
-                complaint_data.get("deduction_fee") or
-                complaint_data.get("total_deduction") or 0
-            )
-            refund_amount = registration_fee - deduction
+        registration_fee = float(
+            complaint_data.get("registration_fee")
+            or complaint_data.get("total_fee")
+            or 0
+        )
+        deduction = float(
+            complaint_data.get("deduction")
+            or complaint_data.get("deduction_fee")
+            or complaint_data.get("total_deduction")
+            or 0
+        )
+        if "refund" in complaint_data and complaint_data["refund"] is not None:
+            refund_amount = float(complaint_data["refund"] or 0)
         else:
-            # refund 有值，但仍需要报名费/扣费用于飞书记录
-            registration_fee = float(
-                complaint_data.get("registration_fee") or
-                complaint_data.get("total_fee") or 0
-            )
-            deduction = float(
-                complaint_data.get("deduction") or
-                complaint_data.get("deduction_fee") or
-                complaint_data.get("total_deduction") or 0
-            )
+            actual_paid = float(complaint_data.get("actual_paid") or registration_fee)
+            refund_amount = max(0, actual_paid - deduction)
 
         # 构建字段映射（与飞书表格字段名一致）
         fields = {

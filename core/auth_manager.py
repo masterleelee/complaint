@@ -48,15 +48,43 @@ class BaseCrawler(ABC):
         self.password = password
         self.http = HTTPClient()
         self._logged_in = False
+        self._session_started_at = 0.0
+        self._last_verified_at = 0.0
         self._login_lock = threading.Lock()
         self._background_login_thread: Optional[threading.Thread] = None
+        self._query_metrics_lock = threading.Lock()
+        self._last_query_metrics = {"phase_durations_ms": {}, "retry_count": 0}
+
+    def _reset_query_metrics(self):
+        with self._query_metrics_lock:
+            self._last_query_metrics = {"phase_durations_ms": {}, "retry_count": 0}
+
+    def _record_query_phase(self, phase: str, duration_ms: int):
+        with self._query_metrics_lock:
+            phases = self._last_query_metrics["phase_durations_ms"]
+            phases[phase] = phases.get(phase, 0) + max(0, int(duration_ms))
+
+    def _increment_query_retry(self):
+        with self._query_metrics_lock:
+            self._last_query_metrics["retry_count"] += 1
+
+    def get_last_query_metrics(self) -> Dict[str, Any]:
+        with self._query_metrics_lock:
+            return {
+                "phase_durations_ms": dict(self._last_query_metrics["phase_durations_ms"]),
+                "retry_count": self._last_query_metrics["retry_count"],
+            }
     
     def _try_restore_session(self) -> bool:
         """尝试从缓存恢复会话"""
         cache = cache_manager.get(self.system_type.value, self.username)
         if cache and cache.is_valid:
+            max_age = getattr(self, "SESSION_MAX_AGE_SECONDS", None)
+            if max_age and time.time() - cache.created_at >= max_age:
+                return False
             self.http.update_cookies(cache.cookies)
             self._logged_in = True
+            self._session_started_at = cache.created_at
             return True
         return False
     
@@ -69,6 +97,12 @@ class BaseCrawler(ABC):
             cookies,
             token=None
         )
+        self._session_started_at = time.time()
+        self._last_verified_at = self._session_started_at
+
+    def mark_session_verified(self):
+        """记录最近一次已确认的正常业务响应。"""
+        self._last_verified_at = time.time()
     
     @abstractmethod
     def _do_login(self) -> LoginResult:
@@ -128,7 +162,12 @@ class BaseCrawler(ABC):
     def ensure_login(self) -> bool:
         """确保已登录"""
         if self._logged_in:
-            return True
+            max_age = getattr(self, "SESSION_MAX_AGE_SECONDS", None)
+            if not max_age or time.time() - self._session_started_at < max_age:
+                return True
+            self._logged_in = False
+            self.http.session.cookies.clear()
+            return self.login(force=True).success
         
         # 尝试恢复缓存
         if self._try_restore_session():
@@ -147,7 +186,10 @@ class BaseCrawler(ABC):
     
     def request(self, method: str, url: str, **kwargs) -> Any:
         """发送请求（自动确保登录）"""
-        if not self.ensure_login():
+        auth_started = time.perf_counter()
+        logged_in = self.ensure_login()
+        self._record_query_phase("auth_wait", (time.perf_counter() - auth_started) * 1000)
+        if not logged_in:
             raise Exception(f"{self.system_type.value} 系统登录失败")
         
         return self.http.request(method, url, **kwargs)
@@ -201,3 +243,18 @@ class AuthManager:
 
 # 全局认证管理器
 auth_manager = AuthManager()
+
+
+def refresh_session_if_due(
+    crawler: BaseCrawler,
+    refresh_after_seconds: float,
+    now: Optional[float] = None,
+) -> bool:
+    """在登录态长时间无有效响应时提前刷新；正常活跃会话不增加请求。"""
+    if not crawler._logged_in:
+        return False
+    current_time = time.time() if now is None else now
+    latest_activity = max(crawler._session_started_at, crawler._last_verified_at)
+    if current_time - latest_activity < refresh_after_seconds:
+        return False
+    return crawler.login(force=True).success
