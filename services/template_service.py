@@ -145,10 +145,21 @@ def _replace_variables_in_paragraph(para, variables: dict):
 def _add_deduction_row(table, index: int, num: int, item: str, amount: float, reason: str):
     """向表格插入扣费明细行"""
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    # index 是不含 tblPr/tblGrid 的行序位，换算成 lxml 实际插入位置
+    pos = 0
+    tr_seen = 0
+    for child in table._tbl.iterchildren():
+        if tr_seen >= index:
+            break
+        if child.tag == qn("w:tr"):
+            tr_seen += 1
+        pos += 1
 
     # 在指定位置插入新行
     row = OxmlElement("w:tr")
-    table._tbl.insert(index, row)
+    table._tbl.insert(pos, row)
 
     # 序号
     _add_cell_to_row(row, str(num))
