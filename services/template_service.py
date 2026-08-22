@@ -28,6 +28,7 @@ SUPPORTED_VARIABLES = {
     "contract_code": "合同编号",
     "reply_date": "回复日期（年月）",
     "training_hours": "培训时长描述",
+    "special_warnings": "特殊退费情况说明",
 }
 
 
@@ -285,6 +286,7 @@ def create_default_template() -> str:
     _add_t_para(doc, f"总扣费：{{{{total_deduction}}}}元")
     doc.add_paragraph()
     _add_t_para(doc, f"学员实际已交费用{{{{actual_paid}}}}元，应退回：{{{{refund}}}}元。")
+    _add_t_para(doc, "{{special_warnings}}")
     _add_t_para(doc, "以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》、已确认的扣费明细及已核实的学员培训、考试进度计算，我驾校愿意按案件最终处理结果继续办理。")
 
     for _ in range(3):
