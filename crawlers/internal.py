@@ -50,6 +50,13 @@ STATUS_MAP = {
     "X2": "科目二", "X3": "科目三",
 }
 
+_STAGE_ORDER = {"报名": 0, "科目一": 1, "科目二": 2, "科目三": 3, "科目四": 4, "已结业": 5}
+
+
+def _max_stage(a: str, b: str) -> str:
+    """取两个阶段中较靠后的一个。时间轴可能落后于实时状态（如「科二收」不产生时间轴节点）。"""
+    return b if _STAGE_ORDER.get(b, -1) > _STAGE_ORDER.get(a, -1) else a
+
 # 内部系统学员状态字典（来源：jxywxt 前端 syUtil.js 的 xyztTypeData）
 XYZT_TEXT_MAP = {
     "-1": "待完善", "00": "录入", "09": "总校收", "10": "科一收",
@@ -207,7 +214,8 @@ class InternalCrawler(BaseCrawler):
                     )
                     for future in pending:
                         future.cancel()
-                    info.exam_stage, info.exam_counts = self._analyze_timeline(info.timeline)
+                    tl_stage, info.exam_counts = self._analyze_timeline(info.timeline)
+                    info.exam_stage = _max_stage(tl_stage, STATUS_MAP.get(info.student_status_code, ""))
                 finally:
                     executor.shutdown(wait=False, cancel_futures=True)
             
@@ -271,6 +279,98 @@ class InternalCrawler(BaseCrawler):
                     return self.lookup_id_card_by_phone(phone, _retry=1)
             raise
     
+    def _load_org_tree(self):
+        """加载机构树（分校/分店 → orgid），用于报名点筛选。失败返回空列表。"""
+        if getattr(self, "_org_flat", None):
+            return self._org_flat
+        try:
+            url = f"{self.api_base}/orgController/currentTreeNode.action"
+            resp = self.http.post(url, timeout=8, retries=0)
+            tree = resp.json()
+        except Exception:
+            return []
+        flat = []
+
+        def walk(nodes):
+            for n in nodes or []:
+                if n.get("id") and n.get("text"):
+                    flat.append({"id": n["id"], "text": n["text"]})
+                walk(n.get("children"))
+
+        walk(tree)
+        self._org_flat = flat
+        return flat
+
+    @staticmethod
+    def _norm_org(name: str) -> str:
+        for suffix in ("", "招生点", "分校", "分店", "总校"):
+            name = name.replace(suffix, "")
+        return name.strip()
+
+    def resolve_org_id(self, org_name: str) -> str:
+        """按名称模糊匹配机构树节点，返回内部系统 orgid；匹配不到返回空。"""
+        key = self._norm_org(org_name or "")
+        if not key:
+            return ""
+        flat = [n for n in self._load_org_tree() if self._norm_org(n["text"])]
+        if not flat:
+            return ""
+        for node in flat:
+            if node["text"] == org_name or self._norm_org(node["text"]) == key:
+                return node["id"]
+        contains = [n for n in flat if key in self._norm_org(n["text"]) or self._norm_org(n["text"]) in key]
+        if contains:
+            return min(contains, key=lambda n: len(self._norm_org(n["text"])))["id"]
+        return ""
+
+    def search_students(self, name: str, org_name: str = "", date_from: str = "",
+                        date_to: str = "", limit: int = 50, page: int = 1,
+                        _retry: int = 0) -> dict:
+        """按姓名(模糊)+报名点+报名时间范围轻量检索学员。
+
+        只调 listXyxx.action 列表接口（sjlx=1 使日期过滤生效），
+        不加载时间轴/收费/考试分析。返回 {students, total, org_fallback}。
+        """
+        params = {
+            "name": name, "sjlx": "1",
+            "page": max(1, int(page or 1)), "rows": limit,
+            "sort": "createtime", "order": "desc",
+        }
+        org_id = self.resolve_org_id(org_name) if org_name else ""
+        if org_id:
+            params["orgid"] = org_id
+        if date_from:
+            params["queryStartTime"] = date_from
+        if date_to:
+            params["queryEndTime"] = date_to
+        org_fallback = False
+        try:
+            resp = self.post(f"{self.api_base}/xyxxController/listXyxx.action",
+                             data=params, timeout=8, retries=0)
+            data = self._response_json(resp)
+            rows = data.get("rows") or []
+            total = int(data.get("total") or 0)
+            # 报名点过滤无结果时自动放宽（学员可能已转校，内部系统存当前归属网点）
+            if not rows and org_id:
+                org_fallback = True
+                params.pop("orgid", None)
+                resp = self.post(f"{self.api_base}/xyxxController/listXyxx.action",
+                                 data=params, timeout=8, retries=0)
+                data = self._response_json(resp)
+                rows = data.get("rows") or []
+                total = int(data.get("total") or 0)
+            return {
+                "students": [self._parse_student_row(r) for r in rows],
+                "total": total,
+                "org_fallback": org_fallback,
+            }
+        except InternalAuthenticationExpired:
+            if _retry == 0:
+                self.logout()
+                if self.ensure_login():
+                    return self.search_students(name, org_name, date_from, date_to, limit, page, _retry=1)
+            raise
+
     def _parse_student_row(self, row: dict) -> InternalStudentInfo:
         """解析学员数据行"""
         status_code = str(row.get("xyzt", ""))

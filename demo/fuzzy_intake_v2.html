@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>原型 v2：新增投诉（含模糊查找）</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--primary:#2563eb;--plight:#e0ecff;--pdark:#1d4ed8;--success:#059669;--slight:#ecfdf5;--warning:#d97706;--wlight:#fffbeb;--danger:#dc2626;--dlight:#fef2f2;--surface:#fff;--bg:#eef3f8;--text:#0f172a;--t2:#64748b;--border:#e2e8f0}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex;min-height:100vh}
+
+/* ── 左侧导航（复刻真实页）── */
+.side{width:210px;background:linear-gradient(180deg,#1e40af,#1e3a8a);color:#dbeafe;display:flex;flex-direction:column;padding:18px 12px;position:sticky;top:0;height:100vh;flex-shrink:0}
+.logo{padding:4px 10px 18px;border-bottom:1px solid rgba(255,255,255,.15)}
+.logo b{display:block;font-size:16px;color:#fff}
+.logo span{font-size:11px;color:#93c5fd}
+nav{margin-top:14px;display:flex;flex-direction:column;gap:4px}
+nav a{padding:9px 12px;border-radius:8px;font-size:13.5px;color:#cbd5f5;cursor:pointer;text-decoration:none}
+nav a.on{background:rgba(255,255,255,.18);color:#fff;font-weight:600}
+.side-date{margin-top:auto;font-size:11px;color:#93c5fd;padding:0 10px}
+
+main{flex:1;padding:18px 22px 26px;max-width:1180px}
+.page-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.page-head h1{font-size:20px}
+.proto-tag{background:#111827;color:#fbbf24;font-size:11px;padding:3px 8px;border-radius:6px}
+.scenes{margin-left:auto;display:flex;gap:6px}
+.scenes button{border:1px solid var(--border);background:#fff;color:var(--t2);border-radius:7px;padding:4px 11px;cursor:pointer;font-size:12px}
+.scenes button.on{background:var(--primary);border-color:var(--primary);color:#fff}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:14px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.ch{padding:11px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.cb{padding:14px 16px}
+.step{display:inline-flex;width:20px;height:20px;border-radius:6px;background:var(--plight);color:var(--pdark);font-size:11.5px;font-weight:700;align-items:center;justify-content:center}
+
+/* ① 材料区 */
+.intake{display:flex;gap:10px;align-items:stretch}
+.clip{width:44px;border:1px dashed #c7d6ee;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;color:var(--primary);cursor:pointer;background:#f8fbff}
+textarea{flex:1;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13.5px;resize:none;font-family:inherit;color:var(--text)}
+textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.clues{display:flex;gap:8px;align-items:center;margin-top:9px;flex-wrap:wrap}
+.chip{border-radius:999px;padding:3px 10px;font-size:12px;font-weight:500}
+.c-blue{background:var(--plight);color:var(--pdark)}.c-green{background:var(--slight);color:var(--success)}
+
+/* 表单 */
+.fl{display:block;font-size:12px;color:var(--t2);margin-bottom:4px}
+.req{color:var(--danger)}
+.fc{width:100%;border:1px solid var(--border);border-radius:8px;padding:7px 10px;font-size:13.5px;background:#fff;color:var(--text)}
+.fc:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.frow{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
+.gt{font-size:12.5px;font-weight:700;color:#334155;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+
+.grid2{display:grid;grid-template-columns:1.35fr .95fr;gap:22px}
+@media(max-width:980px){.grid2{grid-template-columns:1fr}}
+
+.tabs{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;width:max-content}
+.tabs button{border:none;background:#fff;padding:6px 13px;font-size:12.5px;cursor:pointer;color:var(--t2)}
+.tabs button.on{background:var(--plight);color:var(--pdark);font-weight:600}
+
+.btn{border:none;border-radius:8px;padding:8px 15px;font-size:13.5px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.bp{background:var(--primary);color:#fff}.bp:hover{background:var(--pdark)}
+.bp:disabled{background:#94a3b8;cursor:not-allowed}
+.bo{background:#fff;border:1px solid var(--border);color:var(--text);font-weight:500}
+
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th{font-size:11.5px;color:var(--t2);text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);background:#f8fafc;white-space:nowrap}
+td{padding:8px 9px;border-bottom:1px solid #f1f5f9;font-size:13px;white-space:nowrap}
+tr.cand{cursor:pointer}tr.cand:hover{background:#f0f6ff}
+tr.picked{background:var(--slight)!important;outline:2px solid var(--success);outline-offset:-2px}
+.nc{font-weight:600}
+.mtag{font-size:10px;padding:1px 5px;border-radius:4px;margin-left:5px}
+.m-exact{background:var(--slight);color:var(--success)}
+.mask{font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.rev{cursor:pointer;color:var(--primary);font-size:11px;margin-left:5px;text-decoration:underline dotted}
+.bdg{border-radius:999px;padding:2px 8px;font-size:11px;font-weight:500;white-space:nowrap}
+.b-blue{background:var(--plight);color:var(--pdark)}.b-orange{background:var(--wlight);color:var(--warning)}
+
+.filled{background:var(--slight);border:1px solid #a7f3d0;border-radius:8px;padding:8px 12px;margin-top:10px;display:none;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px}
+.fchip{background:#fff;border:1px solid #a7f3d0;border-radius:6px;padding:2px 8px;font-size:11.5px;font-weight:600;color:#065f46;font-family:ui-monospace,Menlo,monospace}
+
+.empty{text-align:center;padding:24px;color:var(--t2);font-size:13px;line-height:2}
+.suggest{background:var(--wlight);border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-top:8px;font-size:12.5px}
+.note{font-size:11.5px;color:var(--t2);line-height:1.7;margin-top:8px}
+
+.actionbar{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px dashed var(--border)}
+.progress-wrap{display:none;align-items:center;gap:8px;flex-wrap:wrap}
+.bar{width:150px;height:6px;background:#e2e8f0;border-radius:99px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:var(--primary);transition:width .4s}
+.toast{position:fixed;right:24px;bottom:24px;background:#065f46;color:#fff;padding:11px 18px;border-radius:10px;font-size:13.5px;display:none;box-shadow:0 8px 24px rgba(6,95,70,.35);z-index:50}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:r .8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}
+</style>
+</head>
+<body>
+<aside class="side">
+  <div class="logo"><b>投诉系统</b><span>v2 智能工作台</span></div>
+  <nav>
+    <a class="on">⊕ 新增投诉</a><a>▦ 案件工作台</a><a>☰ 投诉列表</a><a>📊 投诉统计</a>
+  </nav>
+  <div class="side-date">2026-08-23</div>
+</aside>
+<main>
+<div class="page-head">
+  <h1>新增投诉</h1><span class="proto-tag">🧪 原型 · 数据为模拟</span>
+  <div class="scenes">
+    <button class="on" id="swA" onclick="demo('normal')">场景A 查到候选</button>
+    <button id="swB" onclick="demo('dup')">场景B 同名多人</button>
+    <button id="swC" onclick="demo('empty')">场景C 查无结果</button>
+  </div>
+</div>
+
+<!-- ════════ ① 投诉材料 ════════ -->
+<section class="card">
+  <div class="ch"><span class="step">①</span> 粘贴或上传投诉材料</div>
+  <div class="cb">
+    <div class="intake">
+      <div class="clip" title="点击上传文件">📎</div>
+      <textarea rows="3" placeholder="粘贴投诉内容、截图，或拖拽文件至此...（示例：我是去年在常平那边报名的学员陈金生，现在想退费，电话换了联系不上教练）" id="intakeText"></textarea>
+      <button class="btn bp" style="align-self:flex-end" id="btnIntake" onclick="doIntake()">提取线索</button>
+    </div>
+    <div class="clues" id="clueRow">
+      <span class="hint" style="font-size:12px;color:var(--t2)">支持 PDF / 图片 / Word / Excel / 文本，自动提取仅身份证号与手机号；<b>没有证件号时 → 在下方用「模糊查找」。</b></span>
+    </div>
+  </div>
+</section>
+
+<!-- ════════ ② 登记投诉信息 ════════ -->
+<section class="card">
+  <div class="ch"><span class="step">②</span> 登记投诉信息</div>
+  <div class="cb">
+    <div class="grid2">
+
+      <!-- 左：学员身份（含模糊查找） -->
+      <div>
+        <div class="gt">👤 学员身份
+          <div class="tabs" style="margin-left:auto">
+            <button id="tabE" class="on" onclick="setMode(false)">按证件号/手机号</button>
+            <button id="tabF" onclick="setMode(true)">模糊查找</button>
+          </div>
+        </div>
+
+        <div id="paneE">
+          <div class="frow">
+            <div><label class="fl">身份证号<span class="req">*</span></label><input class="fc" id="inIdcard" placeholder="大陆身份证/港澳/台湾/居留证"></div>
+            <div><label class="fl">手机号<span class="req">*</span></label><input class="fc" id="inPhone" placeholder="11位" maxlength="11"></div>
+          </div>
+          <div class="note">现状流程。两项填好后点底部「查询三系统并建案」。</div>
+        </div>
+
+        <div id="paneF" style="display:none">
+          <div class="frow" style="grid-template-columns:1.1fr 1.35fr 1.5fr auto;align-items:end">
+            <div><label class="fl">学员姓名<span class="req">*</span></label><input class="fc" id="inName" value="陈金生" placeholder="可只输姓氏「陈」"></div>
+            <div><label class="fl">报名点 / 分校</label>
+              <select class="fc" id="inOrg">
+                <option value="">全部报名点</option>
+                <option>东坑总校</option><option selected>常平横江厦分校</option><option>大朗松柏朗分校</option>
+                <option>大岭山分校</option><option>厚街河田分校</option><option>长安分校</option>
+              </select></div>
+            <div><label class="fl">报名时间（大概范围）</label>
+              <div style="display:flex;gap:5px;align-items:center">
+                <input type="date" class="fc" value="2025-01-01"><span style="font-size:11px;color:var(--t2)">至</span><input type="date" class="fc" value="2025-08-01">
+              </div></div>
+            <button class="btn bp" id="btnGo" onclick="doSearch()" style="padding:8px 13px"><span id="goIcon">🔍</span><span id="goText">查找</span></button>
+          </div>
+          <div id="searchMeta" style="display:none;margin-top:9px"></div>
+          <div id="resultArea"></div>
+          <div class="filled" id="filledBar">
+            ✅ 已带入候选学员
+            <span class="fchip" id="chipName"></span>
+            <span class="fchip" id="chipId"></span>
+            <span class="fchip" id="chipPhone"></span>
+            <button class="btn bo" style="margin-left:auto;padding:4px 10px;font-size:12px" onclick="undoPick()">撤销重选</button>
+          </div>
+          <div class="note">💡 只查内部系统一次拿候选；确认后第三系统/驾培系统由现有精确流程自动完成。</div>
+        </div>
+      </div>
+
+      <!-- 右：工单属性 -->
+      <div>
+        <div class="gt">📋 工单属性</div>
+        <div class="frow" style="grid-template-columns:1fr 1fr">
+          <div><label class="fl">来源渠道</label>
+            <select class="fc" id="selSource" onchange="document.getElementById('otherWrap').style.display=this.value==='其他途径'?'':'none'">
+              <option>12345</option><option selected>电话来访</option><option>交通部门</option>
+              <option>信访</option><option>邮件投诉</option><option>驾培协会</option><option>其他途径</option>
+            </select></div>
+          <div id="otherWrap" style="display:none"><label class="fl">具体途径</label><input class="fc" placeholder="请填写具体渠道"></div>
+          <div><label class="fl">投诉日期</label><input type="date" class="fc" value="2026-08-23"></div>
+          <div><label class="fl">投诉类型</label>
+            <select class="fc"><option>A-退费纠纷</option><option>B-教学服务</option><option>C-考试安排</option><option>D-合同争议</option><option>E-其他</option></select></div>
+          <div><label class="fl">处理人</label><input class="fc" value="王受理"></div>
+        </div>
+        <div class="note" style="margin-top:14px">建案后立即计入统计，并自动进入工作台。<br>更新已有工单时会在此处显示黄色提醒条。</div>
+      </div>
+    </div>
+
+    <!-- 底部操作条：主按钮靠右（鼠标自然落点） -->
+    <div class="actionbar">
+      <button class="btn bo">📄 新建空白投诉</button>
+      <div class="progress-wrap" id="prog">
+        <div class="bar"><i id="barFill"></i></div>
+        <span class="bdg b-blue" id="pgInternal">内部系统…</span>
+        <span class="bdg b-blue" id="pgThird">第三系统…</span>
+        <span class="bdg b-blue" id="pgDriving">驾培系统…</span>
+      </div>
+      <button class="btn bp" id="btnCreate" style="margin-left:auto;font-size:14.5px;padding:10px 22px" onclick="createCase()">🔍 查询三系统并建案</button>
+    </div>
+  </div>
+</section>
+
+<div class="toast" id="toast">✅ 建案成功，正在进入案件工作台…</div>
+<!--BODY-->
+</main>
+<script>
+const CANDIDATES = {
+  normal: [
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"常平横江厦分校", lic:"C1", reg:"2025-03-15", stage:"科目二约成功", owed:false},
+  ],
+  dup: [
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"常平横江厦分校", lic:"C1", reg:"2025-03-15", stage:"科目二约成功", owed:false},
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"大朗松柏朗分校", lic:"C2", reg:"2025-06-20", stage:"科目一受理中", owed:false},
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"东坑总校", lic:"C1", reg:"2024-11-08", stage:"已退学(已审核退费)", owed:true},
+  ],
+};
+let currentScene='normal', picked=null;
+
+/* ① 提取线索模拟 */
+function doIntake(){
+  const t=document.getElementById('intakeText').value;
+  const row=document.getElementById('clueRow');
+  if(t.includes('陈金生') && !/\d{17}[\dX]/.test(t)){
+    row.innerHTML='<span class="chip c-green">✅ 已识别线索</span><span class="hint">未提取到身份证/手机号</span><span class="chip c-blue">💡 建议切换「模糊查找」：姓名 陈金生 · 报名点 常平</span>'+
+      '<button class="btn bo" style="padding:3px 10px;font-size:12px" onclick="setMode(true)">去模糊查找 →</button>';
+  }else{
+    row.innerHTML='<span class="chip c-green">✅ 已识别线索</span><span class="chip c-blue">身份证 362428****033215</span><span class="chip c-blue">手机号 158****0340</span><span class="hint">已自动填入下方表单</span>';
+  }
+}
+
+/* 模式切换 */
+function setMode(fuzzy){
+  document.getElementById('paneE').style.display=fuzzy?'none':'';
+  document.getElementById('paneF').style.display=fuzzy?'':'none';
+  document.getElementById('tabE').className=fuzzy?'':'on';
+  document.getElementById('tabF').className=fuzzy?'on':'';
+}
+
+const maskId=v=>v.slice(0,4)+"***********"+v.slice(-3);
+const maskPh=v=>v.slice(0,3)+"****"+v.slice(-4);
+
+function doSearch(){
+  const btn=document.getElementById('btnGo');btn.disabled=true;
+  document.getElementById('goIcon').outerHTML='<span class="spin" id="goIcon" style="border-color:rgba(255,255,255,.4);border-top-color:#fff"></span>';
+  document.getElementById('goText').textContent='查询中…';
+  setTimeout(()=>{
+    renderResult(currentScene);
+    const meta=document.getElementById('searchMeta');meta.style.display='block';
+    meta.innerHTML=currentScene==='dup'
+      ?'<span class="bdg b-orange">⚠ 同名 '+CANDIDATES.dup.length+' 人</span> <span style="font-size:12px;color:var(--t2)">同名常见，按报名点/日期分辨，必要时致电确认</span>'
+      :currentScene==='empty'
+      ?'<span class="bdg b-blue">内部系统响应 0.9s · 0 条</span>':'<span class="bdg b-blue">内部系统响应 0.9s</span> <span style="font-size:12px;color:var(--t2)">姓名含「'+document.getElementById("inName").value+'」· '+(document.getElementById("inOrg").value||"全部报名点")+'</span>';
+    btn.disabled=false;
+    document.getElementById('goIcon').outerHTML='<span id="goIcon">🔍</span>';
+    document.getElementById('goText').textContent='重新查找';
+  },700);
+}
+
+function rowHtml(c,i){
+  const owed=c.owed?' <span class="bdg b-orange">欠费</span>':'';
+  const stageBdg=c.stage.startsWith('已退学')?'<span class="bdg b-orange">'+c.stage+'</span>':'<span class="bdg b-blue">'+c.stage+'</span>';
+  return '<tr class="cand" id="row'+i+'" onclick="pick('+i+')"><td><input type="radio" name="cd" onclick="event.stopPropagation();pick('+i+')"></td>'
+    +'<td class="nc">'+c.name+'</td><td><span class="mask">'+maskId(c.id)+'</span></td>'
+    +'<td><span class="mask">'+maskPh(c.phone)+'</span><span class="rev">显示</span></td>'
+    +'<td>'+c.org+'</td><td>'+c.lic+'</td><td>'+c.reg+'</td><td>'+stageBdg+owed+'</td></tr>';
+}
+
+function renderResult(scene){
+  const area=document.getElementById('resultArea');
+  if(scene==='empty'){
+    area.innerHTML='<div class="empty"><b>内部系统未找到匹配学员</b><br>可尝试：<b>放宽报名时间范围</b> · <b>报名点改「全部」</b> · <b>姓名只输姓氏</b><br><span style="font-size:12px">仍找不到？学员可能未录入内部系统，请向其本人索要手机号或证件号</span></div>';
+    return;
+  }
+  area.innerHTML='<table><thead><tr><th style="width:30px"></th><th>姓名</th><th>身份证号</th><th>手机号</th><th>报名点</th><th>车型</th><th>报名日期</th><th>当前进度</th></tr></thead><tbody>'
+    +CANDIDATES[scene].map(rowHtml).join('')+'</tbody></table>';
+}
+
+function pick(i){
+  const c=CANDIDATES[currentScene][i];picked=c;
+  document.querySelectorAll('#resultArea tr').forEach((r,idx)=>r.classList.toggle('picked',r.classList.contains('cand')&&idx===i+1));
+  document.getElementById('filledBar').style.display='flex';
+  document.getElementById('chipName').textContent=c.name;
+  document.getElementById('chipId').textContent=c.id;
+  document.getElementById('chipPhone').textContent=c.phone;
+  unlock(true);
+}
+function undoPick(){
+  picked=null;
+  document.querySelectorAll('#resultArea tr.picked').forEach(r=>r.classList.remove('picked'));
+  document.getElementById('filledBar').style.display='none';
+  unlock(false);
+}
+function unlock(on){
+  const b=document.getElementById('btnCreate');
+  b.disabled=!on&&!exactReady();
+}
+function exactReady(){return false;}
+
+/* 建案模拟（带三系统进度） */
+async function createCase(){
+  if(!picked){alert('请先选择候选学员或填写身份证号');return;}
+  const btn=document.getElementById('btnCreate');btn.disabled=true;
+  btn.innerHTML='<span class="spin"></span> 建案中…';
+  document.getElementById('prog').style.display='flex';
+  const steps=[['pgInternal','内部系统 ✓','barFill',35],['pgThird','第三系统 ✓','barFill',70],['pgDriving','驾培系统 ✓','barFill',100]];
+  for(const [id,label,,pct] of steps){
+    await new Promise(r=>setTimeout(r,600));
+    const el=document.getElementById(id);el.textContent=label;el.className='bdg c-green';el.style.background='var(--slight)';el.style.color='var(--success)';
+    document.getElementById('barFill').style.width=pct+'%';
+  }
+  document.getElementById('toast').style.display='block';
+  setTimeout(()=>{document.getElementById('toast').style.display='none';btn.disabled=false;btn.innerHTML='🔍 查询三系统并建案';},2200);
+}
+
+/* 场景切换 */
+function demo(s){
+  currentScene=s;undoPick();setMode(true);
+  ['A','B','C'].forEach(k=>{const el=document.getElementById('sw'+k);if(el)el.classList.remove('on')});
+  document.getElementById({normal:'swA',dup:'swB',empty:'swC'}[s]).classList.add('on');
+  renderResult(s);
+  const meta=document.getElementById('searchMeta');meta.style.display='block';
+  meta.innerHTML=s==='dup'?'<span class="bdg b-orange">⚠ 同名 '+CANDIDATES.dup.length+' 人</span> <span style="font-size:12px;color:var(--t2)">同名常见，按报名点/日期分辨，必要时致电确认</span>'
+    :s==='empty'?'<span class="bdg b-blue">内部系统响应 0.9s · 0 条</span>'
+    :'<span class="bdg b-blue">内部系统响应 0.9s</span>';
+}
+</script>
+</body>
+</html>

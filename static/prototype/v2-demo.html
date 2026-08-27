@@ -1,0 +1,772 @@
+<!--
+  ============================================================
+  ⛔ PROTOTYPE — 用完即删，不是生产代码 ⛔
+  问题：v2 六步流程界面定型（布局C·三栏工作台 胜出 + 8项用户修订）
+        ①在途案件移右栏折叠 ②三系统结果分页签丰富化 ③案件卡可读性
+        ④回复函初稿→AI润色→生成落盘 ⑤配合度图标区分化 ⑥明细可解锁重编
+        ⑦归档前路径确认弹窗 ⑧新增查询过程演示页
+  数据：全部为内存中的模拟数据。
+  决议依据：docs/plans/2026-08-22-v2-simplification-plan.md
+  ============================================================
+-->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v2 原型 · 投诉处理系统</title>
+<style>
+/* ===== Token（DESIGN.md）===== */
+:root{
+  --color-primary:#2563EB; --color-primary-dark:#1D4ED8; --color-primary-50:#EFF6FF;
+  --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
+  --color-brand-accent:#4F46E5;
+  --color-success:#16A34A; --color-success-50:#F0FDF4;
+  --color-warning:#D97706; --color-warning-50:#FFFBEB;
+  --color-danger:#DC2626;  --color-danger-50:#FEF2F2;
+  --color-text:#0F172A; --color-text-secondary:#64748B;
+  --color-border:#E2E8F0; --color-surface-50:#F8FAFC; --color-bg:#EEF3F8; --color-surface:#FFFFFF;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.04);
+  --shadow-md:0 4px 12px rgba(15,23,42,.08);
+  --shadow-lg:0 12px 32px rgba(15,23,42,.12);
+  --radius:8px; --radius-lg:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100%;background:var(--color-bg);color:var(--color-text);
+  font:400 13px/1.6 "PingFang SC","Microsoft YaHei",-apple-system,sans-serif;}
+.mono{font-family:"SF Mono",Menlo,Consolas,monospace}
+
+.app{display:flex;min-height:100vh}
+.sidebar{width:240px;flex:none;background:var(--brand-gradient);color:#fff;display:flex;flex-direction:column;
+  padding:20px 12px;position:sticky;top:0;height:100vh}
+.sidebar .brand{font:700 15px/1.3 inherit;padding:0 8px 20px}
+.sidebar .brand small{display:block;font-weight:400;font-size:11px;color:rgba(255,255,255,.62)}
+.nav-link{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.78);padding:10px 16px;border-radius:8px;
+  cursor:pointer;font-weight:600;margin-bottom:2px;border:none;background:none;width:100%;text-align:left;font-size:13px}
+.nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-link.active{background:rgba(255,255,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--color-brand-accent)}
+.sidebar .footer{margin-top:auto;padding:0 8px;font-size:11px;color:rgba(255,255,255,.62)}
+.main{flex:1;min-width:0;padding:24px 32px;max-width:1500px}
+
+.btn{display:inline-flex;align-items:center;gap:6px;font:600 13px/1 inherit;padding:8px 16px;border-radius:var(--radius);
+  border:1px solid transparent;cursor:pointer;background:none;color:var(--color-text)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
+.btn-primary{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
+.btn-primary:hover:not(:disabled){background:var(--color-primary-dark);box-shadow:var(--shadow-md)}
+.btn-secondary{background:#fff;color:var(--color-text);border-color:var(--color-border)}
+.btn-secondary:hover:not(:disabled){background:var(--color-surface-50);border-color:var(--color-text-secondary)}
+.btn-ghost{color:var(--color-danger);border-color:transparent}
+.btn-ghost:hover:not(:disabled){background:var(--color-danger-50)}
+.btn-sm{padding:6px 12px;font-size:12px}
+.card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm)}
+.card-header{padding:12px 16px;border-bottom:1px solid var(--color-border);font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.card-body{padding:16px}
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;font:600 11px/1.3 inherit;border-radius:999px;border:1px solid transparent}
+.badge-pending{background:var(--color-warning-50);color:var(--color-warning);border-color:#FDE68A}
+.badge-processing{background:var(--color-primary-50);color:var(--color-primary);border-color:#BFDBFE}
+.badge-completed{background:var(--color-success-50);color:var(--color-success);border-color:#A7F3D0}
+.badge-muted{background:var(--color-surface-50);color:var(--color-text-secondary);border-color:var(--color-border)}
+.table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.45}
+.table th{padding:10px 14px;text-align:left;font-weight:600;font-size:12px;color:var(--color-text-secondary);
+  background:var(--color-surface-50);border-bottom:2px solid var(--color-border);white-space:nowrap}
+.table td{padding:10px 14px;border-bottom:1px solid var(--color-border);vertical-align:middle}
+.table tbody tr:hover{background:var(--color-surface-50)}
+.form-label{display:block;font-weight:600;font-size:12px;color:var(--color-text-secondary);margin-bottom:6px}
+.form-control{width:100%;padding:8px 12px;font-size:13px;color:var(--color-text);border:1.5px solid var(--color-border);
+  border-radius:var(--radius);background:#fff;font-family:inherit;transition:border-color .15s}
+.form-control:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:20px}
+.kpi{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:16px;box-shadow:var(--shadow-sm)}
+.kpi .num{font-size:26px;font-weight:700;line-height:1.25}
+.kpi .lbl{font-size:12px;color:var(--color-text-secondary)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+
+.stepper{display:flex;align-items:center;gap:8px;overflow-x:auto;padding:8px 0}
+.step{display:flex;align-items:center;gap:6px;cursor:pointer;background:none;border:none;font:inherit;color:var(--color-text-secondary);white-space:nowrap;padding:4px 6px;border-radius:8px}
+.step .dot{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:#fff;border:2px solid var(--color-border);color:var(--color-text-secondary);font-weight:700;flex:none}
+.step.active{color:var(--color-text)}
+.step.active .dot{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+.step.done{color:var(--color-success)}
+.step.done .dot{background:var(--color-success);border-color:var(--color-success);color:#fff}
+.step-line{flex:1;height:2px;background:var(--color-border);min-width:18px}
+
+.proto-banner{z-index:4000;background:#7C2D12;color:#FFEDD5;font-size:12px;padding:6px 16px;text-align:center}
+.proto-banner b{color:#FDBA74}
+.proto-banner button{background:none;border:1px solid #FDBA74;color:#FDBA74;border-radius:6px;font-size:11px;padding:1px 8px;margin-left:10px;cursor:pointer}
+body.banner-off .proto-banner{display:none}
+.switcher{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:3000;display:flex;align-items:center;gap:2px;
+  background:#0F172A;color:#fff;border-radius:999px;padding:6px 10px;box-shadow:var(--shadow-lg);font-size:12px}
+.switcher button{background:none;border:none;color:#94A3B8;font-size:16px;cursor:pointer;padding:2px 10px;border-radius:999px}
+.switcher button:hover{background:rgba(255,255,255,.12);color:#fff}
+.switcher .vlabel{min-width:190px;text-align:center;font-weight:600}
+.toasts{position:fixed;top:52px;right:20px;z-index:5000;display:flex;flex-direction:column;gap:8px}
+.toast{padding:12px 16px;border-radius:10px;box-shadow:var(--shadow-lg);color:#fff;font-size:13px;max-width:360px;animation:slidein .2s ease}
+.toast-success{background:var(--color-success)} .toast-danger{background:var(--color-danger)} .toast-info{background:var(--color-primary)}
+@keyframes slidein{from{opacity:0;transform:translateX(16px)}to{opacity:1}}
+.modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:4500;display:flex;align-items:center;justify-content:center}
+.modal-content{background:#fff;border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);width:480px;max-width:92vw}
+.modal-content .m-head{padding:14px 18px;font-weight:700;border-bottom:1px solid var(--color-border)}
+.modal-content .m-body{padding:18px}
+.modal-content .m-foot{padding:12px 18px;border-top:1px solid var(--color-border);display:flex;justify-content:flex-end;gap:8px}
+
+.page-title{font-size:20px;font-weight:700;margin-bottom:20px}
+.chips{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+.chip{border:1px solid var(--color-border);background:#fff;border-radius:999px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600;color:var(--color-text-secondary)}
+.chip.on{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+.case-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.case-head .who{font-size:17px;font-weight:700}
+.case-head .meta{color:var(--color-text-secondary);font-size:12px;margin-top:2px;display:flex;gap:12px;flex-wrap:wrap}
+.case-head .actions{margin-left:auto;display:flex;gap:8px}
+.panel{scroll-margin-top:16px}
+.panel + .panel{margin-top:20px}
+.hint{font-size:12px;color:var(--color-text-secondary)}
+.fee-total{display:flex;gap:20px;align-items:baseline;flex-wrap:wrap;padding:12px 16px;background:var(--color-surface-50);border-radius:var(--radius);margin-top:12px}
+.fee-total .big{font-size:24px;font-weight:800;color:var(--color-success)}
+.amt-td{text-align:center;font-weight:600;font-family:"SF Mono",Menlo,Consolas,monospace;white-space:nowrap}
+/* 合同预览 */
+.contract-wrap{display:grid;grid-template-columns:1fr 250px;gap:16px;height:min(62vh,520px)}
+.contract-doc{overflow:auto;border:1px solid var(--color-border);border-radius:var(--radius);padding:18px 22px;
+  font-family:"Songti SC","STSong","SimSun",serif;font-size:13px;line-height:2;background:#fff}
+.contract-doc h4{font-size:14px;text-align:center;margin-bottom:12px}
+.contract-doc p{margin-bottom:10px;text-indent:2em}
+.contract-doc p.hl{background:#FEF9C3;border-radius:4px;transition:background .3s}
+.contract-side{overflow:auto;display:flex;flex-direction:column;gap:8px}
+.contract-side .fi{border:1.5px solid var(--color-border);border-radius:var(--radius);padding:8px 12px;cursor:pointer;font-size:12px;line-height:1.6;background:#fff}
+.contract-side .fi:hover{border-color:var(--color-primary);box-shadow:var(--shadow-sm)}
+.contract-side .fi b{display:block}
+.contract-side .fi .b{color:var(--color-text-secondary)}
+td[contenteditable="true"]:focus{outline:2px solid var(--color-primary);outline-offset:-2px;background:var(--color-primary-50);border-radius:4px}
+.gate-item{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:13px}
+.gate-ok{color:var(--color-success)} .gate-no{color:var(--color-danger)}
+.path-tree{background:#0F172A;color:#E2E8F0;border-radius:var(--radius);padding:14px 16px;font-family:"SF Mono",Menlo,Consolas,monospace;font-size:12px;line-height:1.7;overflow-x:auto}
+.path-tree .ok{color:#4ADE80}.path-tree .dim{color:#64748B}.path-tree .warn{color:#FBBF24}
+
+/* 配合度图标（形状区分：✓圆 / —圆 / ✕圆） */
+.coop-opt{display:inline-flex;align-items:center;gap:7px;border:1.5px solid var(--color-border);border-radius:999px;padding:6px 16px 6px 8px;cursor:pointer;font-weight:700;margin-right:8px;background:#fff;font-size:13px}
+.cico{width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-size:12px;font-weight:800;flex:none}
+.coop-opt.on-好{border-color:var(--color-success);color:var(--color-success);background:var(--color-success-50)}
+.coop-opt.on-中{border-color:var(--color-warning);color:var(--color-warning);background:var(--color-warning-50)}
+.coop-opt.on-差{border-color:var(--color-danger);color:var(--color-danger);background:var(--color-danger-50)}
+
+.rail{position:sticky;top:24px;align-self:start;display:flex;flex-direction:column;gap:16px;max-height:calc(100vh - 48px);overflow:auto}
+.student-card .row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed var(--color-border);font-size:12.5px}
+.student-card .row:last-child{border:none}
+.student-card .k{color:var(--color-text-secondary);flex:none}
+.student-card .v{text-align:right;word-break:break-all}
+.tl-item{position:relative;padding:0 0 10px 18px;font-size:12px;line-height:1.65}
+.tl-item:before{content:'';position:absolute;left:4px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--color-primary)}
+.tl-item:last-child{padding-bottom:0}
+.tl-item .d{color:var(--color-text-secondary);font-family:"SF Mono",Menlo,monospace;font-size:11px;margin-right:6px}
+.mini-case{padding:10px 14px;border-bottom:1px solid var(--color-border);cursor:pointer}
+.mini-case:last-child{border-bottom:none}
+.mini-case:hover{background:var(--color-surface-50)}
+.mini-case.on{background:var(--color-primary-50)}
+.mini-case .l1{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px}
+.mini-case .l1 .uc{font-size:11px;color:var(--color-text-secondary);font-weight:600}
+.mini-case .l2{font-family:"SF Mono",Menlo,monospace;font-size:11px;color:var(--color-text-secondary);margin-top:2px}
+.mini-case .l3{font-size:11px;color:var(--color-text-secondary);margin-top:2px;display:flex;gap:8px}
+.acc-h{display:flex;align-items:center;gap:8px;padding:12px 16px;font-weight:700;font-size:13px;cursor:pointer;user-select:none}
+.acc-h .arr{margin-left:auto;transition:transform .15s;color:var(--color-text-secondary)}
+.acc-h.open .arr{transform:rotate(90deg)}
+
+/* 三系统查询页签 */
+.qtabbar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.sys-strip{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto}
+.sys-pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:3px 10px;border-radius:999px;border:1px solid}
+.sys-pill.ok{color:var(--color-success);background:var(--color-success-50);border-color:#A7F3D0}
+.sys-pill.warn{color:var(--color-warning);background:var(--color-warning-50);border-color:#FDE68A}
+.info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 36px}
+.info-grid .ig{display:flex;align-items:center;padding:9px 2px;border-bottom:1px solid var(--color-surface-50);font-size:13px}
+.info-grid .ig .k{width:88px;flex:none;color:var(--color-text-secondary)}
+.info-grid .ig .v{flex:1;min-width:0;font-weight:600;color:var(--color-text);word-break:break-all}
+.src-tag{font-size:10px;color:#94A3B8;background:var(--color-surface-50);border:1px solid var(--color-border);border-radius:4px;padding:0 5px;margin-left:8px;font-weight:600;white-space:nowrap;flex:none}
+
+/* 回复函：邮件式富文本编辑器 */
+.rte-bar{display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;align-items:center}
+.rte-bar button{border:1px solid var(--color-border);background:#fff;border-radius:6px;height:28px;font-size:12px;cursor:pointer;padding:0 9px;font-weight:600;color:var(--color-text)}
+.rte-bar button:hover{background:var(--color-surface-50);border-color:var(--color-primary)}
+.rte-bar select{height:28px;border:1px solid var(--color-border);border-radius:6px;background:#fff;font-size:12px;padding:0 4px}
+.rte-bar .sep{width:1px;height:18px;background:var(--color-border);margin:0 4px}
+.letter{width:100%;min-height:280px;padding:16px 20px;border:1.5px solid var(--color-border);border-radius:var(--radius);
+  font-size:13.5px;line-height:2.1;font-family:"Songti SC","STSong","SimSun",serif;background:#fff;outline:none;overflow:auto}
+.letter p{margin:0 0 10px;text-indent:2em}
+.letter .ltr-title{text-align:center;font-weight:800;font-size:19px;margin-bottom:16px;letter-spacing:1px;text-indent:0}
+.letter .noind{text-indent:0}
+.letter .sig{text-align:right;text-indent:0}
+.letter:focus{border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+.letter.ro{background:var(--color-surface-50);color:#334155}
+.file-chip{display:inline-flex;align-items:center;gap:6px;background:var(--color-success-50);color:var(--color-success);
+  border:1px solid #A7F3D0;border-radius:8px;padding:5px 10px;font-size:12px;font-weight:600;margin-top:10px}
+
+.bar-h{display:flex;align-items:center;gap:10px;margin-bottom:10px;font-size:12px}
+.bar-h .nm{width:110px;flex:none;text-align:right;color:var(--color-text-secondary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-h .track{flex:1;height:18px;background:var(--color-surface-50);border-radius:4px;overflow:hidden;display:flex}
+.bar-h .val{width:52px;flex:none;font-weight:700}
+.legend{display:flex;gap:14px;font-size:11px;color:var(--color-text-secondary);margin-top:8px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.reply-preview{border:1px dashed var(--color-border);border-radius:var(--radius);padding:16px;background:var(--color-surface-50);font-size:12.5px;line-height:1.9;max-height:220px;overflow:auto}
+.choice-cards{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.choice-card{border:1.5px solid var(--color-border);border-radius:var(--radius-lg);padding:20px;cursor:pointer;text-align:left;background:#fff;transition:border-color .15s,box-shadow .15s;font:inherit}
+.choice-card:hover{border-color:var(--color-primary);box-shadow:var(--shadow-md)}
+.choice-card .t{font-weight:700;font-size:14px;margin-bottom:6px}
+.choice-card .d{font-size:12px;color:var(--color-text-secondary)}
+
+/* 查询进行中动画 */
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.qsys{border:1px solid var(--color-border);border-radius:var(--radius-lg);padding:22px;text-align:center;background:#fff}
+.qsys .nm{font-weight:700;font-size:14px}
+.qsys .stt{margin-top:8px;font-size:12px;font-weight:700;color:var(--color-text-secondary)}
+.qsys.run .stt{animation:pulse 1.1s infinite;color:var(--color-primary)}
+.qsys.ok{border-color:#A7F3D0;background:var(--color-success-50)} .qsys.ok .stt{color:var(--color-success);animation:none}
+.qsys.warn{border-color:#FDE68A;background:var(--color-warning-50)} .qsys.warn .stt{color:var(--color-warning);animation:none}
+.spinner{width:26px;height:26px;border:3px solid var(--color-border);border-top-color:var(--color-primary);border-radius:50%;
+  margin:10px auto 0;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+@media(max-width:900px){
+  .sidebar{width:64px;padding:12px 4px}
+  .sidebar .brand small,.nav-link span.txt,.sidebar .footer{display:none}
+  .main{padding:16px}
+  .grid-2,.grid-3,.choice-cards{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="proto-banner"><b>PROTOTYPE</b> · v2 流程原型，全部为模拟数据，仅供评审版面与流程<button onclick="document.body.classList.add('banner-off')">隐藏</button></div>
+<div class="toasts" id="toasts"></div>
+<div id="modal-root"></div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">投诉系统<small>v2 流程原型</small></div>
+    <button class="nav-link" data-nav="list">📋 <span class="txt">案件列表</span></button>
+    <button class="nav-link" data-nav="intake">➕ <span class="txt">新增受理</span></button>
+    <button class="nav-link" data-nav="dash">📊 <span class="txt">统计看板</span></button>
+    <div class="footer">原型演示 · 不连接任何后端</div>
+  </aside>
+  <main class="main" id="view"></main>
+</div>
+
+<div class="switcher" id="switcher">
+  <button id="sw-prev" title="上一个布局">‹</button>
+  <span class="vlabel" id="sw-label"></span>
+  <button id="sw-next" title="下一个布局">›</button>
+</div>
+
+<script>
+"use strict";
+/* ================= 模拟数据 ================= */
+const CASES=[
+ {id:"T1",date:"2026-05-10",name:"张雅婷",idcard:"110101199003070011",phone:"137****6478",unit:"总-东坑总校",unitType:"分校",
+  type:"退学退费",status:"processing",stage:"待考科二",paid:3680,confirmed:false,reply:null,replySaved:false,replySkipped:false,notes:"",coop:null,
+  detail:[{item:"报名固定扣费",amt:1000,basis:"合同第五条：开班后扣除固定费用1000元"},{item:"违约金（实缴20%）",amt:736,basis:"合同第八条：学员单方解除按实缴20%计违约金"},{item:"考试费",amt:0,basis:"未参加考试，按已发生次数扣费=0"}]},
+ {id:"T2",date:"2026-05-09",name:"测试学员丙",idcard:"110101199003070011",unit:"环-高埗环城分校",unitType:"分校",type:"退学退费",status:"archived",stage:"科三进行中",paid:4200,confirmed:true,reply:"generated",notes:"已协商一致退还2600元，学员认可到账周期。",coop:"好",detail:[]},
+ {id:"T3",date:"2026-06-27",name:"方梓林",idcard:"110101199003070011",unit:"未知校区",unitType:"分校",type:"服务态度",status:"pending",stage:"报名未培训",paid:3580,confirmed:false,reply:null,notes:"",coop:null,detail:[]},
+ {id:"T4",date:"2026-07-12",name:"黄晓波",idcard:"110101199003070011",unit:"沥-横沥河畔分校",unitType:"分校",type:"退学退费",status:"archived",stage:"科二进行中",paid:3900,confirmed:true,reply:"generated",notes:"分校配合核实学时，一周内完成退款。",coop:"好",detail:[]},
+ {id:"T5",date:"2026-06-25",name:"吴梓锋",idcard:"110101199003070011",unit:"沥-横沥河畔分校",unitType:"分校",type:"退学退费",status:"withdrawn",stage:"科二进行中",paid:3680,confirmed:true,reply:null,notes:"学员主动撤销投诉，继续在本校培训。",coop:"中",detail:[]},
+ {id:"T6",date:"2026-08-19",name:"梁思念",idcard:"110101199003070011",unit:"栅E-桥头邵岗头分校",unitType:"分校",type:"其他",status:"processing",stage:"科三进行中",paid:4380,confirmed:false,reply:null,notes:"",coop:null,detail:[]},
+ {id:"T7",date:"2026-08-21",name:"测试学员乙",idcard:"110101199003070011",unit:"常-常平横江厦分校",unitType:"分校",type:"退学退费",status:"pending",stage:"报名未培训",paid:3500,confirmed:false,reply:null,notes:"",coop:null,detail:[]},
+ {id:"T8",date:"2026-04-24",name:"陈虹妃",idcard:"110101199003070011",unit:"青C-塘厦林村分校",unitType:"分校",type:"退学退费",status:"archived",stage:"科三进行中",paid:4580,confirmed:true,reply:"generated",notes:"交管部门转办，已出具回复函并退款。",coop:"中",detail:[]},
+];
+const VARIANTS={A:"分步向导",B:"单页纵览",C:"三栏工作台"};
+const COOPS=["好","中","差"];
+const QTABS=[["basic","基本信息"],["exam","考试情况"],["hours","培训学时"],["fee","收费记录"],["timeline","学习时间轴"]];
+
+/* ================= 状态 ================= */
+const S={view:"list",variant:"C",caseId:"T1",step:2,feeRows:null,confirmed:false,notesAi:false,
+         replyHtml:null,replyEdited:false,stale:false,polished:false,qtab:"basic",railOpen:false,
+         intakeDone:false,filter:"all",qsys:["run","wait","wait"]};
+
+function c(){return CASES.find(x=>x.id===S.caseId)||CASES[0]}
+function esc(s){return String(s??"").replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]))}
+function money(n){return Number(n||0).toLocaleString("zh-CN")}
+function badge(st){
+ const m={pending:['badge-pending','待处理'],processing:['badge-processing','处理中'],archived:['badge-completed','已归档'],withdrawn:['badge-muted','已撤诉']};
+ const[a,b]=m[st]||m.pending;return `<span class="badge ${a}">${b}</span>`}
+function unitShort(u){const p=String(u||'').split('-');return p.length>1?p[0]+'·'+p[1]:p[0]}
+function unitName(u){const p=String(u||'').split('-');return p[1]||p[0]||'未知'}
+function toast(msg,type='info'){const d=document.createElement('div');d.className='toast toast-'+type;d.textContent=msg;
+ document.getElementById('toasts').appendChild(d);setTimeout(()=>d.remove(),3200)}
+function go(view){location.hash='#/'+view}
+function setVariant(v){S.variant=v;const view=(location.hash.replace('#/','').split('?')[0])||'case';
+ history.replaceState(null,'','#/'+view+'?v='+v);render()}
+function nav(view){document.querySelectorAll('.nav-link').forEach(b=>b.classList.toggle('active',b.dataset.nav===view))}
+
+/* 三系统富数据（模拟） */
+function mockDetail(t){
+ const early=t.stage.includes('报名');
+ return {
+  basic:[["姓名",t.name],["性别","女"],["身份证号",t.idcard,"内部系统"],["手机号",t.phone||"137****0000","内部系统"],
+   ["报名日期","2025-11-03","内部系统"],["准驾车型","C1","内部系统"],["学员状态",t.stage,"内部系统"],
+   ["经营单位",t.unit,"内部系统"],["电子合同编号","HT-2025-1103-047","东莞驾培"]],
+  exam:early?[["科目一","未约考","—","—"],["科目二","未约考","—","—"],["科目三","未约考","—","—"]]
+   :[["科目一","已通过","100分","2026-01-12"],["科目二","未约考","—","—"],["科目三","未约考","—","—"]],
+  hours:[["科目二","22","0","0"],["科目三","24","0","0"]],
+  fee:[["2025-11-03","培训学费","¥"+money(t.paid),"微信支付","RCP-8842"]],
+  timeline:early?[["2025-11-03","报名缴费，签订培训合同"],["2025-11-20","体检合格，信息入网"],["至今","未参加任何培训（学时0）"]]
+   :[["2025-11-03","报名缴费，签订培训合同"],["2025-11-20","体检合格，信息入网"],["2026-01-12","科目一考试通过（100分）"],["至今","未参加后续科目培训"]]
+ };
+}
+
+/* ================= 视图：案件列表 ================= */
+function vList(){
+ const f=S.filter, list=CASES.filter(x=>f==='all'||x.status===f||(f==='open'&&(x.status==='pending'||x.status==='processing')));
+ const cnt=s=>CASES.filter(x=>x.status===s).length;
+ return `<div class="page-title">案件列表</div>
+ <div class="kpi-row">
+   <div class="kpi"><div class="num">${CASES.length}</div><div class="lbl">累计受理（受理即入账）</div></div>
+   <div class="kpi"><div class="num" style="color:var(--color-primary)">${cnt('pending')+cnt('processing')}</div><div class="lbl">在途（待处理+处理中）</div></div>
+   <div class="kpi"><div class="num" style="color:var(--color-success)">${cnt('archived')}</div><div class="lbl">已归档</div></div>
+   <div class="kpi"><div class="num">${cnt('withdrawn')}</div><div class="lbl">已撤诉<span class="hint"> 不计有效投诉</span></div></div>
+ </div>
+ <div class="chips">${[['all','全部'],['open','在途'],['archived','已归档'],['withdrawn','已撤诉']].map(([k,t])=>
+   `<button class="chip ${f===k?'on':''}" onclick="S.filter='${k}';render()">● ${t}</button>`).join('')}
+   <span style="flex:1"></span><button class="btn btn-secondary btn-sm" onclick="toast('原型演示：真实环境将导出筛选后的工单Excel','info')">⬇ 导出Excel</button></div>
+ <div class="card"><table class="table">
+  <thead><tr><th>投诉日期</th><th>学员</th><th>身份证号</th><th>经营单位</th><th>投诉类型</th><th>状态</th><th>明细</th><th>回复函</th><th></th></tr></thead><tbody>
+  ${list.map(t=>`<tr style="cursor:pointer" onclick="S.caseId='${t.id}';resetCase();go('case')">
+    <td>${t.date}</td><td><b>${t.name}</b></td><td class="mono">${t.idcard}</td><td>${unitShort(t.unit)}</td>
+    <td>${t.type}</td><td>${badge(t.status)}</td>
+    <td>${t.confirmed?'<span class="gate-ok">✔ 已确认</span>':'<span class="hint">未确认</span>'}</td>
+    <td>${t.replySaved?'<span class="gate-ok">✔</span>':'<span class="hint">—</span>'}</td>
+    <td><button class="btn btn-secondary btn-sm">打开</button></td></tr>`).join('')}
+ </tbody></table></div>
+ <p class="hint" style="margin-top:12px">点击任意一行进入案件工作台（底部悬浮条可切换 3 种工作台布局，当前推荐 C）。</p>`;
+}
+function resetCase(){S.feeRows=null;S.confirmed=c().confirmed;S.replyHtml=null;S.replyEdited=false;S.stale=false;S.polished=false;S.qtab='basic';S.notesAi=false}
+
+/* ================= 视图：新增受理 → 查询过程 ================= */
+function vIntake(){
+ return `<div class="page-title">新增受理</div>
+ <div class="card panel"><div class="card-header">① 粘贴或上传投诉材料</div><div class="card-body">
+   <textarea class="form-control" rows="4" placeholder="粘贴投诉文字，或拖入图片/PDF/Word/Excel 附件……&#10;&#10;示例：我是测试学员乙，身份证110101199003070011，要求退费……"></textarea>
+   <div class="chips" style="margin:12px 0 0">
+     <span class="badge badge-processing">🪪 已识别身份证 ×1</span>
+     <span class="badge badge-processing">📱 已识别手机号 ×1</span>
+     <span class="hint" style="align-self:center">自动提取仅限身份证号和手机号，不调用大模型扩写</span>
+   </div>
+ </div></div>
+ <div class="card panel" style="margin-top:16px"><div class="card-header">② 登记投诉信息</div><div class="card-body">
+   <div class="grid-3">
+     <div><label class="form-label">姓名</label><input class="form-control" value="测试学员乙"></div>
+     <div><label class="form-label">身份证号</label><input class="form-control mono" value="110101199003070011"></div>
+     <div><label class="form-label">手机号</label><input class="form-control mono" value="147****2091"></div>
+     <div><label class="form-label">投诉类型 *</label><select class="form-control"><option selected>退学退费</option><option>服务态度</option><option>其他</option></select></div>
+     <div><label class="form-label">投诉来源</label><select class="form-control"><option>12345热线</option><option>交管部门转办</option><option>现场来访</option></select></div>
+     <div><label class="form-label">经营单位归属</label><input class="form-control" value="常-常平横江厦分校（内部系统自动带出）"></div>
+   </div>
+   <div style="margin-top:12px"><label class="form-label">事实简述</label><textarea class="form-control" rows="2">学员称未参加任何培训，要求全额退费。</textarea></div>
+ </div></div>
+ <div style="display:flex;gap:10px;margin-top:16px;align-items:center">
+   <button class="btn btn-primary" onclick="startQuery()">🔍 查询三系统并建案</button>
+   <span class="hint">建案后立即计入「常平横江厦分校」投诉统计</span>
+ </div>`;
+}
+function startQuery(){S.qsys=["run","wait","wait"];go('query');
+ setTimeout(()=>{S.qsys=["ok","run","wait"];if(S.view==='query')render()},600);
+ setTimeout(()=>{S.qsys=["ok","ok","run"];if(S.view==='query')render()},1400);
+ setTimeout(()=>{S.qsys=["ok","ok","warn"];if(S.view==='query')render()},2200);
+ setTimeout(()=>{if(S.view==='query'){S.caseId='T7';resetCase();go('case');
+   toast('三系统查询完成，案件已建立并计入统计','success')}},2700);}
+function vQuery(){
+ const st=(i)=>({wait:`<div class="stt">排队等待</div>`,run:`<div class="spinner"></div><div class="stt">正在查询…</div>`,
+   ok:`<div class="stt">✔ 查询成功</div>`,warn:`<div class="stt">⚠ 成功 · 非精确匹配</div>`})[S.qsys[i]];
+ return `<div class="page-title">三系统并行查询</div>
+ <div class="grid-3">
+  <div class="qsys ${S.qsys[0]}"><div class="nm">内部业务系统</div>${st(0)}</div>
+  <div class="qsys ${S.qsys[1]}"><div class="nm">第三方计时系统</div>${st(1)}</div>
+  <div class="qsys ${S.qsys[2]}"><div class="nm">东莞驾培平台</div>${st(2)}</div>
+ </div>
+ <div style="display:flex;gap:12px;margin-top:20px;align-items:center">
+  <button class="btn btn-primary" onclick="S.caseId='T7';resetCase();go('case');toast('三系统查询完成，案件已建立并计入统计','success')">立即进入案件 →</button>
+  <span class="hint">任一系统失败不影响其他系统结果；超时不缓存</span>
+ </div>`;
+}
+
+/* ================= 工作台公共区块 ================= */
+function headCard(t){
+ const code=String(t.unit).includes('-')?String(t.unit).split('-')[0]:'未归属';
+ return `<div class="case-head">
+  <div><div class="who">${t.name}<span style="color:var(--color-primary)">（${code}）</span></div>
+   <div class="meta"><span>📍 ${t.unitType} · ${unitName(t.unit)}</span><span>🗓 投诉 ${t.date}</span><span>🚗 C1 · ${t.stage}</span>
+   <span class="badge badge-processing">${t.type}</span>${badge(t.status)}</div></div>
+  <div class="actions"><button class="btn btn-ghost" onclick="askWithdraw()">🚫 标记撤诉</button></div></div>`;
+}
+
+/* ---- ② 三系统查询结果（分页签富信息） ---- */
+function sysPanel(t){
+ const d=mockDetail(t);
+ let body='';
+ if(S.qtab==='basic'){
+   body=`<div class="info-grid">${d.basic.map(([k,v,src])=>`<div class="ig"><span class="k">${k}</span><span class="v">${esc(v)}</span>${src?`<span class="src-tag">${src}</span>`:''}</div>`).join('')}</div>`;
+ }else if(S.qtab==='exam'||S.qtab==='hours'||S.qtab==='fee'){
+   const heads={exam:["科目","状态","成绩 / 次数","最近日期"],hours:["科目","要求学时","已刷学时","有效学时"],fee:["缴费日期","项目","金额","方式","收据号"]}[S.qtab];
+   body=`<table class="table"><thead><tr>${heads.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>
+     ${d[S.qtab].map(r=>`<tr>${r.map((v,i)=>`<td class="${typeof v==='string'&&/^[\d¥,—]/.test(v)?'mono':''}" ${i===2&&S.qtab!=='exam'?'style="text-align:center;font-weight:600;white-space:nowrap"':''}>${esc(v)}</td>`).join('')}</tr>`).join('')}
+   </tbody></table>
+   ${S.qtab==='hours'?`<p class="hint" style="margin-top:8px">学时为 0 不视为错误；实操费计算使用审核有效学时。</p>`:''}`;
+ }else{
+   body=d.timeline.map(([dt,txt])=>`<div class="tl-item"><span class="d">${dt}</span>${txt}</div>`).join('');
+ }
+ return `<div class="card panel" id="p-query"><div class="card-header">② 三系统查询结果
+   <span class="sys-strip">
+     <span class="sys-pill ok">内部系统 ✓</span><span class="sys-pill ok">第三系统 ✓</span><span class="sys-pill warn">东莞驾培 ⚠ 非精确匹配</span>
+   </span></div>
+  <div class="card-body">
+   <div class="qtabbar">${QTABS.map(([k,n])=>`<button class="chip ${S.qtab===k?'on':''}" onclick="S.qtab='${k}';render()">${n}</button>`).join('')}</div>
+   ${body}
+   <p class="hint" style="margin-top:10px">口径：基本信息以内部系统为准；实操学时取审核有效学时；合同原件来自东莞驾培。</p>
+  </div></div>`;
+}
+
+/* ---- ③ 扣费明细表（确认后可解锁重编） ---- */
+function feeRowsOf(t){if(S.feeRows)return S.feeRows;if(t.detail&&t.detail.length)return JSON.parse(JSON.stringify(t.detail));
+ return [{item:"报名固定扣费",amt:1000,basis:"合同第五条"}]}
+function calc(rows){const ded=rows.reduce((s,r)=>s+(Number(r.amt)||0),0);return{ded,total:c().paid,refund:Math.max((c().paid||0)-ded,0)}}
+function feePanel(t){
+ const rows=feeRowsOf(t),{ded,total,refund}=calc(rows),locked=S.confirmed;
+ return `<div class="card panel" id="p-detail"><div class="card-header">③ 扣费明细表
+   <span class="badge ${locked?'badge-completed':'badge-pending'}">${locked?'已确认':'编辑中'}</span>
+   <span style="flex:1"></span>
+   <button class="btn btn-secondary btn-sm" onclick="openContract()">👁 预览合同</button>
+   <button class="btn btn-secondary btn-sm" onclick="addRow()">＋ 添加行</button>
+   <button class="btn btn-secondary btn-sm" onclick="toast('原型演示：将下载 2026-05-10_${t.name}_…_扣费明细表.xlsx','info')">⬇ 导出Excel</button>
+   ${locked?`<button class="btn btn-secondary btn-sm" onclick="unlockDetail()">🔓 解锁修改</button>`
+           :`<button class="btn btn-primary btn-sm" onclick="confirmDetail()">✔ 确认明细</button>`}
+ </div><div class="card-body">
+   <p class="hint" style="margin-bottom:10px">来源：东莞驾培电子合同 AI 提取，可直接修改任意单元格；点击「预览合同」可对照合同原文核对扣费依据。<b>确认后作为归档与回复函的金额口径，仍可随时解锁重编。</b></p>
+   <table class="table"><thead><tr><th style="width:24%">扣费项目</th><th style="width:13%;text-align:center">金额（元）</th><th>扣费依据</th><th style="width:44px"></th></tr></thead>
+   <tbody id="fee-body">${rows.map((r,i)=>`<tr>
+     <td contenteditable="true" oninput="editRow(${i},'item',this)">${esc(r.item)}</td>
+     <td contenteditable="true" oninput="editRow(${i},'amt',this)" class="amt-td">${money(r.amt)}</td>
+     <td contenteditable="true" oninput="editRow(${i},'basis',this)" class="hint">${esc(r.basis)}</td>
+     <td><button class="btn btn-ghost btn-sm" onclick="delRow(${i})">✕</button></td></tr>`).join('')}
+   </tbody></table>
+   <div class="fee-total" id="fee-total">
+     <span>实缴总额 <b>¥${money(total)}</b></span>
+     <span>扣费合计 <b>¥${money(ded)}</b></span>
+     <span style="margin-left:auto">应退 <span class="big">¥${money(refund)}</span></span>
+   </div>
+ </div></div>`;
+}
+function editRow(i,k,el){S.feeRows=S.feeRows||feeRowsOf(c());
+ if(k==='amt'){S.feeRows[i][k]=Number(String(el.innerText).replace(/[^\d.]/g,''))||0}else{S.feeRows[i][k]=el.innerText.trim()}
+ if(k==='amt'){refreshTotals();syncLetter()}}
+function addRow(){S.feeRows=S.feeRows||feeRowsOf(c());S.feeRows.push({item:"新扣费项",amt:0,basis:""});render()}
+function delRow(i){(S.feeRows=S.feeRows||feeRowsOf(c())).splice(i,1);render()}
+function refreshTotals(){const el=document.getElementById('fee-total');if(!el)return;
+ const{ded,refund}=calc(S.feeRows||feeRowsOf(c()));
+ el.innerHTML=`<span>实缴总额 <b>¥${money(c().paid)}</b></span><span>扣费合计 <b>¥${money(ded)}</b></span><span style="margin-left:auto">应退 <span class="big">¥${money(refund)}</span></span>`}
+function confirmDetail(){S.confirmed=true;c().confirmed=true;toast('扣费明细已确认（可随时解锁修改）','success');render()}
+function unlockDetail(){S.confirmed=false;c().confirmed=false;toast('已解锁，可继续编辑扣费明细','info');render()}
+
+/* ---- 合同预览：左合同原文 / 右扣费项，点击扣费项高亮对应条款 ---- */
+const CLAUSES=[
+ ["三","第三条　培训费标准","C1车型培训服务费总额为人民币3680元。其中：综合服务费1100元；理论培训费600元；科目二实际操作培训费1200元（学时单价150元/学时）；科目三实际操作培训费800元；考试费按实代收代支。"],
+ ["五","第五条　学员退学","合同有效期内，甲方（学员）因个人原因中途提出退学的，应向乙方提交书面申请，按项目扣除费用，剩余款项由乙方退回甲方。"],
+ ["七","第七条　扣费细则","（一）已在广东省驾驶培训监管服务平台注册的，综合服务费按100%扣除；（二）理论培训费已发计时IC卡的按全额计算；（三）实际操作培训费按学时单价×有效学时数计算，但不超过本合同第三条对应部分的费用。"],
+ ["八","第八条　违约金","甲方单方解除合同的，应向乙方支付违约金，违约金为培训费总额的20%。"]];
+function hlClause(k){
+ document.querySelectorAll('.contract-doc p').forEach(p=>p.classList.remove('hl'));
+ if(!k)return;
+ const p=document.getElementById('cl-'+k);
+ if(p){p.classList.add('hl');p.scrollIntoView({block:'center',behavior:'smooth'})}
+}
+function openContract(){
+ const rows=feeRowsOf(c());
+ document.getElementById('modal-root').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal-content" style="width:min(940px,94vw)">
+  <div class="m-head">👁 合同原文对照 <span class="hint" style="font-weight:400">点击右侧扣费项 → 左侧自动定位并高亮对应条款</span></div>
+  <div class="m-body"><div class="contract-wrap">
+   <div class="contract-doc">
+    <h4>东莞市机动车驾驶员培训服务合同</h4>
+    <p>甲方（学员）：${esc(c().name)}　身份证号：${c().idcard}<br>乙方：东莞市快捷汽车驾驶员培训有限公司（${unitName(c().unit)}）<br>合同编码：HT-2025-1103-047　签订日期：2025-11-03</p>
+    ${CLAUSES.map(([k,h,b])=>`<p id="cl-${k}"><b>${h}</b><br>${b}</p>`).join('')}
+    <p style="text-indent:0;color:#94A3B8;font-size:12px">—— 以上为电子签章原件节选 · 来源：东莞驾培平台 ——</p>
+   </div>
+   <div class="contract-side">
+     <div style="font-weight:700;font-size:13px">扣费项对照</div>
+     ${rows.filter(r=>Number(r.amt)>0).map((r,i)=>{
+       const ks=[...(r.basis||'').matchAll(/第([一二三四五六七八九十]+)条/g)].map(m=>m[1]);
+       return `<div class="fi" onmouseenter="hlClause('${ks[0]||''}')" onclick="hlClause('${ks[0]||''}')"><b>${i+1}. ${esc(r.item)} — ¥${money(r.amt)}</b><span class="b">${esc(r.basis)}</span></div>`}).join('')}
+     <div style="font-size:11px;color:#94A3B8;margin-top:auto">核对无误后请关闭本窗口并「确认明细」</div>
+   </div>
+  </div></div>
+  <div class="m-foot"><button class="btn btn-primary" onclick="closeModal()">我已核对，关闭</button></div></div></div>`;
+}
+
+/* ---- ④ 回复函：邮件式富文本编辑器（致主管部门） ---- */
+function letterHtml(t,polished){
+ const d=calc(feeRowsOf(t)),rows=feeRowsOf(t).filter(r=>Number(r.amt)>0);
+ const items=rows.map((r,i)=>`<p class="noind">${i+1}、${esc(String(r.item).replace(/扣除$/,''))}扣除（${esc(r.basis)}）：${money(r.amt)}元</p>`).join('');
+ const now=new Date(),ds=`${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日`;
+ return `<p class="ltr-title">关于${esc(t.name)}投诉的回复</p>`
+ +`<p class="noind">东莞市交通运输局：</p>`
+ +`<p>经我驾校调查核实，投诉人${esc(t.name)}（身份证号：${t.idcard}），于2025年11月3日在${unitName(t.unit)}网点报名C1驾照培训。现收到学员投诉，要求退费。</p>`
+ +`<p>据了解，学员签订合同培训服务费总额为${money(t.paid)}元，实际已交费用${money(t.paid)}元，目前进度处于：${t.stage.replace('待考','科目')}阶段，科目二培训0时0分、科目三培训0时0分。</p>`
+ +`<p>按照《东莞市机动车驾驶员培训服务合同》（合同编码：HT-2025-1103-047）第九条退学退费相关约定：（一）合同有效期内，甲方因个人原因中途提出退学的应向乙方提交书面申请，按项目扣除费用，剩余款项由乙方退回。核算扣费如下：</p>`
+ +items
+ +`<p class="noind"><b>总扣费：${money(d.ded)}元。学员实际已交费用${money(t.paid)}元，应退回：${money(d.refund)}元。</b></p>`
+ +`<p>${polished?'以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》相关条款及已核实的学员培训、考试进度计算，数据真实、口径一致；我驾校愿意按案件最终处理结果继续配合办理退学退费手续，并妥善做好学员沟通解释工作。':'以上扣费严格依据双方签订的《东莞市机动车驾驶员培训服务合同》相关条款执行，我驾校愿意按合同约定配合办理退学退费手续。'}</p>`
+ +`<p class="sig">驾校名称：东莞市快捷汽车驾驶员培训有限公司（公章）<br>${ds}</p>`;
+}
+function curLetter(){return S.replyEdited&&S.replyHtml?S.replyHtml:letterHtml(c(),S.polished)}
+function fmt(cmd,val){document.execCommand(cmd,false,val||null);const el=document.getElementById('re-letter');if(el)el.focus()}
+function resyncLetter(force){
+ const el=document.getElementById('re-letter');if(!el)return;
+ if(!force&&S.replyEdited){S.stale=true;return}
+ S.replyEdited=false;S.replyHtml=letterHtml(c(),S.polished);el.innerHTML=S.replyHtml;S.stale=false;
+}
+function syncLetter(){const el=document.getElementById('re-letter');
+ if(el&&!S.replySaved&&!S.replySkipped)resyncLetter(false)}
+function replyPanel(t){
+ if(S.replySkipped)return `<div class="card panel" id="p-reply" style="opacity:.75"><div class="card-header">④ 投诉回复函 <span class="badge badge-muted">已跳过</span>
+   <span style="flex:1"></span><button class="btn btn-secondary btn-sm" onclick="S.replySkipped=false;render()">恢复撰写</button></div>
+   <div class="card-body"><span class="hint">暂不写函不影响统计计数；需要时可随时恢复。</span></div></div>`;
+ const saved=S.replySaved,html=curLetter();
+ return `<div class="card panel" id="p-reply"><div class="card-header">④ 投诉回复函
+   <span class="badge ${saved?'badge-completed':'badge-processing'}">${saved?'已生成落盘':'草稿编辑中'}</span>
+   ${!saved&&S.stale?`<span class="badge badge-pending">明细有更新</span>`:''}
+   <span class="hint" style="font-weight:400">写或不写都计入统计</span>
+   <span style="flex:1"></span>
+   ${saved?'':`${S.stale?`<button class="btn btn-secondary btn-sm" onclick="resyncLetter(true);S.stale=false;render()">🔄 按最新明细重排</button>`:''}
+   <button class="btn btn-secondary btn-sm" onclick="aiPolish(this)">✨ 一键AI修改</button>
+   <button class="btn btn-primary btn-sm" onclick="saveReply()">📄 审阅无误，生成回复函</button>`}
+ </div><div class="card-body">
+   <p class="hint" style="margin-bottom:10px">系统已按学员状态与<b>当前扣费明细</b>生成初稿（手动增删的明细行会自动带入）：像写邮件一样直接编辑排版；「一键AI修改」负责通顺润色与错别字；审阅无误后生成 Word 存入档案夹。</p>
+   ${saved?'':`<div class="rte-bar">
+     <button title="加粗" onclick="fmt('bold')"><b>B</b></button>
+     <button title="斜体" onclick="fmt('italic')"><i>I</i></button>
+     <button title="下划线" onclick="fmt('underline')"><u>U</u></button>
+     <span class="sep"></span>
+     <button onclick="fmt('justifyLeft')">居左</button>
+     <button onclick="fmt('justifyCenter')">居中</button>
+     <button onclick="fmt('justifyRight')">居右</button>
+     <span class="sep"></span>
+     <select onchange="fmt('fontSize',this.value);this.selectedIndex=0">
+       <option value="">字号</option><option value="2">小</option><option value="3" selected>标准</option>
+       <option value="4">中大</option><option value="5">大</option><option value="6">特大</option>
+     </select>
+     <button onclick="fmt('undo')">↩ 撤销</button>
+   </div>`}
+   <div id="re-letter" class="letter ${saved?'ro':''}" contenteditable="${!saved}" oninput="S.replyHtml=this.innerHTML;S.replyEdited=true">${html}</div>
+   ${saved?`<div class="file-chip">💾 已保存：D:\\投诉\\${t.unitType}\\${unitName(t.unit)}\\${t.date}_${t.name}_${t.idcard}_${String(String(t.unit).split('-')[0])}\\${t.date}_${t.name}_投诉回复函.docx</div>
+     <div style="margin-top:10px;display:flex;gap:8px"><button class="btn btn-secondary btn-sm" onclick="S.replySaved=false;c().replySaved=false;render()">✏️ 重新编辑</button>
+     <button class="btn btn-secondary btn-sm" onclick="toast('原型演示：打开 docx 预览','info')">👁 预览</button></div>`
+   :`<div class="chips" style="margin:10px 0 0"><span class="hint">落款日期自动取撰写当天 · 明细行变更将自动同步（若你已手改函件，会出现「重排」按钮）</span><span style="flex:1"></span>
+     <button class="btn btn-ghost btn-sm" onclick="S.replySkipped=true;toast('已暂不写函，不影响统计','info');render()">暂不写函，跳过 →</button></div>`}
+ </div></div>`;
+}
+function aiPolish(btn){if(S.polished){toast('当前已是润色版本','info');return}
+ S.polished=true;S.replyEdited=false;S.replyHtml=null;
+ document.getElementById('re-letter').innerHTML=letterHtml(c(),true);
+ toast('AI 润色完成：优化表述 2 处、修正错别字、统一标点排版','success')}
+function saveReply(){S.replyHtml=document.getElementById('re-letter').innerHTML;
+ S.replySaved=true;c().replySaved=true;toast('回复函已生成 Word 并保存到对应档案夹','success');render()}
+
+/* ---- ⑤ 处理情况 + 配合度 ---- */
+function coopIcon(k){return {好:'<span class="cico" style="background:var(--color-success)">✓</span>',
+ 中:'<span class="cico" style="background:var(--color-warning)">—</span>',
+ 差:'<span class="cico" style="background:var(--color-danger)">✕</span>'}[k]}
+function notesPanel(t){
+ return `<div class="card panel" id="p-notes"><div class="card-header">⑤ 处理情况 与 分校/分店配合度</div><div class="card-body">
+  <div style="display:flex;align-items:center;margin-bottom:6px"><label class="form-label" style="margin:0">处理情况</label>
+   <span style="flex:1"></span>${S.notesAi?'<span class="badge badge-completed">✨ AI 已优化</span>':'<button class="btn btn-secondary btn-sm" onclick="aiNotes()">✨ AI优化</button>'}</div>
+  <textarea class="form-control" rows="3" placeholder="例如：已电话联系学员说明扣费依据，约定本周退款……（登记表将引用此段文字）"
+    oninput="S.notes=this.value;c().notes=this.value;S.notesAi=false">${esc(S.notes||t.notes)}</textarea>
+  <p class="hint" style="margin-top:6px">随手记几个关键词即可，「AI优化」会整理成通顺、有条理的正式表述。</p>
+  <div style="margin-top:14px"><label class="form-label">配合度评价（${t.unitType}：${unitName(t.unit)}）</label><br>
+   ${COOPS.map(k=>`<span class="coop-opt ${(S.coop||t.coop)===k?'on-'+k:''}" onclick="pickCoop('${k}')">${coopIcon(k)}${k}</span>`).join('')}
+  </div>
+ </div></div>`;
+}
+function aiNotes(){
+ const t=c(),raw=(S.notes||t.notes||'').trim();
+ if(!raw){toast('请先随手记录处理经过，AI 才能帮你润色','info');return}
+ if(S.notesAi){toast('已是AI优化后的版本','info');return}
+ const d=calc(feeRowsOf(t));
+ S.notes=`1）核实诉求：已电话联系学员${t.name}，确认投诉事项为「${t.type}」；\n2）说明依据：逐项讲解扣费明细与合同条款出处，学员对核算口径表示知悉；\n3）协商结果：双方确认应退${money(d.refund)}元（实缴${money(d.ded+ d.refund)}元），约定按流程办理退款；\n4）后续跟进：持续跟进至款项到账，并对学员进行回访。`;
+ S.notesAi=true;t.notes=S.notes;render();
+ toast('AI 已优化：分点陈述、语句通顺、逻辑清晰','success');
+}
+function pickCoop(k){S.coop=k;c().coop=k;render()}
+
+/* ---- ⑥ 归档（一键直达：写入并在资源管理器中打开文件夹） ---- */
+function archPanel(t){
+ const okDetail=S.confirmed||t.confirmed,okNotes=!!(S.notes||t.notes),okCoop=!!(S.coop||t.coop);
+ const ready=okDetail&&okNotes&&okCoop,folder=`${t.date}_${t.name}_${t.idcard}_${String(String(t.unit).split('-')[0])}`;
+ const fn=`${t.date}_${t.name}`;
+ return `<div class="card panel" id="p-arch"><div class="card-header">⑥ 归档</div><div class="card-body">
+  <div class="grid-2"><div>
+    <div class="gate-item ${okNotes?'gate-ok':'gate-no'}">${okNotes?'☑':'☐'} 处理情况已填写</div>
+    <div class="gate-item ${okCoop?'gate-ok':'gate-no'}">${okCoop?'☑':'☐'} 配合度已评价</div>
+    <div class="gate-item ${okDetail?'gate-ok':'gate-no'}">${okDetail?'☑':'☐'} 扣费明细表已确认（金额口径，不落盘）</div>
+    <div class="gate-item" style="color:var(--color-text-secondary)">— 回复函非必需</div>
+    <button class="btn btn-primary" style="margin-top:10px" ${ready&&t.status!=='archived'?'':'disabled'} onclick="doArchive()">
+      ${t.status==='archived'?'✓ 已归档':'📦 归档到此路径'}</button>
+  </div><div>
+   <div class="path-tree">D:\\投诉\\${t.unitType}\\${t.unit}<br>&nbsp;└─ <b>${folder}\\</b><br>
+     &nbsp;&nbsp;&nbsp;&nbsp;├─ ${fn}_投诉登记表.docx <span class="ok">✓ 受理时已生成</span><br>
+     &nbsp;&nbsp;&nbsp;&nbsp;└─ ${fn}_投诉回复函.docx <span class="dim">${S.replySaved?'✓ 已生成落盘':'（可选·未生成）'}</span></div>
+   <p class="hint" style="margin-top:8px">一案一夹，文件夹名已含日期、姓名、身份证号与代号；夹内文件按「日期_姓名_文书类型」命名。点击「归档到此路径」直接写入并打开该文件夹核对，无需二次确认。</p>
+  </div></div>
+ </div></div>`;
+}
+function doArchive(){
+ const t=c();t.status='archived';
+ toast('已写入档案，并已在资源管理器中打开该文件夹（原型模拟）','success');render();
+}
+
+/* ================= 变体渲染 ================= */
+function caseA(t){
+ const steps=["受理登记","三系统查询","扣费明细","回复函","处理与评价","归档"];
+ const cur=Math.min(S.step,5);
+ const inner= cur<=1?(cur===0?`<div class="card panel"><div class="card-body">受理信息（只读回看）：${t.type} · 来源12345热线 · 事实简述……</div></div>`:sysPanel(t))
+   :cur===2?feePanel(t):cur===3?replyPanel(t):notesPanel(t)+'<div style="height:16px"></div>'+archPanel(t);
+ return headCard(t)+`
+  <div class="card" style="padding:10px 16px;margin-bottom:16px"><div class="stepper">${steps.map((n,i)=>{
+    return `${i?`<div class="step-line"></div>`:''}<button class="step ${i<cur?'done':i===cur?'active':''}" onclick="S.step=${i};render()">
+      <span class="dot">${i<cur?'✓':i+1}</span>${n}</button>`}).join('')}</div></div>${inner}
+  <div style="display:flex;justify-content:space-between;margin-top:16px">
+    <button class="btn btn-secondary" ${cur===0?'disabled':''} onclick="S.step=Math.max(0,S.step-1);render()">← 上一步</button>
+    <button class="btn btn-primary" ${cur===5?'disabled':''} onclick="S.step=Math.min(5,S.step+1);render()">下一步 →</button></div>`;
+}
+function caseB(t){
+ return `<div style="display:grid;grid-template-columns:150px 1fr;gap:20px">
+  <nav class="rail" style="max-height:none">
+    <a href="#p-query" onclick="S.qtab='basic'" style="display:block;padding:6px 10px;font-size:12px;color:var(--color-text-secondary);text-decoration:none;border-left:2px solid transparent;font-weight:600">② 三系统查询</a>
+    <a href="#p-detail" style="display:block;padding:6px 10px;font-size:12px;color:var(--color-text-secondary);text-decoration:none;border-left:2px solid transparent;font-weight:600">③ 扣费明细表</a>
+    <a href="#p-reply" style="display:block;padding:6px 10px;font-size:12px;color:var(--color-text-secondary);text-decoration:none;border-left:2px solid transparent;font-weight:600">④ 回复函</a>
+    <a href="#p-notes" style="display:block;padding:6px 10px;font-size:12px;color:var(--color-text-secondary);text-decoration:none;border-left:2px solid transparent;font-weight:600">⑤ 处理与配合度</a>
+    <a href="#p-arch" style="display:block;padding:6px 10px;font-size:12px;color:var(--color-text-secondary);text-decoration:none;border-left:2px solid transparent;font-weight:600">⑥ 归档</a>
+  </nav>
+  <div style="min-width:0">${headCard(t)}${sysPanel(t)}${feePanel(t)}${replyPanel(t)}${notesPanel(t)}${archPanel(t)}</div></div>`;
+}
+function caseC(t){
+ const d=mockDetail(t);
+ const openCases=CASES.filter(x=>['pending','processing'].includes(x.status));
+ return headCard(t)+`<div style="display:grid;grid-template-columns:1fr 280px;gap:20px">
+  <div style="min-width:0">${sysPanel(t)}${feePanel(t)}${replyPanel(t)}${notesPanel(t)}${archPanel(t)}</div>
+  <aside class="rail">
+    <div class="card student-card"><div class="card-header">学员档案</div><div class="card-body" style="padding:8px 16px">
+      ${[["姓名",t.name],["身份证",t.idcard],["报名时间",d.basic[4][1]],["车型","C1"],["当前进度",t.stage],
+         ["科二有效学时","0"],["实缴学费","¥"+money(t.paid)],["经营单位",t.unit]]
+        .map(([k,v])=>`<div class="row"><span class="k">${k}</span><b class="mono v" style="font-size:${String(v).length>12?'11px':'inherit'}">${esc(v)}</b></div>`).join('')}
+    </div></div>
+    <div class="card"><div class="card-header">办理时间线</div><div class="card-body" style="font-size:12px">
+      <div class="tl-item"><span class="d">${t.date}</span>投诉受理，计入统计</div>
+      <div class="tl-item"><span class="d">${t.date}</span>三系统查询完成</div>
+      <div class="tl-item"><span class="d">${t.date}</span>投诉登记表已生成</div>
+      <div class="tl-item"><span class="d">现在</span>${S.confirmed?'扣费明细已确认':'扣费明细待确认'}</div>
+      <div class="tl-item"><span class="d">—</span>${t.status==='archived'?'已归档':'待归档'}</div>
+    </div></div>
+    <div class="card">
+      <div class="acc-h ${S.railOpen?'open':''}" onclick="S.railOpen=!S.railOpen;render()">
+        📂 在途案件（${openCases.length}）<span class="arr">▸</span></div>
+      ${S.railOpen?openCases.map(x=>`<div class="mini-case ${x.id===t.id?'on':''}" onclick="S.caseId='${x.id}';resetCase();render()">
+        <div class="l1">${x.name}<span class="uc">${unitShort(x.unit).split('·')[0]}</span><span style="flex:1"></span>${badge(x.status)}</div>
+        <div class="l2">${x.idcard}</div>
+        <div class="l3"><span>投诉 ${x.date}</span><span>${x.stage}</span></div></div>`).join(''):''}
+    </div>
+  </aside></div>`;
+}
+
+/* ================= 视图：统计看板 ================= */
+function vDash(){
+ const RANK=[["东坑总校",18,2,"分校"],["常平横江厦",11,1,"分校"],["横沥河畔",9,1,"分校"],["寮步岭厦",8,0,"分校"],["殷焕权",7,1,"分店"],["陈伟良",6,0,"分店"]];
+ const TREND=[14,9,12,10,15,11,13,11];
+ const TYPE=[["退学退费",72,"#2563EB"],["服务态度",15,"#4F46E5"],["其他",13,"#CBD5E1"]];
+ const COOPD=[["东坑总校",70,20,10],["常平横江厦",55,30,15],["横沥河畔",60,25,15],["殷焕权",45,35,20]];
+ return `<div class="page-title">统计看板 <span class="hint" style="font-size:12px;font-weight:400">口径：受理即入账；撤诉不计有效投诉</span></div>
+ <div class="kpi-row">
+  <div class="kpi"><div class="num">46</div><div class="lbl">本月有效投诉</div><div class="sub hint" style="color:var(--color-danger)">▲ 较上月 +4</div></div>
+  <div class="kpi"><div class="num">6.8 天</div><div class="lbl">平均处理时长</div><div class="sub hint" style="color:var(--color-success)">▼ 缩短 1.2 天</div></div>
+  <div class="kpi"><div class="num">8%</div><div class="lbl">撤诉率</div></div>
+  <div class="kpi"><div class="num">87%</div><div class="lbl">闭环归档率</div></div>
+ </div>
+ <div class="grid-2">
+  <div class="card"><div class="card-header">单位投诉量排行 <span class="legend" style="margin:0 0 0 auto"><span><i style="background:var(--color-primary)"></i>有效</span><span><i style="background:#CBD5E1"></i>撤诉</span></span></div>
+   <div class="card-body">${RANK.map(([n,v,w,ty])=>`<div class="bar-h"><span class="nm">${n}</span><div class="track">
+     <div style="width:${v/20*100}%;background:var(--color-${ty==='分校'?'primary':'brand-accent'})"></div>
+     <div style="width:${w/20*100}%;background:#CBD5E1"></div></div><span class="val">${v}${w?` <span class="hint">+${w}撤</span>`:''}</span></div>`).join('')}</div></div>
+  <div class="card"><div class="card-header">月度趋势（2026年1–8月）</div><div class="card-body">
+   <svg viewBox="0 0 600 210" style="width:100%">
+     ${[0,5,10,15].map(v=>`<line x1="40" y1="${190-v*10}" x2="580" y2="${190-v*10}" stroke="#E2E8F0"/><text x="12" y="${195-v*10}" font-size="11" fill="#64748B">${v}</text>`).join('')}
+     <polygon points="${TREND.map((v,i)=>`${40+i*77},${190-v*10}`).join(' ')} 580,190 40,190" fill="rgba(37,99,235,.08)"/>
+     <polyline points="${TREND.map((v,i)=>`${40+i*77},${190-v*10}`).join(' ')}" fill="none" stroke="#2563EB" stroke-width="2.5"/>
+     ${TREND.map((v,i)=>`<circle cx="${40+i*77}" cy="${190-v*10}" r="4" fill="#2563EB"/><text x="${40+i*77}" y="${190-v*10-10}" font-size="11" text-anchor="middle" font-weight="600">${v}</text>
+       <text x="${40+i*77}" y="206" font-size="11" text-anchor="middle" fill="#64748B">${i+1}月</text>`).join('')}
+   </svg></div></div>
+  <div class="card"><div class="card-header">投诉类型分布</div><div class="card-body" style="display:flex;align-items:center;gap:24px;justify-content:center">
+    <svg width="150" height="150" viewBox="0 0 150 150">
+      ${(()=>{let off=0;return TYPE.map(([n,p,col])=>{const el=`<circle cx="75" cy="75" r="54" fill="none" stroke="${col}" stroke-width="22"
+        stroke-dasharray="${p*3.393} ${339.3-p*3.393}" stroke-dashoffset="${-off*3.393}" transform="rotate(-90 75 75)"/>`;off+=p;return el}).join('')})()}
+      <text x="75" y="72" text-anchor="middle" font-size="22" font-weight="800">46</text>
+      <text x="75" y="90" text-anchor="middle" font-size="10" fill="#64748B">有效投诉</text></svg>
+    <div>${TYPE.map(([n,p,col])=>`<div style="margin-bottom:8px;font-size:12px"><i style="display:inline-block;width:10px;height:10px;background:${col};border-radius:2px;margin-right:6px"></i>${n} <b>${p}%</b></div>`).join('')}</div>
+  </div></div>
+  <div class="card"><div class="card-header">配合度汇总（好 / 中 / 差）</div><div class="card-body">
+    ${COOPD.map(([n,g,m,b])=>`<div class="bar-h"><span class="nm">${n}</span><div class="track" style="height:20px">
+      <div style="width:${g}%;background:var(--color-success)"></div><div style="width:${m}%;background:var(--color-warning)"></div><div style="width:${b}%;background:var(--color-danger)"></div></div>
+      <span class="val hint">${g}/${m}/${b}</span></div>`).join('')}
+    <div class="legend"><span><i style="background:var(--color-success)"></i>好</span><span><i style="background:var(--color-warning)"></i>中</span><span><i style="background:var(--color-danger)"></i>差</span></div>
+  </div></div>
+ </div>
+ <div class="card" style="margin-top:20px"><div class="card-header">每百车投诉率 TOP6 <span style="flex:1"></span><span class="hint" style="font-weight:400">车辆数在设置页维护</span></div>
+   <table class="table"><thead><tr><th>单位</th><th>类型</th><th>车辆数</th><th>有效投诉</th><th>每百车投诉率</th></tr></thead><tbody>
+   ${[["东坑总校","分校",86,18,"20.9"],["常平横江厦","分校",64,11,"17.2"],["横沥河畔","分校",58,9,"15.5"],["殷焕权","分店",41,7,"17.1"],["寮步岭厦","分校",61,8,"13.1"],["陈伟良","分店",52,6,"11.5"]]
+     .map(r=>`<tr>${r.map((v,i)=>`<td ${i===4?'style="font-weight:800;color:var(--color-danger)"':''}>${v}</td>`).join('')}</tr>`).join('')}
+   </tbody></table></div>
+ <div class="card" style="margin-top:20px"><div class="card-header">投诉信息明细
+   <span style="flex:1"></span><button class="btn btn-secondary btn-sm" onclick="toast('原型演示：导出筛选后的明细Excel','info')">⬇ 导出Excel</button></div>
+   <table class="table"><thead><tr><th>投诉日期</th><th>学员</th><th>经营单位</th><th>投诉类型 ▾</th><th>状态</th><th>配合度</th></tr></thead><tbody>
+   ${CASES.map(t=>`<tr style="cursor:pointer" onclick="S.caseId='${t.id}';resetCase();go('case')"><td>${t.date}</td><td><b>${t.name}</b></td><td>${unitShort(t.unit)}</td>
+     <td>${t.type}</td><td>${badge(t.status)}</td><td>${t.coop?coopIcon(t.coop):'<span class="hint">—</span>'}</td></tr>`).join('')}
+   </tbody></table></div>`;
+}
+
+/* ================= 撤诉弹窗 ================= */
+function askWithdraw(){
+ document.getElementById('modal-root').innerHTML=`<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal-content">
+  <div class="m-head">标记撤诉</div><div class="m-body">
+   <p style="margin-bottom:10px">确认将 <b>${c().name}</b> 的投诉标记为「已撤诉」？</p>
+   <ul class="hint" style="padding-left:18px;line-height:1.9">
+    <li>统计中自动移出有效投诉，单独列入撤诉列</li><li>案件记录与档案资料永久保留</li>
+    <li>已归档案件将自动向原档案夹补充撤诉说明</li></ul>
+   <input class="form-control" style="margin-top:10px" placeholder="撤诉原因（选填）">
+  </div><div class="m-foot"><button class="btn btn-secondary" onclick="closeModal()">取消</button>
+  <button class="btn btn-danger" onclick="doWithdraw()">确认撤诉</button></div></div></div>`;
+}
+function closeModal(){document.getElementById('modal-root').innerHTML=''}
+function doWithdraw(){c().status='withdrawn';closeModal();toast('已标记撤诉：统计已移出有效投诉，档案同步更新','success');render()}
+
+/* ================= 路由与渲染 ================= */
+function render(){
+ const view=location.hash.replace('#/','').split('?')[0]||'list';
+ const q=(location.hash.match(/v=([ABC])/)||[])[1];
+ if(q)VARIANTS[q]&&(S.variant=q);
+ S.view=view;nav(view==='query'?'intake':view);
+ const t=c();let html='';
+ if(view==='intake')html=vIntake();
+ else if(view==='query')html=vQuery();
+ else if(view==='dash')html=vDash();
+ else if(view==='case')html=S.variant==='A'?caseA(t):S.variant==='B'?caseB(t):caseC(t);
+ else html=vList();
+ document.getElementById('view').innerHTML=html;
+ const lbl=document.getElementById('sw-label');
+ lbl.textContent=view==='case'?`工作台布局 ${S.variant} · ${VARIANTS[S.variant]}`:`点此进入案件 → 体验布局 ${VARIANTS[S.variant]}`;
+}
+document.getElementById('sw-prev').onclick=()=>cycle(-1);
+document.getElementById('sw-next').onclick=()=>cycle(1);
+function cycle(d){const keys=['A','B','C'];let i=keys.indexOf(S.variant);i=(i+d+3)%3;
+ if(S.view!=='case')go('case');setVariant(keys[i])}
+window.addEventListener('hashchange',render);
+window.addEventListener('keydown',e=>{
+ if(['INPUT','TEXTAREA'].includes(e.target.tagName)||e.target.isContentEditable)return;
+ if(e.key==='ArrowLeft')cycle(-1);if(e.key==='ArrowRight')cycle(1)});
+render();
+</script>
+</body>
+</html>

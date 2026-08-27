@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>投诉处理系统 · 三系统无信息人工建案 Demo</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/vue@3.4/dist/vue.global.prod.js"></script>
+  <style>
+  /* ===== Token：与现系统一致 ===== */
+  :root{
+    --color-primary:#2563EB; --color-primary-dark:#1D4ED8; --color-primary-50:#EFF6FF;
+    --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
+    --color-brand-accent:#4F46E5;
+    --color-success:#16A34A; --color-success-50:#F0FDF4;
+    --color-warning:#D97706; --color-warning-50:#FFFBEB;
+    --color-danger:#DC2626;  --color-danger-50:#FEF2F2;
+    --color-text:#0F172A; --color-text-secondary:#475569; --color-text-disabled:#94A3B8;
+    --color-border:#E2E8F0; --color-surface-50:#F8FAFC; --color-bg:#EEF3F8; --color-surface:#FFFFFF;
+    --font-sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --shadow-sm:0 2px 8px rgba(31,35,41,.06);
+    --shadow-md:0 8px 24px rgba(31,35,41,.10),0 2px 6px rgba(31,35,41,.05);
+    --radius:10px; --radius-lg:16px;
+    --sp-3:12px; --sp-4:16px; --sp-6:24px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{min-height:100vh;background:var(--color-bg);color:var(--color-text);font:400 13.5px/1.6 var(--font-sans)}
+  .mono{font-family:var(--font-mono)}
+  [v-cloak]{display:none}
+
+  /* ===== 布局：与现系统一致 ===== */
+  .app-shell{display:flex;min-height:100vh}
+  .sidebar{width:240px;flex:none;background:var(--brand-gradient);color:#fff;display:flex;flex-direction:column;
+    padding:20px 12px;position:sticky;top:0;height:100vh}
+  .sidebar .brand{font:700 15px/1.3 var(--font-sans);padding:0 8px 20px;white-space:nowrap}
+  .sidebar .brand small{display:block;font-weight:400;font-size:11px;color:rgba(255,255,255,.62)}
+  .nav-link{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.78);padding:10px 16px;border-radius:8px;cursor:pointer;
+    font-weight:600;margin-bottom:2px;border:none;background:none;width:100%;text-align:left;font-size:13px;font-family:var(--font-sans)}
+  .nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
+  .nav-link.active{background:rgba(255,255,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--color-brand-accent)}
+  .sidebar .footer{margin-top:auto;padding:0 8px;font-size:11px;color:rgba(255,255,255,.62)}
+  .main{flex:1;min-width:0;padding:var(--sp-6) var(--sp-4) 110px}
+  .page-title{font-size:20px;font-weight:700;margin-bottom:var(--sp-4)}
+
+  /* ===== 基础组件 ===== */
+  .btn{display:inline-flex;align-items:center;gap:6px;font:600 13px/1 var(--font-sans);padding:8px 16px;
+    border-radius:var(--radius);border:1px solid transparent;cursor:pointer;background:none;color:var(--color-text);transition:background .15s,box-shadow .15s}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn-primary{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
+  .btn-primary:hover:not(:disabled){background:var(--color-primary-dark);box-shadow:var(--shadow-md)}
+  .btn-secondary{background:#fff;color:var(--color-text);border-color:var(--color-border)}
+  .btn-secondary:hover:not(:disabled){background:var(--color-surface-50)}
+  .btn-danger-outline{background:#fff;color:var(--color-danger);border-color:#FECACA}
+  .btn-danger-outline:hover:not(:disabled){background:var(--color-danger-50)}
+  .btn-sm{padding:6px 12px;font-size:12px}
+  .btn-lg{padding:10px 24px;font-size:14.5px}
+  .card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm)}
+  .card-header{padding:12px 16px;border-bottom:1px solid var(--color-border);font:600 14px/1.4 var(--font-sans);
+    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .card-body{padding:16px}
+  .table{width:100%;border-collapse:collapse;font-size:13px;line-height:1.45}
+  .table th{padding:10px 14px;text-align:left;font-weight:600;font-size:12px;color:var(--color-text-secondary);
+    background:var(--color-surface-50);border-bottom:2px solid var(--color-border);white-space:nowrap}
+  .table td{padding:10px 14px;border-bottom:1px solid var(--color-border);vertical-align:middle}
+  .form-label{display:block;font-weight:600;font-size:12px;color:var(--color-text-secondary);margin-bottom:6px}
+  .form-label .req{color:var(--color-danger)}
+  .form-control{width:100%;padding:8px 12px;font-size:13px;color:var(--color-text);border:1.5px solid var(--color-border);
+    border-radius:var(--radius);background:#fff;font-family:inherit;transition:border-color .15s,box-shadow .15s}
+  .form-control:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+  .form-control.is-invalid{border-color:var(--color-danger);box-shadow:0 0 0 3px var(--color-danger-50)}
+  .invalid-msg{font-size:11.5px;color:var(--color-danger);margin-top:4px;display:flex;align-items:center;gap:4px}
+  .hint{font-size:12px;color:var(--color-text-secondary)}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;font:600 11px/1.3 var(--font-sans);border-radius:999px;border:1px solid transparent}
+  .badge-muted{background:var(--color-surface-50);color:var(--color-text-secondary);border-color:var(--color-border)}
+  .badge-manual{background:var(--color-warning-50);color:var(--color-warning);border-color:#FDE68A}
+  .badge-done{background:var(--color-success-50);color:var(--color-success);border-color:#A7F3D0}
+  .pbadge{display:inline-flex;padding:2px 9px;font:600 11px/1.5 var(--font-sans);border-radius:999px;
+    background:var(--color-surface-50);color:var(--color-text-secondary);border:1px solid var(--color-border)}
+  .pbadge.stage{background:var(--color-primary-50);color:var(--color-primary);border-color:#BFDBFE}
+  .spin{animation:rot 1s linear infinite;display:inline-block}
+  @keyframes rot{to{transform:rotate(360deg)}}
+  .enter{animation:enterIn .22s ease-out both}
+  @keyframes enterIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+  /* 页签 */
+  .tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+  .tab{padding:7px 18px;font:600 13px/1 var(--font-sans);border-radius:999px;border:1px solid var(--color-border);
+    background:#fff;color:var(--color-text-secondary);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .tab:hover{border-color:var(--color-text-secondary)}
+  .tab.active{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+
+  /* 三系统进度行 */
+  .sys-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+  .sys-item{display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--color-border);
+    border-radius:var(--radius);background:var(--color-surface-50)}
+  .sys-item b{font-size:13px}
+  .sys-pill{margin-left:auto;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;padding:3px 10px;border-radius:999px;border:1px solid;white-space:nowrap}
+  .sys-pill.pending{color:var(--color-text-disabled);background:#fff;border-color:var(--color-border)}
+  .sys-pill.running{color:var(--color-primary);background:var(--color-primary-50);border-color:#BFDBFE}
+  .sys-pill.not_found{color:var(--color-text-secondary);background:#fff;border-color:var(--color-border)}
+  .sys-pill.timeout{color:var(--color-warning);background:var(--color-warning-50);border-color:#FDE68A}
+
+  /* 查无引导条 */
+  .no-match-panel{border:1px dashed #FDE68A;background:linear-gradient(180deg,#FFFBEB,#FEFCE8);
+    border-radius:var(--radius-lg);padding:18px 20px;margin-top:14px}
+  .no-match-head{display:flex;align-items:flex-start;gap:10px;font-weight:700;color:#92400E;font-size:14px}
+  .no-match-body{margin:8px 0 0 30px;color:var(--color-text-secondary);font-size:12.5px;line-height:1.8}
+  .no-match-actions{display:flex;gap:12px;margin:12px 0 0 30px}
+
+  /* 弹窗 */
+  .modal-mask{position:fixed;inset:0;z-index:80;background:rgba(15,23,42,.45);backdrop-filter:blur(2px);
+    display:flex;align-items:center;justify-content:center;padding:20px}
+  .modal{width:min(720px,96vw);max-height:92vh;overflow:auto;background:var(--color-surface);border-radius:var(--radius-lg);
+    box-shadow:0 24px 64px rgba(31,35,41,.25);animation:enterIn .22s ease-out both}
+  .modal-header{display:flex;align-items:center;gap:8px;padding:16px 20px;border-bottom:1px solid var(--color-border);
+    font:700 15px/1.3 var(--font-sans);position:sticky;top:0;background:var(--color-surface);z-index:1}
+  .modal-header .x{margin-left:auto;border:none;background:none;cursor:pointer;color:var(--color-text-secondary);font-size:18px}
+  .modal-body{padding:20px}
+  .modal-foot{display:flex;justify-content:flex-end;gap:12px;padding:14px 20px;border-top:1px solid var(--color-border)}
+  .fgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px 16px}
+  .fgrid .full{grid-column:1/-1}
+  textarea.summary-box{width:100%;min-height:88px;padding:9px 12px;font-size:12.5px;line-height:1.75;resize:vertical;
+    border:1.5px solid var(--color-border);border-radius:var(--radius);font-family:inherit;background:#fff}
+  textarea.summary-box:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+
+  /* 工作台 */
+  .ws-grid{display:grid;grid-template-columns:minmax(300px,4fr) minmax(0,8fr);gap:16px;align-items:start;max-width:1560px}
+  .fee-line{display:grid;grid-template-columns:auto 1fr auto auto;gap:8px 10px;align-items:center}
+  .ded-table input{width:100%;border:1.5px solid var(--color-border);border-radius:6px;padding:5px 8px;font-size:12.5px;font-family:inherit}
+  .ded-table input:focus{outline:none;border-color:var(--color-primary)}
+
+  /* 统计 */
+  .stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px}
+  .stat-card{padding:18px 20px;border:1px solid var(--color-border);border-radius:var(--radius-lg);background:#fff}
+  .stat-card .num{font:700 26px/1.2 var(--font-mono);color:var(--color-text)}
+  .stat-card .lbl{font-size:12px;color:var(--color-text-secondary);margin-top:4px}
+  .stat-card.hl{border-color:#FDE68A;background:linear-gradient(180deg,#FFFBEB,#FFF)}
+
+  @media(max-width:900px){
+    .sidebar{display:none}
+    .ws-grid,.fgrid{grid-template-columns:1fr}
+  }
+  </style>
+</head>
+<body>
+<div id="app" v-cloak>
+  <div class="app-shell">
+    <!-- ═══ 左侧导航 ═══ -->
+    <aside class="sidebar">
+      <div class="brand">投诉系统<small>v2 智能工作台 · 人工建案 Demo</small></div>
+      <button class="nav-link" :class="{active:tab==='intake'}" @click="tab='intake'"><i class="bi bi-plus-circle"></i> 新增投诉</button>
+      <button class="nav-link" :class="{active:tab==='list'}" @click="goList"><i class="bi bi-list-ul"></i> 投诉列表</button>
+      <button class="nav-link" :class="{active:tab==='workbench'}" @click="tab='workbench'"><i class="bi bi-person-badge"></i> 学员信息</button>
+      <button class="nav-link" :class="{active:tab==='stats'}" @click="tab='stats'"><i class="bi bi-bar-chart"></i> 投诉统计</button>
+      <div class="footer">仅演示 · 数据为 mock，不连接后端</div>
+    </aside>
+
+    <main class="main">
+      <!-- ═══════════ Tab 1：受理页 ═══════════ -->
+      <template v-if="tab==='intake'">
+        <div class="page-title">新增投诉
+          <span class="badge badge-muted" style="vertical-align:4px"><i class="bi bi-cone-striped"></i> 三系统无信息 · Demo</span>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><i class="bi bi-card-checklist"></i> 登记学员身份并发起三系统查询</div>
+          <div class="card-body">
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(160px,240px));gap:12px">
+              <div><label class="form-label"><span class="req">*</span> 学员姓名</label>
+                <input class="form-control" v-model.trim="q.student_name" placeholder="如：陈志明"></div>
+              <div><label class="form-label"><span class="req">*</span> 身份证号</label>
+                <input class="form-control mono" v-model.trim="q.id_card" placeholder="18 位证件号"></div>
+              <div><label class="form-label">手机号</label>
+                <input class="form-control mono" v-model.trim="q.phone" maxlength="11" placeholder="选填"></div>
+            </div>
+            <div class="card-foot" style="display:flex;align-items:center;gap:12px;margin-top:14px">
+              <span class="hint">Demo 预置：<a href="#" @click.prevent="fillOk('陈志明')">陈志明</a>（三系统均查无）·
+                <a href="#" @click.prevent="fillTimeout('王丽华')">王丽华</a>（驾培超时）</span>
+              <button class="btn btn-primary" style="margin-left:auto" @click="startQuery" :disabled="querying || !!noMatch || !canQuery">
+                <i v-if="querying" class="bi bi-arrow-repeat spin"></i><i v-else class="bi bi-search"></i>
+                [[ querying ? '查询中…' : '查询三系统并建案' ]]
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 查询进度 / 结果 -->
+        <div class="card enter" v-if="queryShow" style="margin-top:14px;max-width:1560px">
+          <div class="card-header"><i class="bi bi-hdd-network"></i> 三系统查询结果</div>
+          <div class="card-body">
+            <div class="sys-row">
+              <div class="sys-item" v-for="s in systems" :key="s.key">
+                <i v-if="s.state==='pending'" class="bi bi-circle" style="color:var(--color-text-disabled)"></i>
+                <i v-else-if="s.state==='running'" class="bi bi-arrow-repeat spin" style="color:var(--color-primary)"></i>
+                <i v-else-if="s.state==='not_found'" class="bi bi-dash-circle" style="color:var(--color-text-disabled)"></i>
+                <i v-else-if="s.state==='timeout'" class="bi bi-exclamation-triangle" style="color:var(--color-warning)"></i>
+                <span><b>[[ s.label ]]</b></span>
+                <span class="sys-pill" :class="s.state">[[ pillText(s.state) ]]</span>
+              </div>
+            </div>
+
+            <!-- ✅ 明确查无 → 引导转人工建案 -->
+            <div class="no-match-panel enter" v-if="noMatch==='confirmed'">
+              <div class="no-match-head"><i class="bi bi-person-x-fill"></i> 未匹配到学员档案</div>
+              <div class="no-match-body">
+                内部业务系统、第三方平台、驾培平台均<b style="color:var(--color-text)">明确查无该证件号的记录</b>。<br>
+                若该学员确认已在分校/分店报名缴费、但尚未录入三系统，可转入「人工建案」通道：
+              </div>
+              <div class="no-match-actions">
+                <button class="btn btn-primary btn-lg" @click="openManual"><i class="bi bi-person-plus-fill"></i> 转人工建案</button>
+                <button class="btn btn-secondary" @click="reQuery"><i class="bi bi-arrow-counterclockwise"></i> 核对证件号重新查询</button>
+              </div>
+            </div>
+
+            <!-- ⚠ 有系统异常 → 不给入口，只提示重查 -->
+            <div class="no-match-panel enter" v-else-if="noMatch==='blocked'" style="border-color:#FECACA;background:linear-gradient(180deg,#FEF2F2,#FFF)">
+              <div class="no-match-head" style="color:var(--color-danger)"><i class="bi bi-exclamation-octagon"></i> 部分系统查询未完成，暂不能判定“查无”</div>
+              <div class="no-match-body">
+                为避免把已录入的学员误判为漏录，<b style="color:var(--color-text)">存在超时/异常时不开放人工建案入口</b>。请先重新查询。
+              </div>
+              <div class="no-match-actions">
+                <button class="btn btn-secondary" @click="reQuery"><i class="bi bi-arrow-clockwise"></i> 重新查询</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- ═══════════ Tab 2：投诉列表 ═══════════ -->
+      <template v-else-if="tab==='list'">
+        <div class="page-title">投诉列表</div>
+        <div class="card" style="max-width:1560px">
+          <div class="card-header">
+            <i class="bi bi-list-ul"></i> 工单 [[ tickets.length ]] 条
+            <label class="hint" style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+              <input type="checkbox" v-model="onlyManual"> 仅看「三系统无信息」
+            </label>
+          </div>
+          <table class="table">
+            <thead><tr><th>工单号</th><th>姓名</th><th>身份证号</th><th>网点</th><th>报名时间</th>
+              <th>投诉日期</th><th>受理状态</th><th>数据来源</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="t in filteredTickets" :key="t.id" class="enter">
+                <td class="mono">[[ t.ticket_no ]]</td>
+                <td><b>[[ t.student_name ]]</b></td>
+                <td class="mono">[[ t.id_card ]]</td>
+                <td>[[ t.org_name ]]（[[ t.org_code ]]）</td>
+                <td>[[ t.registration_date ]]</td>
+                <td>[[ t.complaint_date ]]</td>
+                <td><span class="pbadge" :class="{stage:t.handle_status!=='待处理'}">[[ t.handle_status ]]</span></td>
+                <td>
+                  <span v-if="t.intake_type" class="badge badge-manual"><i class="bi bi-exclamation-circle"></i> [[ t.intake_type ]]</span>
+                  <span v-else class="badge badge-muted">三系统自动匹配</span>
+                </td>
+                <td>
+                  <button class="btn btn-secondary btn-sm" @click="openTicket(t)" v-if="t.intake_type && t.handle_status!=='已完结'">进入处理</button>
+                  <span v-else class="hint">—</span>
+                </td>
+              </tr>
+              <tr v-if="!filteredTickets.length"><td colspan="9" class="hint" style="text-align:center;padding:28px">暂无工单</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </template>
+
+      <!-- ═══════════ Tab 3：工作台 ═══════════ -->
+      <template v-else-if="tab==='workbench'">
+        <div class="page-title">学员信息 · 工作台
+          <span class="badge badge-manual" v-if="current"><i class="bi bi-exclamation-circle"></i> [[ current.intake_type ]]·手工录入</span>
+        </div>
+        <div class="ws-grid" v-if="current">
+          <!-- 左：基本信息 + 登记表/回复函 -->
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <div class="card">
+              <div class="card-header"><i class="bi bi-person-vcard"></i> 基本信息</div>
+              <div class="card-body">
+                <table class="table" style="font-size:12.5px">
+                  <tbody>
+                    <tr><td style="width:84px;color:var(--color-text-secondary)">姓名</td><td><b>[[ current.student_name ]]</b></td></tr>
+                    <tr><td style="color:var(--color-text-secondary)">身份证号</td><td class="mono">[[ current.id_card ]]</td></tr>
+                    <tr><td style="color:var(--color-text-secondary)">所属网点</td><td>[[ current.org_type ]] · [[ current.org_name ]]（[[ current.org_code ]]）</td></tr>
+                    <tr><td style="color:var(--color-text-secondary)">报名时间</td><td>[[ current.registration_date ]] <span class="hint">（人工录入）</span></td></tr>
+                    <tr><td style="color:var(--color-text-secondary)">手机号</td><td class="mono">[[ current.phone || '—' ]]</td></tr>
+                    <tr><td style="color:var(--color-text-secondary)">报考车型</td><td>[[ current.license_type || '—' ]]</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="card">
+              <div class="card-header"><i class="bi bi-file-earmark-text"></i> 文档产出</div>
+              <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+                <button class="btn btn-secondary" @click="genDoc('投诉登记表')"><i class="bi bi-file-earmark-check"></i> 生成投诉登记表</button>
+                <button class="btn btn-secondary" @click="genDoc('投诉回复函')" :disabled="current.fee_plan_status!=='confirmed'">
+                  <i class="bi bi-envelope-paper"></i> 生成投诉回复函<span v-if="current.fee_plan_status!=='confirmed'" class="hint">（需先确认费用）</span>
+                </button>
+                <button class="btn btn-primary" @click="doArchive" :disabled="!readyArchive">
+                  <i class="bi bi-archive"></i> 一键归档<span v-if="!readyArchive" class="hint" style="color:rgba(255,255,255,.8)">（需：费用确认+处理情况+配合度）</span>
+                </button>
+                <div class="ok-strip enter" v-if="archived" style="color:var(--color-success)">
+                  <i class="bi bi-check-circle-fill"></i> 已归档：案件归档/[[ current.org_type ]]/[[ current.org_code ]]-[[ current.org_name ]]/…
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右：核算区（本 demo 的核心差异）-->
+          <div style="display:flex;flex-direction:column;gap:16px">
+            <div class="card">
+              <div class="card-header"><i class="bi bi-calculator"></i> 合同与费用
+                <span class="ch-extra hint" style="margin-left:auto">本类工单不进入合同分析环节</span>
+              </div>
+              <div class="card-body">
+                <div class="clues" style="background:var(--color-primary-50);border-color:#BFDBFE;color:var(--color-primary);display:flex;align-items:flex-start;gap:8px;padding:10px 14px">
+                  <i class="bi bi-info-circle-fill" style="margin-top:3px"></i>
+                  <span style="line-height:1.7">该学员<b>未在三系统录入</b>，无电子合同与学时记录。<br>
+                    若学员确有缴费：请在下方<b>手工填写</b>合同总额 / 实缴金额 / 扣费明细后点【手工确认】；<br>
+                    若无任何缴费记录：直接点【零口径确认】，费用按 0 元口径锁定。</span>
+                </div>
+                <div style="margin-top:14px" class="fee-line">
+                  <label class="form-label" style="margin:0">合同总额（元）</label>
+                  <input type="number" min="0" class="form-control mono" :disabled="zeroConfirm" v-model.number="fee.total_fee">
+                  <label class="form-label" style="margin:0">实缴金额（元）</label>
+                  <input type="number" min="0" class="form-control mono" :disabled="zeroConfirm" v-model.number="fee.actual_paid">
+                </div>
+                <div style="margin-top:14px">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <b style="font-size:12.5px">扣费明细</b>
+                    <button class="btn btn-secondary btn-sm" @click="addDeduction" :disabled="zeroConfirm"><i class="bi bi-plus-lg"></i> 添加扣费行</button>
+                    <span class="hint">应退 = 实缴 − Σ扣费（自动计算）</span>
+                  </div>
+                  <table class="table ded-table" style="font-size:12.5px">
+                    <thead><tr><th style="width:34%">项目</th><th style="width:26%">金额（元）</th><th style="width:28%">依据说明</th><th style="width:12%"></th></tr></thead>
+                    <tbody>
+                      <tr v-for="(d,i) in fee.deductions" :key="i">
+                        <td><input v-model.trim="d.item" placeholder="如：服务费"></td>
+                        <td><input type="number" min="0" step="0.01" v-model.number="d.amount" placeholder="0.00"></td>
+                        <td><input v-model.trim="d.basis" placeholder="口头约定 / 协商一致…"></td>
+                        <td><button class="btn btn-danger-outline btn-sm" @click="fee.deductions.splice(i,1)" :disabled="zeroConfirm"><i class="bi bi-trash"></i></button></td>
+                      </tr>
+                      <tr v-if="!fee.deductions.length"><td colspan="4" class="hint" style="text-align:center;padding:18px">
+                        [[ zeroConfirm ? '零口径确认：无扣费明细' : '暂无扣费行' ]]</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
+                  <div style="font:700 15px/1 var(--font-sans)">应退金额：<span class="mono" style="color:var(--color-danger)">￥[[ refundText ]]</span></div>
+                  <div style="margin-left:auto;display:flex;gap:10px">
+                    <template v-if="current.fee_plan_status!=='confirmed'">
+                      <button class="btn btn-secondary" @click="confirmZero" :disabled="zeroConfirm || fee.deductions.some(d=>d.amount>0)">
+                        <i class="bi bi-0-circle"></i> 无缴费记录·零口径确认</button>
+                      <button class="btn btn-primary" @click="confirmManual"
+                        :disabled="!(fee.total_fee>0 && fee.actual_paid>0)"><i class="bi bi-check2-square"></i> 手工确认费用</button>
+                    </template>
+                    <template v-else>
+                      <span class="badge badge-done"><i class="bi bi-lock-fill"></i> 费用已确认[[ zeroConfirm ? '（零口径）' : '（手工口径）' ]]</span>
+                      <button class="btn btn-secondary btn-sm" @click="unlockFee"><i class="bi bi-unlock"></i> 解锁修改</button>
+                    </template>
+                  </div>
+                </div>
+                <div class="invalid-msg enter" v-if="feeErr"><i class="bi bi-x-circle"></i> [[ feeErr ]]</div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-header"><i class="bi bi-journal-check"></i> 处理情况与归档闸门</div>
+              <div class="card-body">
+                <div style="display:grid;gap:14px">
+                  <div><label class="form-label"><span class="req">*</span> 处理情况（写入登记表/回复函）</label>
+                    <textarea class="summary-box" v-model="current.handling_notes" placeholder="例：已电话联系学员及所属网点核实，网点承诺补录三系统并协商退费…"></textarea></div>
+                  <div style="max-width:320px"><label class="form-label"><span class="req">*</span> 配合度评价</label>
+                    <select class="form-control" v-model="current.branch_cooperation">
+                      <option value="">请选择</option><option>配合</option><option>部分配合</option><option>不配合</option>
+                    </select></div>
+                  <div class="hint"><i class="bi bi-shield-check"></i> 归档闸门与普通工单完全一致，费用状态复用现有确认机制。</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-else class="card card-body hint" style="max-width:1560px">请先从「投诉列表」选择一条带 🔖 标注的工单进入处理。</div>
+      </template>
+
+      <!-- ═══════════ Tab 4：投诉统计 ═══════════ -->
+      <template v-else>
+        <div class="page-title">投诉统计 <span class="hint" style="font-size:12px">（demo 口径示意）</span></div>
+        <div style="max-width:1560px;display:flex;flex-direction:column;gap:16px">
+          <div class="stat-cards">
+            <div class="stat-card"><div class="num">[[ stats.valid ]]</div><div class="lbl">有效投诉量（含各类）</div></div>
+            <div class="stat-card hl"><div class="num" style="color:var(--color-warning)">[[ stats.manual ]]</div>
+              <div class="lbl">其中：三系统无信息（人工建案）</div></div>
+            <div class="stat-card"><div class="num">[[ stats.completed ]]</div><div class="lbl">已完结</div></div>
+            <div class="stat-card"><div class="num">[[ stats.avgDays ]]天</div><div class="lbl">平均处理时长</div></div>
+          </div>
+          <div class="card">
+            <div class="card-header"><i class="bi bi-bar-chart"></i> 网点考核 · 网点投诉率 = 有效投诉 ÷ 车辆数</div>
+            <table class="table">
+              <thead><tr><th>网点</th><th>有效投诉</th><th>其中 三系统无信息</th><th>车辆数</th><th>投诉率(件/车)</th></tr></thead>
+              <tbody>
+                <tr v-for="r in branchRows" :key="r.name">
+                  <td><b>[[ r.name ]]</b>（[[ r.code ]]）</td>
+                  <td class="mono">[[ r.total ]]</td>
+                  <td class="mono" style="color:var(--color-warning)">[[ r.manual ]]</td>
+                  <td class="mono">[[ r.cars ]]</td>
+                  <td class="mono"><b>[[ r.rate ]]</b></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="card-body hint"><i class="bi bi-info-circle"></i>
+              「三系统无信息」类工单全额计入有效投诉与投诉率（漏录本身即网点过错），同时单独列示数量供管理层定位漏录严重的网点。</div>
+          </div>
+        </div>
+      </template>
+
+    </main>
+  </div>
+
+  <!-- ═══════════ 人工建案弹窗 ═══════════ -->
+  <div class="modal-mask" v-if="showManualModal" @click.self="closeManual">
+    <div class="modal">
+      <div class="modal-header">
+        <i class="bi bi-person-plus-fill" style="color:var(--color-primary)"></i> 三系统无信息学员 · 人工建案
+        <span class="badge badge-muted">查无记录 · 手工录入</span>
+        <button class="x" @click="closeManual"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="no-match-body" style="margin:0 0 14px;line-height:1.8;color:var(--color-text-secondary);font-size:12.5px">
+          <i class="bi bi-bell" style="color:var(--color-warning)"></i>
+          请对照电话录音与网点反馈补齐以下信息。带 <span class="req">*</span> 为必填；缺失项将被点名提示，
+          提交后工单自动标记「三系统无信息」，并跳过合同分析环节。
+        </div>
+        <div class="fgrid">
+          <div>
+            <label class="form-label"><span class="req">*</span> 学员姓名</label>
+            <input class="form-control" :class="{'is-invalid':tried&&errs.name}" v-model.trim="m.student_name" placeholder="学员自述姓名">
+            <div class="invalid-msg" v-if="tried&&errs.name"><i class="bi bi-exclamation-circle"></i> 必填：学员姓名</div>
+          </div>
+          <div>
+            <label class="form-label"><span class="req">*</span> 身份证号</label>
+            <input class="form-control mono" :class="{'is-invalid':tried&&errs.id_card}" v-model.trim="m.id_card" maxlength="18" placeholder="18 位">
+            <div class="invalid-msg" v-if="tried&&errs.id_card"><i class="bi bi-exclamation-circle"></i> [[ m.id_card ? '身份证号须为 18 位' : '必填：身份证号' ]]</div>
+          </div>
+          <div>
+            <label class="form-label"><span class="req">*</span> 所属网点（字典必选）</label>
+            <select class="form-control" :class="{'is-invalid':tried&&errs.org_id}" v-model="m.org_id">
+              <option value="">— 请选择分校 / 分店 —</option>
+              <optgroup label="分校" v-if="unitBranches.length">
+                <option v-for="u in unitBranches" :value="u.id">[[ u.name ]]（[[ u.code ]]）</option>
+              </optgroup>
+              <optgroup label="分店" v-if="unitStores.length">
+                <option v-for="u in unitStores" :value="u.id">[[ u.name ]]（[[ u.code ]]）</option>
+              </optgroup>
+            </select>
+            <div class="invalid-msg" v-if="tried&&errs.org_id"><i class="bi bi-exclamation-circle"></i> 必填：所属分校 / 分店（自动带出代号，用于归档目录与网点统计）</div>
+          </div>
+          <div>
+            <label class="form-label"><span class="req">*</span> 报名时间</label>
+            <input type="date" class="form-control" :class="{'is-invalid':tried&&errs.registration_date}" v-model="m.registration_date">
+            <div class="invalid-msg" v-if="tried&&errs.registration_date"><i class="bi bi-exclamation-circle"></i> 必填：报名时间（写回复函用）</div>
+          </div>
+          <div>
+            <label class="form-label">手机号</label>
+            <input class="form-control mono" v-model.trim="m.phone" maxlength="11" placeholder="选填">
+          </div>
+          <div>
+            <label class="form-label">报考车型</label>
+            <select class="form-control" v-model="m.license_type">
+              <option value="">选填</option><option>C1</option><option>C2</option><option>A1</option><option>B2</option><option>D</option><option>E</option>
+            </select>
+          </div>
+          <div class="full">
+            <label class="form-label">投诉内容 <span class="hint">（可粘贴录音整理稿，提交后沿用 AI 整理链路）</span></label>
+            <textarea class="summary-box" v-model.trim="m.complaint_content" placeholder="例：2026年7月在塘厦林村分校报名C1并缴费3800元，至今未在系统查到信息…"></textarea>
+          </div>
+          <div class="full">
+            <label class="form-label">学员诉求 <span class="hint">（留空时按投诉类型使用通用话术）</span></label>
+            <textarea class="summary-box" v-model.trim="m.complaint_demands" placeholder="例：要求尽快查明情况并完成退费"></textarea>
+          </div>
+          <div class="full" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div>
+              <label class="form-label">来源渠道</label>
+              <select class="form-control" v-model="m.source_channel">
+                <option>电话来访</option><option>交通部门</option><option>12345</option><option>信访</option><option>邮件投诉</option><option>其他途径</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">投诉日期</label>
+              <input type="date" class="form-control" v-model="m.complaint_date">
+            </div>
+          </div>
+        </div>
+        <div class="hint enter" style="margin-top:14px;display:flex;gap:6px;background:var(--color-warning-50);border:1px solid #FDE68A;border-radius:8px;padding:8px 12px">
+          <i class="bi bi-exclamation-triangle-fill" style="color:var(--color-warning)"></i>
+          提交后请引导学员到报名网点补录三系统信息；后续若已补录，可在工单中编辑字段并重新生成文档。
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-secondary" @click="closeManual">取消</button>
+        <button class="btn btn-primary btn-lg" @click="submitManual" :disabled="creating">
+          <i v-if="creating" class="bi bi-arrow-repeat spin"></i><i v-else class="bi bi-check-lg"></i>
+          [[ creating ? '建案中…' : '确认建案' ]]
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 建案成功提示 -->
+  <div class="ok-strip enter" v-if="createDoneStrip" style="position:fixed;left:50%;bottom:28px;transform:translateX(-50%);
+       z-index:99;background:var(--color-surface);box-shadow:0 8px 32px rgba(31,35,41,.2);font-size:14px">
+    <i class="bi bi-check-circle-fill" style="color:var(--color-success)"></i>
+    建案成功：<b class="mono">[[ createdNo ]]</b>（标记：三系统无信息）
+    <button class="btn btn-primary btn-sm" @click="afterCreate">进入列表查看</button>
+  </div>
+</div>
+
+<script>
+const {createApp, ref, reactive, computed} = Vue;
+createApp({
+  delimiters:['[[',']]'],
+  setup(){
+    /* ───── Tab 与全局 ───── */
+    const tab = ref('intake');
+    const units = [
+      {id:'branch-tangxia-lincun', type:'分校', name:'塘厦林村分校', code:'青C'},
+      {id:'branch-changan', type:'分校', name:'长安分校', code:'长'},
+      {id:'branch-houjie-hetian', type:'分校', name:'厚街河田分校', code:'田'},
+      {id:'store-yin-huanquan', type:'分店', name:'殷焕权', code:'权'},
+      {id:'store-li-shuixiang', type:'分店', name:'李水祥', code:'祥'},
+      {id:'store-zhou-lijiao', type:'分店', name:'周丽娇', code:'明仔'},
+    ];
+    const unitBranches = units.filter(u=>u.type==='分校');
+    const unitStores   = units.filter(u=>u.type==='分店');
+
+    /* ───── 受理页：三系统查询模拟 ───── */
+    const q = reactive({student_name:'', id_card:'', phone:''});
+    const fillOk = () => {
+      q.student_name='陈志明'; q.id_card='441902********023X';
+      noMatch.value=null; queryShow.value=false; timeoutMode=false;
+    };
+    const fillTimeout = () => {
+      q.student_name='王丽华'; q.id_card='441902********8121';
+      noMatch.value=null; queryShow.value=false;
+      timeoutMode=true;
+    };
+    const canQuery = computed(()=> q.student_name && String(q.id_card).replace(/\*/g,'').length>=10);
+    const systems = reactive([
+      {key:'internal', label:'内部业务系统', state:'pending'},
+      {key:'third',    label:'第三方平台',   state:'pending'},
+      {key:'driving',  label:'驾培平台',     state:'pending'},
+    ]);
+    const queryShow = ref(false), querying = ref(false), noMatch = ref(null);
+    const pillText = s => ({pending:'等待', running:'查询中', not_found:'查无记录', timeout:'超时'})[s]||s;
+    let timeoutMode = false;
+    const runSys = (idx, dur, finalState) => new Promise(res=>{
+      systems[idx].state='running';
+      setTimeout(()=>{ systems[idx].state=finalState; res(); }, dur);
+    });
+    const startQuery = async () => {
+      if(!canQuery.value) return;
+      noMatch.value=null; queryShow.value=true; querying.value=true;
+      systems.forEach(s=>s.state='pending');
+      await runSys(0, 700,'not_found'); await runSys(1, 800,'not_found');
+      await runSys(2, timeoutMode?1400:600, timeoutMode?'timeout':'not_found');
+      querying.value=false;
+      noMatch.value = timeoutMode ? 'blocked' : 'confirmed';
+    };
+    const reQuery = () => { noMatch.value=null; queryShow.value=false; timeoutMode=false; };
+
+    /* ───── 人工建案弹窗 ───── */
+    const showManualModal = ref(false), creating = ref(false), tried = ref(false);
+    const m = reactive({student_name:'', id_card:'', org_id:'', registration_date:'', phone:'',
+      license_type:'', complaint_content:'', complaint_demands:'', source_channel:'电话来访',
+      complaint_date:new Date().toISOString().slice(0,10)});
+    const errs = computed(()=>({
+      name: !m.student_name,
+      id_card: !(m.id_card && /^\d{17}[\dXx]$/.test(m.id_card)),
+      org_id: !m.org_id,
+      registration_date: !m.registration_date,
+    }));
+    const openManual = () => {
+      showManualModal.value=true; tried.value=false;
+      m.student_name=q.student_name; m.id_card=q.id_card; m.phone=q.phone;
+      m.complaint_content=m.complaint_content || '';
+    };
+    const closeManual = () => { showManualModal.value=false; };
+
+    /* ───── 工单存储（mock 内存）───── */
+    let seq = 57;
+    const tickets = ref([
+      {id:1, ticket_no:'TC-20260821-0055', student_name:'黄淑芬', id_card:'4419**9811', org_type:'分店', org_name:'李水祥', org_code:'祥',
+       registration_date:'2026-05-19', complaint_date:'2026-08-21', handle_status:'已完结', intake_type:'', fee_plan_status:'confirmed'},
+      {id:2, ticket_no:'TC-20260825-0056', student_name:'测试学员乙华', id_card:'4419**3345', org_type:'分校', org_name:'常平横江厦分校', org_code:'常',
+       registration_date:'2026-03-02', complaint_date:'2026-08-25', handle_status:'处理中', intake_type:'三系统无信息', fee_plan_status:''},
+    ]);
+    seq = 57;
+
+    /* ───── 列表 ───── */
+    const onlyManual = ref(false);
+    const filteredTickets = computed(() => onlyManual.value ? tickets.value.filter(t=>t.intake_type) : tickets.value);
+
+    /* ───── 提交建案 ───── */
+    const createDoneStrip = ref(false), createdNo = ref('');
+    const submitManual = () => {
+      tried.value=true;
+      if(Object.values(errs.value).some(Boolean)) return;
+      creating.value=true;
+      setTimeout(()=>{
+        const u = units.find(x=>x.id===m.org_id);
+        const no = `TC-${new Date().toISOString().slice(0,10).replaceAll('-','')}-00${++seq}`;
+        tickets.value.unshift({
+          id:Date.now(), ticket_no:no, student_name:m.student_name, id_card:m.id_card,
+          org_type:u.type, org_name:u.name, org_code:u.code,
+          registration_date:m.registration_date, complaint_date:m.complaint_date,
+          handle_status:'待处理', intake_type:'三系统无信息', fee_plan_status:'',
+          phone:m.phone, license_type:m.license_type,
+          handling_notes:'', branch_cooperation:'',
+        });
+        currentId.value = tickets.value[0].id;
+        showManualModal.value=false; creating.value=false;
+        createDoneStrip.value=true; createdNo.value=no;
+        setTimeout(()=>createDoneStrip.value=false, 6000);
+      }, 900);
+    };
+    const afterCreate = () => { tab.value='list'; window.scrollTo({top:0}); };
+
+    /* ───── 工作台 ───── */
+    const currentId = ref(null);
+    const current = computed(()=>tickets.value.find(t=>t.id===currentId.value)||null);
+    const goList = () => { tab.value='list'; };
+    const openTicket = t => { currentId.value=t.id; tab.value='workbench'; window.scrollTo({top:0}); };
+    const fee = reactive({total_fee:null, actual_paid:null, deductions:[{item:'服务费', amount:500, basis:'双方口头约定扣除'}]});
+    const feeErr = ref('');
+    const addDeduction = ()=>fee.deductions.push({item:'', amount:null, basis:''});
+    const sumDed = computed(()=>fee.deductions.reduce((s,d)=>s+(Number(d.amount)||0),0));
+    const refund = computed(()=>{
+      const paid=Number(fee.actual_paid)||0;
+      return Math.max(0, Math.round((paid - Math.min(sumDed.value, Number(fee.total_fee)||paid))*100)/100);
+    });
+    const refundText = computed(()=>refund.value.toFixed(2));
+    const confirmZero = () => { Object.assign(current.value,{fee_plan_status:'confirmed'});
+      feeErr.value=''; zeroConfirm.value=true; fee.total_fee=0; fee.actual_paid=0; fee.deductions=[]; };
+    const zeroConfirm = ref(false);
+    const confirmManual = () => {
+      feeErr.value='';
+      if(!(fee.total_fee>0)){ feeErr.value='手工确认：请填写大于 0 的合同总额'; return; }
+      if(!(fee.actual_paid>0)){ feeErr.value='手工确认：请填写大于 0 的实缴金额'; return; }
+      if(fee.deductions.some(d=>d.amount==null)){ feeErr.value='扣费行金额不能为空'; return; }
+      if(sumDed.value > fee.total_fee){ feeErr.value='Σ扣费 '+sumDed.value+' 超过合同总额，超出部分将被封顶'; }
+      current.value.fee_plan_status='confirmed';
+    };
+    const unlockFee = () => { current.value.fee_plan_status=''; zeroConfirm.value=false; };
+    const genDoc = name => alert(`Demo：${name} 已按现有模板生成（数据来自工单字段：姓名/证件号/${'\\n'}网点=organization_unit/报名时间 人工值）`);
+    const readyArchive = computed(()=> current.value && current.value.fee_plan_status==='confirmed'
+      && (current.value.handling_notes||'').trim() && (current.value.branch_cooperation||'').trim());
+    const archived = ref(false);
+    const doArchive = () => { archived.value=true; current.value.handle_status='已完结'; setTimeout(()=>{},400); };
+
+    /* ───── 统计 ───── */
+    const stats = computed(()=>({
+      valid: 128, manual: 23 + tickets.value.filter(t=>t.intake_type && t.student_name=== '陈志明').length*0,
+      completed: 96, avgDays: 3.4,
+    }));
+    const branchRows = [
+      {name:'大朗松柏朗分校', code:'成', total:18, manual:5, cars:210, rate:(18/210).toFixed(3)},
+      {name:'厚街河田分校',   code:'田', total:12, manual:4, cars:186, rate:(12/186).toFixed(3)},
+      {name:'殷焕权（分店）',  code:'权', total:9,  manual:3, cars:64,  rate:(9/64).toFixed(3)},
+      {name:'李水祥（分店）',  code:'祥', total:7,  manual:2, cars:51,  rate:(7/51).toFixed(3)},
+    ];
+
+    return {tab, units, unitBranches, unitStores, q, fillOk, fillTimeout, canQuery,
+      systems, queryShow, querying, noMatch, pillText, startQuery, reQuery,
+      showManualModal, creating, tried, m, errs, openManual, closeManual,
+      onlyManual, filteredTickets, tickets, submitManual, afterCreate, createDoneStrip, createdNo,
+      currentId, current, goList, openTicket, fee, feeErr, addDeduction,
+      refundText, confirmZero, zeroConfirm, confirmManual, unlockFee, genDoc, readyArchive, archived, doArchive,
+      stats, branchRows};
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

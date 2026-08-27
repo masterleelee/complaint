@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>统计看板 · 原型演示（数据为模拟数据）</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11/font/bootstrap-icons.min.css">
+<script src="https://cdn.jsdelivr.net/npm/vue@3.4/dist/vue.global.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<style>
+:root{
+  --primary:#3370FF; --success:#34C77B; --warning:#FF9F0A; --danger:#F5576C;
+  --ink:#1F2329; --ink-2:#646A73; --ink-3:#8F959E;
+  --bg:#F2F3F5; --card:#FFFFFF; --line:#E5E7EB;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+.page{max-width:1440px;margin:0 auto;padding:16px 20px 60px}
+
+/* ── 顶栏 ── */
+.topbar{display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.topbar h1{font-size:20px;font-weight:700}
+.demo-badge{font-size:11px;background:#FFF3E0;color:#B25E09;border:1px solid #FFD591;padding:2px 10px;border-radius:20px;font-weight:600}
+.hint{color:var(--ink-3);font-size:12px}
+.spacer{flex:1}
+
+/* ── 筛选工具条 ── */
+.filter-bar{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:18px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:8px;z-index:50;box-shadow:0 2px 8px rgba(31,35,41,.06)}
+.f-group{display:flex;align-items:center;gap:8px}
+.f-label{font-size:12px;color:var(--ink-3);white-space:nowrap}
+.seg{display:flex;background:#F2F3F5;border-radius:8px;padding:2px}
+.seg button{border:none;background:none;padding:5px 14px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--ink-2);white-space:nowrap}
+.seg button.active{background:#fff;color:var(--primary);font-weight:600;box-shadow:0 1px 4px rgba(31,35,41,.12)}
+select,input[type=date],input[type=search]{border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:13px;color:var(--ink);background:#fff;outline:none}
+select:focus,input:focus{border-color:var(--primary)}
+.custom-range{display:flex;align-items:center;gap:6px}
+.drill-chip{display:inline-flex;align-items:center;gap:6px;background:#EDF3FF;color:var(--primary);border:1px solid #BCD0FF;border-radius:20px;padding:3px 12px;font-size:12px;font-weight:600;cursor:pointer}
+.drill-chip i{cursor:pointer}
+
+/* ── KPI ── */
+.kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:14px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.kpi .num{font-size:26px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+.kpi .lbl{font-size:12px;color:var(--ink-2);margin-top:2px;display:flex;align-items:center;gap:4px}
+.trend-tag{font-size:11px;font-weight:600;border-radius:4px;padding:1px 5px}
+.trend-up{color:#D54941;background:#FEECEB}
+.trend-down{color:#34C77B;background:#E8F7EF}
+.warn-pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#D54941;background:#FEECEB;border-radius:10px;padding:1px 8px;margin-left:6px}
+.sub-num{font-size:12px;color:var(--ink-3);font-weight:400;margin-left:4px}
+
+/* ── 图表卡片 ── */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:14px;margin-bottom:14px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.card-h{display:flex;align-items:center;gap:8px;padding:12px 16px;font-weight:600;font-size:14px;border-bottom:1px solid var(--line)}
+.card-h i{color:var(--primary)}
+.card-b{padding:12px 16px}
+.chart{width:100%;height:280px}
+.rank-tabs{margin-left:auto;display:flex;gap:0;background:#F2F3F5;border-radius:6px;padding:2px}
+.rank-tabs button{border:none;background:none;font-size:12px;padding:3px 10px;border-radius:4px;cursor:pointer;color:var(--ink-2)}
+.rank-tabs button.active{background:#fff;color:var(--primary);font-weight:600}
+
+/* 渠道迷你条 */
+.mini-list{display:flex;flex-direction:column;gap:12px;padding-top:6px}
+.mini-item{display:flex;flex-direction:column;gap:4px}
+.mini-item .row1{display:flex;justify-content:space-between;font-size:13px}
+.mini-item .row1 b{font-weight:600}
+.mini-track{height:8px;background:#F2F3F5;border-radius:4px;overflow:hidden}
+.mini-fill{height:100%;background:linear-gradient(90deg,#93C5FD,#3370FF);border-radius:4px;transition:width .4s}
+
+/* ── 明细表 ── */
+.table-toolbar{display:flex;align-items:center;gap:10px;padding:12px 16px;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.search-wrap{position:relative}
+.search-wrap input{width:280px;padding-left:30px}
+.search-wrap>i{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--ink-3);font-size:13px}
+table{width:100%;border-collapse:collapse}
+th{background:#FAFBFC;text-align:left;padding:9px 12px;font-size:12px;color:var(--ink-2);font-weight:600;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:9px 12px;border-bottom:1px solid #F2F3F5;font-size:13px;white-space:nowrap;vertical-align:middle}
+tbody tr:hover{background:#F7F9FF;cursor:pointer}
+.seq{color:var(--ink-3);font-variant-numeric:tabular-nums;font-size:12px;width:52px}
+.stu-name{font-weight:600}
+.id-card{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;letter-spacing:.3px;color:var(--ink-2)}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:12px;font-weight:500}
+.b-pending{background:#FFF7E6;color:#B25E09}
+.b-processing{background:#EDF3FF;color:#2B5FD9}
+.b-completed{background:#E8F7EF;color:#1EA05C}
+.b-withdrawn{background:#F2F3F5;color:#8F959E}
+.repeat-flag{color:#F5576C;font-size:12px;margin-left:4px}
+.empty-row{text-align:center!important;padding:40px!important;color:var(--ink-3)}
+.mask-btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;color:var(--ink-2)}
+.mask-btn:hover{color:var(--primary);border-color:var(--primary)}
+
+.pager{display:flex;align-items:center;gap:8px;padding:12px 16px;flex-wrap:wrap}
+.pager .info{color:var(--ink-3);font-size:12.5px}
+.pg-btn{min-width:30px;height:30px;border:1px solid var(--line);background:#fff;border-radius:6px;cursor:pointer;font-size:13px;color:var(--ink-2);padding:0 8px}
+.pg-btn.on{background:var(--primary);color:#fff;border-color:var(--primary)}
+.pg-btn:disabled{opacity:.4;cursor:not-allowed}
+.pg-dots{color:var(--ink-3)}
+
+/* ── 车辆数维护弹窗 ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(31,35,41,.45);z-index:200;display:flex;align-items:center;justify-content:center}
+.modal-box{background:#fff;border-radius:12px;width:min(720px,94vw);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(31,35,41,.18)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;font-weight:700;font-size:15px;border-bottom:1px solid var(--line)}
+.modal-close{cursor:pointer;color:var(--ink-3);font-size:14px}
+.modal-close:hover{color:var(--ink)}
+.modal-body{padding:14px 18px;overflow:auto}
+.veh-table{width:100%;border-collapse:collapse}
+.veh-table th{text-align:left;font-size:12px;color:var(--ink-2);padding:6px 8px;background:#FAFBFC;border-bottom:1px solid var(--line)}
+.veh-table td{padding:5px 8px;border-bottom:1px solid #F2F3F5;cursor:default}
+.veh-table tbody tr:hover td{cursor:default}
+.veh-input{width:100%;border:1px solid var(--line);border-radius:6px;padding:5px 8px;font-size:13px;outline:none}
+.veh-input:focus{border-color:var(--primary)}
+.row-del{border:none;background:none;color:var(--ink-3);cursor:pointer;font-size:14px;padding:4px}
+.row-del:hover{color:var(--danger)}
+.modal-foot{display:flex;align-items:center;gap:10px;padding:12px 18px;border-top:1px solid var(--line)}
+
+/* ── 环比对比卡 ── */
+.cmp-row{display:flex;align-items:center;gap:14px;padding:9px 0;border-bottom:1px dashed #F2F3F5}
+.cmp-row:last-child{border-bottom:none}
+.cmp-label{width:88px;font-size:13px;font-weight:600;flex-shrink:0;line-height:1.3}
+.cmp-label .hint{font-weight:400;font-size:11px}
+.cmp-bars{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.cmp-line{display:flex;align-items:center;gap:8px}
+.cmp-tag{font-size:10px;width:30px;text-align:center;border-radius:4px;padding:1px 0;flex-shrink:0}
+.cmp-tag.cur{background:#EDF3FF;color:var(--primary);font-weight:600}
+.cmp-tag.prev{background:#F2F3F5;color:var(--ink-2)}
+.cmp-line .mini-track{flex:1}
+.cmp-line b{width:52px;text-align:right;font-size:12.5px;font-variant-numeric:tabular-nums;flex-shrink:0}
+.mini-fill.cmp-prev-fill{background:#C9CFD6}
+.cmp-delta{width:86px;text-align:right;font-size:13px;font-weight:700;flex-shrink:0;display:flex;align-items:center;justify-content:flex-end;gap:3px}
+.delta-bad{color:#D54941}
+.delta-good{color:#1EA05C}
+.delta-flat{color:var(--ink-3);font-weight:500}
+</style>
+</head>
+<body>
+<div id="app">
+<div class="page">
+
+  <!-- ═══ 顶栏 ═══ -->
+  <div class="topbar">
+    <h1><i class="bi bi-bar-chart" style="color:var(--primary)"></i> 统计看板</h1>
+    <span class="demo-badge"><i class="bi bi-magic"></i> 原型演示 · 模拟数据</span>
+    <span class="hint">口径：投诉即入账；撤诉不计有效投诉、单独列示</span>
+    <div class="spacer"></div>
+    <button class="mask-btn" @click="openVeh"><i class="bi bi-truck"></i> 车辆数维护</button>
+    <button class="mask-btn" @click="exportTickets()"><i class="bi bi-download"></i> 导出Excel</button>
+  </div>
+
+  <!-- ═══ 筛选工具条：时间 + 范围 ═══ -->
+  <div class="filter-bar">
+    <div class="f-group">
+      <span class="f-label"><i class="bi bi-calendar3"></i> 时间</span>
+      <div class="seg">
+        <button v-for="p in periods" :key="p.key" :class="{active:period===p.key}" @click="setPeriod(p.key)">[[ p.label ]]</button>
+      </div>
+      <template v-if="period==='custom'">
+        <div class="custom-range">
+          <input type="date" v-model="customStart" @change="onFilterChange">
+          <span class="hint">至</span>
+          <input type="date" v-model="customEnd" @change="onFilterChange">
+        </div>
+      </template>
+    </div>
+
+    <div class="f-group">
+      <span class="f-label"><i class="bi bi-diagram-3"></i> 范围</span>
+      <div class="seg">
+        <button v-for="s in scopes" :key="s.key" :class="{active:scope===s.key && !drillCode}" @click="setScope(s.key)">[[ s.label ]]</button>
+      </div>
+      <select v-model="drillCode" @change="onDrillSelect" style="max-width:210px">
+        <option value="">指定网点下钻…</option>
+        <optgroup label="分校">
+          <option v-for="u in branchUnits" :key="u.code" :value="u.code">[[ u.name ]]（[[ u.code ]]）</option>
+        </optgroup>
+        <optgroup label="分店">
+          <option v-for="u in storeUnits" :key="u.code" :value="u.code">[[ u.name ]]（[[ u.code ]]）</option>
+        </optgroup>
+      </select>
+      <span v-if="drillUnit" class="drill-chip" @click="clearDrill" title="点击清除下钻">
+        [[ drillUnit.name ]] <i class="bi bi-x-lg" style="font-size:10px"></i>
+      </span>
+    </div>
+
+    <div class="spacer"></div>
+    <span class="hint">当前统计区间：[[ activeRangeText || '全部时间' ]]</span>
+  </div>
+
+  <!-- ═══ KPI 卡片 ═══ -->
+  <div class="kpi-row">
+    <div class="kpi"><div class="num">[[ s.total ]]</div><div class="lbl">累计投诉</div></div>
+    <div class="kpi">
+      <div class="num">[[ s.effective ]]<span class="sub-num" v-if="momText!==null">环比 [[ momText ]]</span></div>
+      <div class="lbl">有效投诉（不含撤诉）</div>
+    </div>
+    <div class="kpi">
+      <div class="num" style="color:var(--primary)">[[ s.pending + s.processing ]]</div>
+      <div class="lbl">在途<span v-if="s.overdue>0" class="warn-pill"><i class="bi bi-exclamation-triangle"></i>超48h [[ s.overdue ]]</span></div>
+    </div>
+    <div class="kpi"><div class="num" style="color:var(--success)">[[ s.completed ]]</div><div class="lbl">已完结归档</div></div>
+    <div class="kpi"><div class="num" style="color:var(--ink-3)">[[ s.withdrawn ]]</div><div class="lbl">已撤诉</div></div>
+    <div class="kpi"><div class="num">[[ s.avgHours ]]<span class="sub-num">天</span></div><div class="lbl">平均处理时长</div></div>
+    <div class="kpi"><div class="num">[[ s.rate ?? '—' ]]<span class="sub-num">件/百车</span></div><div class="lbl">投诉率（÷车辆数）</div></div>
+  </div>
+
+  <!-- ═══ 图表区 ═══ -->
+  <div class="grid">
+    <div class="card">
+      <div class="card-h"><i class="bi bi-graph-up"></i> 月度趋势</div>
+      <div class="card-b"><div ref="trendEl" class="chart"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><i class="bi bi-bar-chart"></i> 单位排行
+        <div class="rank-tabs">
+          <button :class="{active:rankMode==='count'}" @click="rankMode='count';renderRank()">按数量</button>
+          <button :class="{active:rankMode==='rate'}" @click="rankMode='rate';renderRank()">按每百车率</button>
+        </div>
+      </div>
+      <div class="card-b"><div ref="rankEl" class="chart"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><i class="bi bi-pie-chart"></i> 投诉类型分布</div>
+      <div class="card-b"><div ref="typeEl" class="chart"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><i class="bi bi-inboxes"></i> 处理状态</div>
+      <div class="card-b"><div ref="statusEl" class="chart"></div></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><i class="bi bi-signpost-split"></i> 来源渠道 TOP5</div>
+      <div class="card-b">
+        <div class="mini-list">
+          <div class="mini-item" v-for="(c,i) in s.topChannels" :key="c.name">
+            <div class="row1"><b>[[ c.name ]]</b><span class="hint">[[ c.count ]] 件 · [[ c.pct ]]%</span></div>
+            <div class="mini-track"><div class="mini-fill" :style="{width:c.pct+'%', opacity:1-i*0.15}"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 环比卡：本期 vs 上期同长度窗口 -->
+    <div class="card">
+      <div class="card-h"><i class="bi bi-arrow-left-right"></i> 环比对比
+        <span class="hint" style="margin-left:auto;font-weight:400">[[ compare.windowText ]]</span>
+      </div>
+      <div class="card-b">
+        <template v-if="compare.rows.length">
+          <div class="cmp-row" v-for="r in compare.rows" :key="r.label">
+            <div class="cmp-label">[[ r.label ]]<span class="hint" style="display:block">[[ r.unit ]]</span></div>
+            <div class="cmp-bars">
+              <div class="cmp-line"><span class="cmp-tag cur">本期</span>
+                <div class="mini-track"><div class="mini-fill" :style="{width:r.wCur+'%'}"></div></div>
+                <b>[[ r.cur ]]</b></div>
+              <div class="cmp-line"><span class="cmp-tag prev">上期</span>
+                <div class="mini-track"><div class="mini-fill cmp-prev-fill" :style="{width:r.wPrev+'%'}"></div></div>
+                <b>[[ r.prev ]]</b></div>
+            </div>
+            <div class="cmp-delta" :class="r.cls"><i :class="r.icon"></i> [[ r.deltaText ]]</div>
+          </div>
+        </template>
+        <div v-else style="padding:70px 0;text-align:center;color:var(--ink-3);font-size:13px">
+          <i class="bi bi-calendar-x" style="font-size:22px;display:block;margin-bottom:8px"></i>
+          选择具体时间段后展示环比<br><span class="hint">"全部时间"无上一周期可比</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ 投诉信息明细 ═══ -->
+  <div class="card">
+    <div class="card-h"><i class="bi bi-list-ul"></i> 投诉信息明细</div>
+
+    <div class="table-toolbar">
+      <!-- 决策点Q5：合一模糊搜索 vs 三个独立输入框 -->
+      <div class="search-wrap">
+        <i class="bi bi-search"></i>
+        <input type="search" v-model="keyword" @input="onSearchInput" placeholder="搜索学员姓名 / 代号 / 身份证号…">
+      </div>
+      <select v-model="statusFilter" @change="page=1" style="max-width:130px">
+        <option value="">全部状态</option>
+        <option value="待处理">待处理</option>
+        <option value="处理中">处理中</option>
+        <option value="已归档">已归档</option>
+        <option value="已撤诉">已撤诉</option>
+      </select>
+      <label class="hint" style="display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" v-model="repeatOnly" @change="page=1"> 只看重复投诉
+      </label>
+      <div class="spacer"></div>
+      <button class="mask-btn" @click="masked=!masked">
+        <i class="bi" :class="masked?'bi-eye':'bi-eye-slash'"></i> [[ masked ? '显示完整身份证' : '隐藏身份证' ]]
+      </button>
+    </div>
+
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr>
+            <th class="seq">序号</th>
+            <th>投诉日期</th>
+            <th>学员姓名</th>
+            <th>身份证号</th>
+            <th>经营单位</th>
+            <th>代号</th>
+            <th>投诉类型</th>
+            <th>来源渠道</th>
+            <th>状态</th>
+            <th>配合度</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(t,i) in pageRows" :key="t.id" @click="openTicket(t)">
+            <td class="seq">[[ seqStart + i ]]</td>
+            <td>[[ t.complaint_date ]]</td>
+            <td class="stu-name">[[ t.student_name ]]<span v-if="repeatMap[t.id_card]>1" class="repeat-flag" title="该学员有多条投诉记录"><i class="bi bi-arrow-repeat"></i>×[[ repeatMap[t.id_card] ]]</span></td>
+            <td class="id-card">[[ masked ? maskId(t.id_card) : t.id_card ]]</td>
+            <td>[[ t.org_name ]]</td>
+            <td class="hint">[[ t.org_code ]]</td>
+            <td>[[ typeName(t.complaint_type) ]]</td>
+            <td>[[ t.source_channel ]]</td>
+            <td><span class="badge" :class="badgeClass(t)">[[ statusText(t) ]]</span></td>
+            <td>[[ t.branch_cooperation || '—' ]]</td>
+          </tr>
+          <tr v-if="pageRows.length===0">
+            <td colspan="10" class="empty-row"><i class="bi bi-inbox"></i> 当前筛选条件下暂无数据</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="pager">
+      <span class="info">共 [[ filteredRows.length ]] 条记录　第 [[ page ]]/[[ totalPages ]] 页</span>
+      <div class="spacer"></div>
+      <span class="info">每页</span>
+      <select v-model.number="pageSize" @change="page=1" style="padding:4px 8px">
+        <option v-for="n in [10,20,50,100]" :key="n" :value="n">[[ n ]]</option>
+      </select>
+      <button class="pg-btn" @click="page--;clampPage()" :disabled="page<=1"><i class="bi bi-chevron-left"></i></button>
+      <button v-for="p in pageButtons" :key="p.n" class="pg-btn" :class="{on:p.cur}" @click="page=p.n">[[ p.n ]]</button>
+      <span v-if="showDots" class="pg-dots">…</span>
+      <button class="pg-btn" @click="page++;clampPage()" :disabled="page>=totalPages"><i class="bi bi-chevron-right"></i></button>
+    </div>
+  </div>
+
+  <!-- ═══ 车辆数维护弹窗 ═══ -->
+  <div class="modal-overlay" v-if="vehOpen" @click.self="vehOpen=false">
+    <div class="modal-box">
+      <div class="modal-head">
+        <span><i class="bi bi-truck" style="color:var(--primary)"></i> 网点车辆数维护</span>
+        <i class="bi bi-x-lg modal-close" @click="vehOpen=false"></i>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="margin-bottom:10px">车辆数是"每百车投诉率"的分母，请与各网点实际在册车辆保持一致。</p>
+        <table class="veh-table">
+          <thead><tr><th>类型</th><th>代号</th><th>网点名称</th><th style="width:110px">车辆数</th><th style="width:60px">操作</th></tr></thead>
+          <tbody>
+            <tr v-for="(v,i) in vehItems" :key="i">
+              <td><select v-model="v.type" class="veh-input"><option>分校</option><option>分店</option></select></td>
+              <td><input v-model="v.code" class="veh-input" placeholder="如 DC-04"></td>
+              <td><input v-model="v.name" class="veh-input" placeholder="网点名称"></td>
+              <td><input v-model.number="v.vehicles" type="number" min="0" class="veh-input"></td>
+              <td><button class="row-del" @click="vehItems.splice(i,1)" title="删除该网点"><i class="bi bi-trash3"></i></button></td>
+            </tr>
+            <tr v-if="vehItems.length===0"><td colspan="5" class="empty-row">暂无网点，点击下方"新增网点"</td></tr>
+          </tbody>
+        </table>
+        <button class="mask-btn" style="margin-top:10px" @click="vehItems.push({type:'分店',code:'',name:'',vehicles:0})"><i class="bi bi-plus-lg"></i> 新增网点</button>
+      </div>
+      <div class="modal-foot">
+        <span class="hint">合计 [[ totalVeh ]] 台车 · [[ vehItems.length ]] 个网点</span>
+        <div class="spacer"></div>
+        <button class="mask-btn" @click="vehOpen=false">取消</button>
+        <button class="pg-btn on" style="height:32px;padding:0 16px" @click="saveVeh"><i class="bi bi-check2"></i> 保存</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<script>
+const { createApp, ref, computed, watch, nextTick } = Vue;
+
+const app = createApp({
+  setup(){
+    /* ══════════ 模拟数据生成 ══════════ */
+    function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+    const rnd = mulberry32(20260822);
+
+    const units = [
+      {code:'DC',   name:'东城分校',           type:'分校', vehicles:86},
+      {code:'NC',   name:'南城分校',           type:'分校', vehicles:74},
+      {code:'XP',   name:'西平分校',           type:'分校', vehicles:58},
+      {code:'SSL',  name:'松山湖分校',         type:'分校', vehicles:45},
+      {code:'HM',   name:'虎门分校',           type:'分校', vehicles:92},
+      {code:'DC-01',name:'东城·温南营业点',     type:'分店', vehicles:22},
+      {code:'DC-02',name:'东城·火炼树营业点',   type:'分店', vehicles:18},
+      {code:'DC-03',name:'东城·东泰营业点',     type:'分店', vehicles:13},
+      {code:'NC-01',name:'南城·第一国际营业点', type:'分店', vehicles:20},
+      {code:'NC-02',name:'南城·白马营业点',     type:'分店', vehicles:15},
+      {code:'NC-03',name:'南城·袁屋边营业点',   type:'分店', vehicles:10},
+      {code:'XP-01',name:'西平·宏伟路营业点',   type:'分店', vehicles:14},
+      {code:'XP-02',name:'西平·雅园营业点',     type:'分店', vehicles:12},
+      {code:'SSL-01',name:'松山湖·创意谷营业点',type:'分店', vehicles:16},
+      {code:'SSL-02',name:'松山湖·大学路营业点',type:'分店', vehicles:11},
+      {code:'HM-01',name:'虎门·太平广场营业点', type:'分店', vehicles:25},
+      {code:'HM-02',name:'虎门·北栅营业点',     type:'分店', vehicles:19},
+    ];
+    const branchUnits = units.filter(u=>u.type==='分校');
+    const storeUnits  = units.filter(u=>u.type==='分店');
+    const totalVehiclesAll = units.reduce((a,u)=>a+u.vehicles,0);
+    const unitByCode = Object.fromEntries(units.map(u=>[u.code,u]));
+
+    const surnames='李王张刘陈杨黄赵周吴徐孙马朱胡郭何林罗郑梁谢宋唐许韩冯邓曹彭曾肖田董潘袁蔡蒋余于杜叶程苏魏吕丁任沈姚卢姜崔钟谭陆汪范金石廖贾夏韦付方白邹孟熊秦邱江尹薛闫段雷侯龙史陶黎贺顾毛郝龚邵万钱严覃武戴莫孔向汤'.split('');
+    const given='伟芳娜秀英敏静丽强磊军洋勇艳杰娟涛明超霞平刚桂英华玉梅红建国志文心怡欣悦晨曦子轩雨桐浩然宇航思远梦琪嘉懿'.split('');
+    const channels=[['交通局转办',.28],['12345政务热线',.26],['黑猫投诉',.15],['抖音/小红书曝光',.12],['学员来电来访',.14],['媒体监督',.05]];
+    const types=[['A',.38],['B',.27],['C',.15],['D',.12],['E',.08]];
+    const coopLevels=['很配合','配合','一般','不配合','未评价'];
+    const TYPE_NAMES={A:'退费纠纷',B:'教学服务',C:'考试安排',D:'合同争议',E:'其他'};
+    const TODAY = new Date('2026-08-22'); // 演示固定"今天"
+
+    function pickWeighted(arr){const r=rnd();let acc=0;for(const[v,w]of arr){acc+=w;if(r<=acc)return v}return arr[arr.length-1][0]}
+    function fmt(d){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+    function randDate(){ // 近期权重更高
+      const days=Math.floor(Math.pow(rnd(),1.6)*590); // 2025-01-04 起 ~590 天
+      const d=new Date(TODAY);d.setDate(d.getDate()-days);return d;
+    }
+    function fakeName(){return surnames[Math.floor(rnd()*surnames.length)]+given[Math.floor(rnd()*given.length)]+(rnd()<.3?given[Math.floor(rnd()*given.length)]:'')}
+    function fakeId(){
+      let s='441900'+String(1970+Math.floor(rnd()*36))+String(1+Math.floor(rnd()*12)).padStart(2,'0')+String(1+Math.floor(rnd()*28)).padStart(2,'0')+String(Math.floor(rnd()*1000)).padStart(3,'0');
+      s+=rnd()<.5?String(Math.floor(rnd()*10)):'X';
+      return s;
+    }
+
+    // 构造 ~170 条工单；单位按车辆数加权抽样
+    const pool=[];units.forEach(u=>{for(let i=0;i<u.vehicles;i++)pool.push(u)});
+    // 制造 5 个重复投诉学员（同身份证 2~3 条）
+    const repeatStudents=[];
+    for(let i=0;i<5;i++){const nm=fakeName(),idc=fakeId();repeatStudents.push({name:nm,id:idc})}
+
+    const tickets=[];let tid=0;
+    function pushTicket(dateObj,unit,name,idc){
+      tid++;
+      const ageDays=(TODAY-dateObj)/86400000;
+      let handle_status,archive_status='',withdraw_status='',withdrawn_at='';
+      if(ageDays<10){handle_status=pickWeighted([['待处理',.45],['处理中',.4],['已完结',.15]])}
+      else{handle_status=pickWeighted([['待处理',.06],['处理中',.14],['已完结',.8]])}
+      if(handle_status==='已完结'){
+        archive_status='已归档';
+        if(rnd()<.09){withdraw_status='已撤诉';withdrawn_at=fmt(dateObj)}
+      }
+      const done=(handle_status==='已完结')?(0.5+rnd()*5.5):null;
+      tickets.push({
+        id:tid, complaint_date:fmt(dateObj),
+        student_name:name, id_card:idc,
+        org_code:unit.code, org_name:unit.name, org_type:unit.type,
+        school_short:unit.code.slice(0,2),
+        complaint_type:pickWeighted(types),
+        source_channel:pickWeighted(channels),
+        handle_status, archive_status, withdraw_status, withdrawn_at,
+        final_outcome: done?(rnd()<.5?'部分退费':'协商和解'):'',
+        branch_cooperation: rnd()<.85?coopLevels[Math.floor(rnd()*4)]:'未评价',
+        _days: done,
+      });
+    }
+    for(let i=0;i<165;i++){pushTicket(randDate(),pool[Math.floor(rnd()*pool.length)],fakeName(),fakeId())}
+    repeatStudents.forEach(rs=>{
+      const n=2+Math.floor(rnd()*2);
+      for(let k=0;k<n;k++)pushTicket(randDate(),pool[Math.floor(rnd()*pool.length)],rs.name,rs.id);
+    });
+    tickets.sort((a,b)=>b.complaint_date.localeCompare(a.complaint_date));
+
+    /* ══════════ 筛选状态 ══════════ */
+    const periods=[{key:'week',label:'本周'},{key:'month',label:'本月'},{key:'year',label:'今年'},{key:'all',label:'全部'},{key:'custom',label:'自定义'}];
+    const scopes=[{key:'all',label:'全部网点'},{key:'branch',label:'仅分校'},{key:'store',label:'仅分店'}];
+    const period=ref('month'), customStart=ref(''), customEnd=ref('');
+    const scope=ref('all'), drillCode=ref('');
+    const keyword=ref(''), statusFilter=ref(''), repeatOnly=ref(false);
+    const page=ref(1), pageSize=ref(20), masked=ref(true), rankMode=ref('count');
+
+    const drillUnit=computed(()=>unitByCode[drillCode.value]||null);
+
+    function rangeOf(key){
+      const d=new Date(TODAY), day=(d.getDay()+6)%7;
+      if(key==='week'){d.setDate(d.getDate()-day);return{start:fmt(d),end:fmt(TODAY)}}
+      if(key==='month'){return{start:fmt(new Date(d.getFullYear(),d.getMonth(),1)),end:fmt(TODAY)}}
+      if(key==='year'){return{start:d.getFullYear()+'-01-01',end:fmt(TODAY)}}
+      return null;
+    }
+    function setPeriod(k){period.value=k;if(k!=='custom')onFilterChange()}
+    function setScope(s){scope.value=s;drillCode.value='';onFilterChange()}
+    function onDrillSelect(){page.value=1;refresh()}
+    function clearDrill(){drillCode.value='';onFilterChange()}
+    function onFilterChange(){page.value=1;refresh()}
+
+    const activeRange=computed(()=>{
+      if(period.value==='custom')return{start:customStart.value,end:customEnd.value};
+      return rangeOf(period.value);
+    });
+    const activeRangeText=computed(()=>{const r=activeRange.value;return r&&r.start?`${r.start} ~ ${r.end}`:''});
+
+    /** 时间 + 范围/下钻 过滤后的全量工单（看板与明细共用） */
+    const baseRows=computed(()=>{
+      const r=activeRange.value;
+      return tickets.filter(t=>{
+        if(r&&r.start&&t.complaint_date<r.start)return false;
+        if(r&&r.end&&t.complaint_date>r.end)return false;
+        if(drillUnit.value)return t.org_code===drillUnit.value.code||t.school_short===drillUnit.value.code;
+        if(scope.value==='branch')return t.org_type==='分校';
+        if(scope.value==='store')return t.org_type==='分店';
+        return true;
+      });
+    });
+
+    /* ══════════ 统计聚合 ══════════ */
+    const s=computed(()=>{
+      const rows=baseRows.value;
+      const total=rows.length;
+      const withdrawn=rows.filter(t=>t.withdraw_status==='已撤诉'||t.withdrawn_at).length;
+      const effective=total-withdrawn;
+      const pending=rows.filter(t=>t.handle_status==='待处理').length;
+      const processing=rows.filter(t=>t.handle_status==='处理中').length;
+      const completed=rows.filter(t=>t.archive_status==='已归档').length;
+      const overdue=rows.filter(t=>['待处理','处理中'].includes(t.handle_status)&&(new Date(TODAY)-new Date(t.complaint_date))/86400000>2).length;
+      const doneList=rows.filter(t=>t._days!=null);
+      const avgHours=doneList.length?(doneList.reduce((a,t)=>a+t._days,0)/doneList.length).toFixed(1):'0.0';
+
+      // 月度趋势
+      const mMap={};rows.forEach(t=>{if(t.complaint_date){const ym=t.complaint_date.slice(0,7);mMap[ym]=(mMap[ym]||0)+1}});
+      const monthlyTrend=Object.entries(mMap).sort((a,b)=>a[0].localeCompare(b[0])).map(([month,count])=>({month,count}));
+
+      // 单位聚合
+      const uMap={};
+      rows.forEach(t=>{
+        const u=uMap[t.org_code]||(uMap[t.org_code]={code:t.org_code,name:t.org_name,type:t.org_type,count:0,effective:0});
+        u.count++;if(!t.withdraw_status&&!t.withdrawn_at)u.effective++;
+      });
+      Object.values(uMap).forEach(u=>{
+        u.ratio=u.effective/uMap[u.code].count;
+        const v=(unitByCode[u.code]||{}).vehicles||0;u.vehicles=v;
+        u.rate=v>0?+(u.effective/v*100).toFixed(1):null;
+      });
+      const byUnit=Object.values(uMap);
+
+      // 类型 / 渠道 / 状态
+      const cnt=(fn)=>{const m={};rows.forEach(t=>{const k=fn(t);m[k]=(m[k]||0)+1});return m};
+      const typeCnt=cnt(t=>TYPE_NAMES[t.complaint_type]);
+      const chCnt=cnt(t=>t.source_channel);
+      const stCnt=cnt(t=>t.withdraw_status==='已撤诉'?'已撤诉':(t.archive_status==='已归档'?'已归档':t.handle_status));
+      const topChannels=Object.entries(chCnt).sort((a,b)=>b[1]-a[1]).slice(0,5)
+        .map(([name,c])=>({name,count:c,pct:total?+(c/total*100).toFixed(1):0}));
+      const rateDenom=drillUnit.value?drillUnit.value.vehicles:(scope.value==='branch'?branchUnits:scope.value==='store'?storeUnits:units).reduce((a,u)=>a+u.vehicles,0);
+      const rate=rateDenom>0?(effective/rateDenom*100).toFixed(1):null;
+
+      // 环比（有效投诉，本月 vs 上月）
+      let momText=null;
+      const nowYm=fmt(TODAY).slice(0,7);
+      const prev=new Date(TODAY);prev.setMonth(prev.getMonth()-1);
+      const prevYm=fmt(prev).slice(0,7);
+      const unitMatch=t=>drillUnit.value?(t.org_code===drillUnit.value.code):(scope.value==='branch'?t.org_type==='分校':scope.value==='store'?t.org_type==='分店':true);
+      const curMonth=tickets.filter(t=>t.complaint_date.startsWith(nowYm)&&unitMatch(t)&&!(t.withdraw_status==='已撤诉')).length;
+      const prevMonth=tickets.filter(t=>t.complaint_date.startsWith(prevYm)&&unitMatch(t)&&!(t.withdraw_status==='已撤诉')).length;
+      if(prevMonth>0){const diff=Math.round((curMonth-prevMonth)/prevMonth*100);momText=(diff>=0?'+':'')+diff+'%'}
+
+      return{total,effective,pending,processing,completed,withdrawn,overdue,avgHours,
+             monthlyTrend,byUnit,topChannels,statusCount:stCnt,typeCount:typeCnt,rate,momText};
+    });
+
+    /* ══════════ 环比对比卡：本期 vs 上期（等长窗口平移） ══════════ */
+    const scopeOnlyMatch=t=>{
+      if(drillUnit.value)return t.org_code===drillUnit.value.code||t.school_short===drillUnit.value.code;
+      if(scope.value==='branch')return t.org_type==='分校';
+      if(scope.value==='store')return t.org_type==='分店';
+      return true;
+    };
+    function winMetrics(rows){
+      const total=rows.length;
+      const wd=rows.filter(t=>t.withdraw_status==='已撤诉'||t.withdrawn_at).length;
+      const eff=total-wd;
+      const done=rows.filter(t=>t._days!=null);
+      const avgH=done.length?done.reduce((a,t)=>a+t._days,0)/done.length:0;
+      return {total,eff,wdRate:total?wd/total*100:0,avgH};
+    }
+    // 投诉类指标语义：涨=坏(红)、降=好(绿)
+    function delta(curV,preV,pp=false){
+      if(preV===0&&curV===0)return{deltaText:'持平',cls:'delta-flat',icon:'bi-dash-lg'};
+      if(preV===0)return{deltaText:'新增',cls:'delta-bad',icon:'bi-arrow-up'};
+      if(curV===0)return{deltaText:'清零',cls:'delta-good',icon:'bi-arrow-down'};
+      if(pp){ // 率类指标用百分点差值，而非相对百分比
+        const d=+(curV-preV).toFixed(1);
+        if(d===0)return{deltaText:'持平',cls:'delta-flat',icon:'bi-dash-lg'};
+        return d>0?{deltaText:'+'+d+'pp',cls:'delta-bad',icon:'bi-arrow-up'}
+                  :{deltaText:d+'pp',cls:'delta-good',icon:'bi-arrow-down'};
+      }
+      const pct=Math.round((curV-preV)/preV*100);
+      if(pct===0)return{deltaText:'持平',cls:'delta-flat',icon:'bi-dash-lg'};
+      return pct>0
+        ?{deltaText:'+'+Math.abs(pct)+'%',cls:'delta-bad',icon:'bi-arrow-up'}
+        :{deltaText:'-'+Math.abs(pct)+'%',cls:'delta-good',icon:'bi-arrow-down'};
+    }
+    function row(label,unit,curD,preD,fmtFn){
+      const max=Math.max(curD,preD);
+      return{label,unit,cur:fmtFn(curD),prev:fmtFn(preD),
+        wCur:max>0?curD/max*100:0, wPrev:max>0?preD/max*100:0,
+        ...delta(curD,preD,unit==='%')};
+    }
+    const compare=computed(()=>{
+      const r=activeRange.value;
+      if(!r||!r.start||!r.end)return{rows:[],windowText:''};
+      const S=new Date(r.start),E=new Date(r.end);
+      const L=Math.round((E-S)/86400000)+1;
+      const P1=new Date(S);P1.setDate(P1.getDate()-L);
+      const P2=new Date(S);P2.setDate(P2.getDate()-1);
+      const pool=tickets.filter(t=>scopeOnlyMatch(t)&&t.complaint_date);
+      const curM=winMetrics(pool.filter(t=>t.complaint_date>=fmt(S)&&t.complaint_date<=fmt(E)));
+      const preM=winMetrics(pool.filter(t=>t.complaint_date>=fmt(P1)&&t.complaint_date<=fmt(P2)));
+      const rows=[
+        row('投诉总量','件',curM.total,preM.total,v=>v),
+        row('有效投诉','件',curM.eff,preM.eff,v=>v),
+        row('撤诉率','%',curM.wdRate,preM.wdRate,v=>v.toFixed(1)),
+        row('平均处理时长','天',curM.avgH,preM.avgH,v=>v.toFixed(1)),
+      ];
+      return{rows,windowText:`本期 ${fmt(S)}~${fmt(E)} · 上期 ${fmt(P1)}~${fmt(P2)}`};
+    });
+
+    /* ══════════ 明细表：搜索 / 分页 ══════════ */
+    let searchTimer=null;
+    function onSearchInput(){clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page.value=1},250)}
+
+    const repeatMap=computed(()=>{const m={};baseRows.value.forEach(t=>{if(t.id_card)m[t.id_card]=(m[t.id_card]||0)+1});return m});
+    const filteredRows=computed(()=>{
+      const kw=keyword.value.trim().toLowerCase();
+      return baseRows.value.filter(t=>{
+        if(statusFilter.value){
+          const st=t.withdraw_status==='已撤诉'?'已撤诉':(t.archive_status==='已归档'?'已归档':t.handle_status);
+          if(st!==statusFilter.value)return false;
+        }
+        if(repeatOnly.value&&(repeatMap.value[t.id_card]||0)<2)return false;
+        if(kw){
+          const hit=t.student_name.toLowerCase().includes(kw)
+            ||(t.org_code||'').toLowerCase().includes(kw)||(t.school_short||'').toLowerCase().includes(kw)
+            ||t.id_card.includes(kw);
+          if(!hit)return false;
+        }
+        return true;
+      });
+    });
+    const totalPages=computed(()=>Math.max(1,Math.ceil(filteredRows.value.length/pageSize.value)));
+    const clampPage=()=>{};
+    watch(totalPages,v=>{if(page.value>v)page.value=v});
+
+    const pageRows=computed(()=>filteredRows.value.slice((page.value-1)*pageSize.value,page.value*pageSize.value));
+    const seqStart=computed(()=>(page.value-1)*pageSize.value+1);
+    const pageButtons=computed(()=>{
+      const tp=totalPages.value,cur=page.value,arr=[];
+      const from=Math.max(1,cur-2),to=Math.min(tp,cur+2);
+      for(let i=from;i<=to;i++)arr.push({n:i,cur:i===cur});
+      return arr;
+    });
+    const showDots=computed(()=>totalPages.value>5&&page.value<totalPages.value-2);
+
+    function maskId(id){return id&&id.length>=15?id.slice(0,6)+'********'+id.slice(-4):id}
+    function typeName(c){return TYPE_NAMES[c]||c}
+    function statusText(t){return t.withdraw_status==='已撤诉'?'已撤诉':(t.archive_status==='已归档'?'已归档':(t.handle_status==='已完结'?'已完结':'在途·'+t.handle_status))}
+    function badgeClass(t){return t.withdraw_status==='已撤诉'?'b-withdrawn':(t.archive_status==='已归档'?'b-completed':(t.handle_status==='处理中'?'b-processing':'b-pending'))}
+    function openTicket(t){alert(`演示环境\n\n将打开案件详情：\n${t.student_name}（${maskId(t.id_card)}）\n${t.org_name} · ${typeName(t.complaint_type)} · ${t.complaint_date}`)}
+    function exportTickets(){
+      alert(`演示环境：导出接口将携带当前筛选参数\n\n时间=${activeRangeText.value||'全部'}｜范围=${drillUnit.value?drillUnit.value.name:scopes.find(x=>x.key===scope.value).label}${statusFilter.value?'｜状态='+statusFilter.value:''}${keyword.value?'｜关键词='+keyword.value:''}`);
+    }
+
+    /* ══════════ 车辆数维护 ══════════ */
+    const vehOpen=ref(false), vehItems=ref([]);
+    function openVeh(){
+      vehItems.value=units.map(u=>({type:u.type,code:u.code,name:u.name,vehicles:u.vehicles}));
+      vehOpen.value=true;
+    }
+    const totalVeh=computed(()=>vehItems.value.reduce((a,v)=>a+(Number(v.vehicles)||0),0));
+    function saveVeh(){
+      const codes=new Set();
+      for(const v of vehItems.value){
+        if(!String(v.code).trim()){alert('存在未填写代号的网点，请补全后再保存');return}
+        if(codes.has(v.code)){alert(`代号重复：${v.code}`);return}
+        codes.add(v.code);
+      }
+      alert(`演示环境：将调用 PUT /api/org-vehicle-counts 保存 ${vehItems.value.length} 个网点\n保存后"每百车投诉率"立即按新分母重算`);
+      vehOpen.value=false;
+    }
+
+    /* ══════════ 图表 ══════════ */
+    const trendEl=ref(null),rankEl=ref(null),typeEl=ref(null),statusEl=ref(null);
+    const charts={};
+    const COLORS=['#3370FF','#34D399','#FBBF24','#F87171','#A78BFA','#60A5FA','#2DD4BF','#F97316'];
+
+    function renderTrend(){
+      if(!charts.trend)return;
+      const tr=s.value.monthlyTrend;
+      charts.trend.setOption({
+        color:[COLORS[0]],grid:{left:44,right:20,top:24,bottom:30},
+        tooltip:{trigger:'axis'},
+        xAxis:{type:'category',data:tr.map(i=>i.month),axisLabel:{fontSize:10,color:'#6B7280'},axisLine:{lineStyle:{color:'#E5E7EB'}}},
+        yAxis:{type:'value',splitLine:{lineStyle:{color:'#F3F4F6'}},axisLabel:{fontSize:10,color:'#6B7280'}},
+        series:[{data:tr.map(i=>i.count),type:'line',smooth:true,symbolSize:6,
+                 areaStyle:{opacity:.12},label:{show:true,position:'top',fontSize:10,color:'#6B7280'}}]
+      },true);
+    }
+    function renderRank(){
+      if(!charts.rank)return;
+      const items=[...s.value.byUnit];
+      let names,vals,axisName;
+      if(rankMode.value==='count'){items.sort((a,b)=>b.count-a.count);names=items.map(i=>i.name);vals=items.map(i=>i.count);axisName='件'}
+      else{items.sort((a,b)=>(b.rate??-1)-(a.rate??-1));names=items.map(i=>i.name);vals=items.map(i=>i.rate??0);axisName='件/百车'}
+      charts.rank.setOption({
+        color:[COLORS[0]],grid:{left:150,right:44,top:10,bottom:24},
+        tooltip:{trigger:'axis',formatter:p=>`${p[0].name}<br>${axisName}：<b>${p[0].value}</b>`},
+        xAxis:{type:'value',splitLine:{lineStyle:{color:'#F3F4F6'}},axisLabel:{fontSize:10,color:'#6B7280'}},
+        yAxis:{type:'category',data:names.reverse(),inverse:false,axisLabel:{fontSize:11,color:'#374151'},axisLine:{lineStyle:{color:'#E5E7EB'}}},
+        series:[{data:vals.reverse(),type:'bar',barWidth:14,itemStyle:{borderRadius:[0,4,4,0],
+                 color:new echarts.graphic.LinearGradient(0,0,1,0,[{offset:0,color:'#93C5FD'},{offset:1,color:'#2563EB'}])},
+                 label:{show:true,position:'right',fontSize:10,color:'#374151'}}]
+      },true);
+      charts.rank.off('click');
+      charts.rank.on('click',p=>{const u=items.find(x=>x.name===p.name);if(u){drillCode.value=u.code;onDrillSelect()}});
+    }
+    function renderType(){
+      if(!charts.type)return;
+      const data=Object.entries(s.value.typeCount).map(([name,value])=>({name,value})).sort((a,b)=>b.value-a.value);
+      charts.type.setOption({
+        color:COLORS,
+        legend:{bottom:0,textStyle:{fontSize:10}},
+        tooltip:{trigger:'item',formatter:'{b}: {c} 件 ({d}%)'},
+        series:[{type:'pie',radius:['36%','62%'],center:['50%','44%'],data,
+                 label:{formatter:'{d}%',fontSize:11},labelLine:{show:true},
+                 itemStyle:{borderRadius:4,borderColor:'#fff',borderWidth:2}}]
+      },true);
+    }
+    function renderStatus(){
+      if(!charts.status)return;
+      const sc=s.value.statusCount;
+      const data=[
+        {name:'待处理',value:sc['待处理']||0},{name:'处理中',value:sc['处理中']||0},
+        {name:'已归档',value:sc['已归档']||0},{name:'已撤诉',value:sc['已撤诉']||0}
+      ].filter(i=>i.value>0);
+      charts.status.setOption({
+        color:['#FBBF24','#60A5FA','#34D399','#B8BEC7'],
+        legend:{bottom:0,textStyle:{fontSize:10}},
+        tooltip:{trigger:'item',formatter:'{b}: {c} 件 ({d}%)'},
+        graphic:[{type:'text',left:'center',top:'40%',style:{text:'合计',fill:'#8F959E',fontSize:12,textAlign:'center'}},
+                 {type:'text',left:'center',top:'50%',style:{text:String(data.reduce((a,d)=>a+d.value,0)),fill:'#1F2329',fontSize:18,fontWeight:'bold',textAlign:'center'}}],
+        series:[{type:'pie',radius:['50%','70%'],center:['50%','44%'],data,
+                 label:{formatter:'{d}%',fontSize:10},itemStyle:{borderRadius:4,borderColor:'#fff',borderWidth:2}}]
+      },true);
+    }
+
+    function refresh(){
+      nextTick(()=>{renderTrend();renderRank();renderType();renderStatus()});
+    }
+    watch(baseRows,refresh,{deep:false});
+
+    // 初始化图表实例（等 DOM 挂载后）
+    setTimeout(()=>{
+      [['trend',trendEl.value],['rank',rankEl.value],['type',typeEl.value],['status',statusEl.value]]
+        .forEach(([k,el])=>{if(el)charts[k]=echarts.init(el)});
+      refresh();
+      window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c.resize()));
+    },0);
+
+    return{
+      periods,scopes,period,setPeriod,customStart,customEnd,onFilterChange,
+      scope,setScope,drillCode,drillUnit,onDrillSelect,clearDrill,activeRangeText,
+      branchUnits,storeUnits,
+      s,rankMode,renderRank,
+      compare,
+      keyword,onSearchInput,statusFilter,repeatOnly,page,pageSize,totalPages,clampPage,
+      pageRows,seqStart,pageButtons,showDots,filteredRows,repeatMap,
+      masked,maskId,typeName,statusText,badgeClass,openTicket,exportTickets,
+      vehOpen,vehItems,openVeh,totalVeh,saveVeh,
+      trendEl,rankEl,typeEl,statusEl,
+    };
+  }
+});
+app.config.compilerOptions.delimiters=['[[',']]'];
+app.mount('#app');
+</script>
+</body>
+</html>

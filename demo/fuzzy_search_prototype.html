@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>原型：新增投诉 · 按姓名模糊查找学员</title>
+<style>
+:root{--primary:#2563eb;--plight:#e0ecff;--pdark:#1d4ed8;--success:#059669;--slight:#ecfdf5;--warning:#d97706;--wlight:#fffbeb;--danger:#dc2626;--surface:#fff;--bg:#eef3f8;--text:#0f172a;--t2:#64748b;--border:#e2e8f0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);padding:24px;font-size:14px}
+.wrap{max-width:1060px;margin:0 auto}
+.banner{background:#111827;color:#fbbf24;border-radius:10px;padding:10px 16px;margin-bottom:16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:13px}
+.banner b{color:#fff}
+.switch{margin-left:auto;display:flex;gap:8px}
+.switch button{border:1px solid #374151;background:#1f2937;color:#d1d5db;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px}
+.switch button.on{background:var(--primary);border-color:var(--primary);color:#fff}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:16px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.ch{padding:14px 18px;border-bottom:1px solid var(--border);font-weight:600;display:flex;align-items:center;gap:8px}
+.cb{padding:18px}
+.step{display:inline-flex;width:22px;height:22px;border-radius:6px;background:var(--plight);color:var(--pdark);font-size:12px;font-weight:700;align-items:center;justify-content:center}
+.gt{font-weight:600;margin:0 0 12px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.qf{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+.fl{display:block;font-size:12.5px;color:var(--t2);margin-bottom:5px}
+.req{color:var(--danger)}
+.fc{width:100%;border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:14px;background:#fff;color:var(--text)}
+.fc:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.hint{font-size:12px;color:var(--t2)}
+.btn{border:none;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font-weight:500}
+.bp{background:var(--primary);color:#fff}.bp:hover{background:var(--pdark)}
+.bo{background:#fff;border:1px solid var(--border)}
+.tabs{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.tabs button{border:none;background:#fff;padding:7px 14px;font-size:13px;cursor:pointer;color:var(--t2)}
+.tabs button.on{background:var(--plight);color:var(--pdark);font-weight:600}
+.badge{display:inline-flex;border-radius:999px;padding:2px 9px;font-size:11.5px;font-weight:500}
+.b-blue{background:var(--plight);color:var(--pdark)}.b-green{background:var(--slight);color:var(--success)}.b-orange{background:var(--wlight);color:var(--warning)}.b-gray{background:#f1f5f9;color:var(--t2)}
+table{width:100%;border-collapse:collapse}
+th{font-size:12px;color:var(--t2);text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);background:#f8fafc;white-space:nowrap}
+td{padding:10px;border-bottom:1px solid #f1f5f9;font-size:13.5px}
+tr.cand{cursor:pointer}tr.cand:hover{background:#f0f6ff}
+tr.picked{background:var(--slight)!important;outline:2px solid var(--success);outline-offset:-2px}
+.nc{font-weight:600}
+.mtag{font-size:10.5px;padding:1px 6px;border-radius:4px;margin-left:6px}
+.m-exact{background:var(--slight);color:var(--success)}.m-sim{background:var(--wlight);color:var(--warning)}
+.empty{text-align:center;padding:34px;color:var(--t2)}
+.empty .big{font-size:34px;margin-bottom:8px}
+.suggest{background:var(--wlight);border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-top:12px;font-size:13px}
+.suggest b{color:var(--warning)}
+.filled{background:var(--slight);border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;margin-top:14px;display:none;align-items:center;gap:10px;flex-wrap:wrap;font-size:13px}
+.chip{background:#fff;border:1px solid #a7f3d0;border-radius:6px;padding:2px 8px;font-size:12px;font-weight:600;color:#065f46}
+.mask{letter-spacing:.4px;font-family:ui-monospace,Menlo,monospace;font-size:12.5px}
+.rev{cursor:pointer;text-decoration:underline dotted;color:var(--primary);font-size:11px;margin-left:6px}
+.range{display:flex;align-items:center;gap:6px}
+.spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:r .8s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+.note{font-size:11.5px;color:var(--t2);margin-top:10px;line-height:1.7}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="banner">🧪 <b>交互原型</b>（纯静态演示，数据为模拟，未改动任何现有代码）
+    <div class="switch">
+      <button class="on" id="swA" onclick="demo('normal')">场景A：查到候选</button>
+      <button id="swB" onclick="demo('dup')">场景B：同名多人</button>
+      <button id="swC" onclick="demo('empty')">场景C：查无结果</button>
+    </div>
+  </div>
+
+  <!-- ══ ② 登记投诉信息 ══ -->
+  <div class="card">
+    <div class="ch"><span class="step">②</span> 登记投诉信息</div>
+    <div class="cb">
+
+      <div class="gt">👤 学员身份
+        <div class="tabs" style="margin-left:12px">
+          <button id="tabE" class="on" onclick="setMode(false)">按证件号 / 手机号</button>
+          <button id="tabF" onclick="setMode(true)">模糊查找（只知道姓名/报名点）</button>
+        </div>
+      </div>
+
+      <div id="paneE">
+        <div class="qf">
+          <div><label class="fl">身份证号<span class="req">*</span></label><input class="fc" placeholder="大陆身份证/港澳/台湾/居留证"></div>
+          <div><label class="fl">手机号<span class="req">*</span></label><input class="fc" placeholder="11位" maxlength="11"></div>
+        </div>
+        <div class="hint" style="margin-top:8px">现状流程：填两项后点「查询三系统并建案」。</div>
+      </div>
+
+      <div id="paneF" style="display:none">
+        <div class="qf">
+          <div><label class="fl">学员姓名<span class="req">*</span></label><input class="fc" id="inName" value="陈金生" placeholder="支持只输姓氏，如「陈」"></div>
+          <div><label class="fl">报名点 / 分校</label>
+            <select class="fc" id="inOrg">
+              <option value="">全部报名点</option>
+              <option>东坑总校</option><option selected>常平横江厦分校</option><option>大朗松柏朗分校</option>
+              <option>大岭山分校</option><option>厚街河田分校</option><option>长安分校</option>
+            </select></div>
+          <div><label class="fl">报名时间（大概范围）</label>
+            <div class="range"><input type="date" class="fc" value="2025-01-01"><span class="hint">至</span><input type="date" class="fc" value="2025-08-01"></div></div>
+          <div style="display:flex;align-items:flex-end"><button class="btn bp" id="btnGo" onclick="doSearch()"><span id="goIcon">🔍</span><span id="goText">到内部系统查找</span></button></div>
+        </div>
+
+        <div id="searchMeta" style="display:none;margin-top:12px"></div>
+        <div id="resultArea"></div>
+
+        <div class="note">说明：模糊查询只访问<b>内部系统</b>一次（列表接口按姓名+分校+日期筛选）；第三系统/驾培系统仍按身份证精确查询，在确认学员后由现有流程完成。</div>
+      </div>
+
+      <!-- 选中后回填提示 -->
+      <div class="filled" id="filledBar">
+        ✅ 已带入候选学员：
+        <span class="chip" id="chipName"></span>
+        <span class="chip" id="chipId"></span>
+        <span class="chip" id="chipPhone"></span>
+        <button class="btn bo btn-sm" style="margin-left:auto" onclick="undoPick()">撤销，重新选择</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══ 工单属性 + 提交（示意后续流程不变）══ -->
+  <div class="card" id="restCard" style="opacity:.45;pointer-events:none">
+    <div class="cb">
+      <div class="gt">📋 工单属性</div>
+      <div class="qf">
+        <div><label class="fl">来源渠道</label><select class="fc"><option>12345</option><option selected>电话来访</option><option>交通部门</option></select></div>
+        <div><label class="fl">投诉日期</label><input type="date" class="fc" value="2026-08-23"></div>
+        <div><label class="fl">投诉类型</label><select class="fc"><option>A-退费纠纷</option></select></div>
+        <div><label class="fl">处理人</label><input class="fc" value="王受理"></div>
+      </div>
+      <div style="margin-top:16px"><button class="btn bp">🔍 查询三系统并建案</button>
+      <span class="hint" style="margin-left:10px">选中候选人后此按钮解锁，流程与现状完全一致</span></div>
+    </div>
+  </div>
+
+<script>
+// ── 模拟数据（字段与 InternalStudentInfo 对齐）──
+const CANDIDATES = {
+  normal: [
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"常平横江厦分校", code:"常", lic:"C1", reg:"2025-03-15", stage:"科目二约成功", owed:false, match:"exact"},
+  ],
+  dup: [
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"常平横江厦分校", code:"常", lic:"C1", reg:"2025-03-15", stage:"科目二约成功", owed:false, match:"exact"},
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"大朗松柏朗分校", code:"成", lic:"C2", reg:"2025-06-20", stage:"科目一受理中", owed:false, match:"exact"},
+    {name:"陈金生", id:"110101199003070011", phone:"13800000000", org:"东坑总校", code:"总", lic:"C1", reg:"2024-11-08", stage:"已退学(已审核退费)", owed:true, match:"exact"},
+  ],
+};
+let picked = null;
+
+function setMode(fuzzy){
+  document.getElementById('paneE').style.display = fuzzy?'none':'';
+  document.getElementById('paneF').style.display = fuzzy?'':'none';
+  document.getElementById('tabE').className = fuzzy?'':'on';
+  document.getElementById('tabF').className = fuzzy?'on':'';
+}
+
+function maskId(v){ return v.length>=14 ? v.slice(0,4)+"***********"+v.slice(-3) : v; }
+function maskPh(v){ return v.slice(0,3)+"****"+v.slice(-4); }
+
+function doSearch(){
+  const btn=document.getElementById('btnGo');
+  btn.disabled=true;
+  document.getElementById('goIcon').outerHTML='<span class="spin" id="goIcon"></span>';
+  document.getElementById('goText').textContent='查询内部系统中...';
+  setTimeout(()=>{
+    renderResult(currentScene);
+    const meta=document.getElementById('searchMeta');
+    meta.style.display='block';
+    meta.innerHTML='<span class="badge b-gray">⏱ 内部系统响应 0.9s</span> <span class="hint">查询条件：姓名含「'+document.getElementById("inName").value+'」 · '+ (document.getElementById("inOrg").value||"全部报名点") +' · 2025-01-01 ~ 2025-08-01</span>';
+    btn.disabled=false;
+    document.getElementById('goIcon').outerHTML='<span id="goIcon">🔍</span>';
+    document.getElementById('goText').textContent='重新查找';
+  },700);
+}
+
+function rowHtml(c,i){
+  const mtag = c.match==='exact'?'<span class="mtag m-exact">精确匹配</span>':'<span class="mtag m-sim">近似名</span>';
+  const owedBadge = c.owed?' <span class="badge b-orange">欠费</span>':'';
+  return '<tr class="cand" id="row'+i+'" onclick="pick('+i+')">'+
+    '<td><input type="radio" name="cand"></td>'+
+    '<td class="nc">'+c.name+mtag+'</td>'+
+    '<td><span class="mask">'+maskId(c.id)+'</span></td>'+
+    '<td><span class="mask">'+maskPh(c.phone)+'<span class="rev" onclick="event.stopPropagation()">显示</span></span></td>'+
+    '<td>'+c.org+'</td><td>'+c.lic+'</td><td>'+c.reg+'</td>'+
+    '<td>'+(c.stage.startsWith('已退学')?'<span class="badge b-orange">'+c.stage+'</span>':'<span class="badge b-blue">'+c.stage+'</span>')+owedBadge+'</td>'+
+    '</tr>';
+}
+
+function renderResult(scene){
+  const area=document.getElementById('resultArea');
+  if(scene==='empty'){
+    area.innerHTML='<div class="empty"><div class="big">🔍</div><b>内部系统未找到匹配学员</b><br>'+
+      '可尝试：① 放宽报名时间范围　② 报名点改为「全部」　③ 姓名只输姓氏<br>'+
+      '<span style="font-size:12px">仍找不到？该学员可能未录入内部系统，请向学员本人索要手机号或证件号</span></div>';
+    return;
+  }
+  const rows=CANDIDATES[scene].map(rowHtml).join('');
+  area.innerHTML='<table style="margin-top:14px"><thead><tr><th style="width:36px"></th><th>姓名</th><th>身份证号</th><th>手机号</th><th>报名点</th><th>车型</th><th>报名日期</th><th>当前进度</th></tr></thead><tbody>'+rows+'</tbody></table>'+
+   '<div class="note">点击行选中 → 身份证号/手机号自动带入下方表单；同名时用「报名点 + 报名日期 + 进度」人工分辨。</div>';
+}
+
+function pick(i){
+  const c=CANDIDATES[currentScene][i];
+  picked=c;
+  document.querySelectorAll('tr.cand').forEach((r,idx)=>r.classList.toggle('picked',idx===i));
+  document.getElementById('filledBar').style.display='flex';
+  document.getElementById('chipName').textContent='姓名：'+c.name;
+  document.getElementById('chipId').textContent='身份证：'+c.id;
+  document.getElementById('chipPhone').textContent='手机号：'+c.phone;
+  document.getElementById('restCard').style.opacity='1';
+  document.getElementById('restCard').style.pointerEvents='auto';
+}
+function undoPick(){
+  picked=null;
+  document.querySelectorAll('tr.cand').forEach(r=>r.classList.remove('picked'));
+  document.getElementById('filledBar').style.display='none';
+  document.getElementById('restCard').style.opacity='.45';
+  document.getElementById('restCard').style.pointerEvents='none';
+}
+
+// ── 场景切换 ──
+let currentScene='normal';
+function demo(s){
+  currentScene=s;
+  ['A','B','C'].forEach(k=>{
+    const el=document.getElementById('sw'+k);
+    if(el)el.classList.remove('on');
+  });
+  ({normal:'swA',dup:'swB',empty:'swC'})[s]&&document.getElementById(({normal:'swA',dup:'swB',empty:'swC'})[s]).classList.add('on');
+  undoPick();
+  setMode(true);
+  renderResult(s);
+  const meta=document.getElementById('searchMeta');
+  meta.style.display=s==='normal'?'none':'block';
+  if(s==='dup')meta.innerHTML='<span class="badge b-orange">⚠ 同名 3 人</span> <span class="hint">同名同校常见，需人工按报名点/日期分辨；必要时先致电学员确认</span>';
+  if(s==='empty')meta.innerHTML='<span class="badge b-gray">0 条结果</span>';
+}
+</script>
+</div>
+</body>
+</html>

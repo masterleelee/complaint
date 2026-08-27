@@ -19,7 +19,6 @@ export function useComplaint(onAutoQueryDone = null) {
     complaint_date: todayStr(),
     complaint_type: "A",
     handler_name: "",
-    complaint_summary: "",
   });
 
   // 受理文件上传
@@ -27,6 +26,10 @@ export function useComplaint(onAutoQueryDone = null) {
   const intakeLoading = Vue.ref(false);
   const intakeResult = Vue.ref(null);
   const intakeErr = Vue.ref("");
+
+  // 自动回填后的输入框高亮（脉冲动画）
+  const pulseIdCard = Vue.ref(false);
+  const pulsePhone = Vue.ref(false);
 
   // 三系统查询
   const querying = Vue.ref(false);
@@ -51,6 +54,239 @@ export function useComplaint(onAutoQueryDone = null) {
 
   // 当前工单ID
   const currentTicketId = Vue.ref("");
+
+  // 绑定工单的原始证件号/手机号（用于提交前判断是否换人，防止覆盖他人工单）
+  const boundIdCard = Vue.ref("");
+  const boundPhone = Vue.ref("");
+
+  // 同日同人预检命中的既有工单：受理前让用户选择「并入」还是「另建新工单」，
+  // 避免默认合并静默发生导致"查过却没在列表生成新单"的困惑
+  const sameDayTicket = Vue.ref(null);
+
+  // ── 三系统无信息学员 · 人工建案 ──
+  // noMatchInfo: 三系统均查无时的引导状态 {eligible: 是否可转人工(无超时/异常), sources}
+  const noMatchInfo = Vue.ref(null);
+  const manualOpen = Vue.ref(false);
+  const manualCreating = Vue.ref(false);
+  const manualErr = Vue.ref("");
+  const manualForm = Vue.reactive({
+    student_name: "",
+    id_card: "",
+    phone: "",
+    organization_unit_id: "",
+    registration_date: "",
+    license_type: "",
+    complaint_content: "",
+    complaint_demands: "",
+    source_channel: "电话来访",
+    complaint_date: todayStr(),
+  });
+
+  // ── 统一智能查询：新增字段 ──
+  const studentName = Vue.ref("");
+  const schoolShort = Vue.ref("全部");
+  const regStart = Vue.ref("");
+  const regEnd = Vue.ref("");
+
+  // 候选学员列表
+  const candidates = Vue.ref([]);
+  const candWrapRef = Vue.ref(null);
+  const searching = Vue.ref(false);
+  const searchElapsed = Vue.ref(0);
+  const searchSource = Vue.ref("");
+  const candEmpty = Vue.ref(false);
+  const selectedCand = Vue.ref(null);
+  const candTotal = Vue.ref(0);
+  const candPage = Vue.ref(1);
+  const CAND_PAGE_SIZE = 10;
+  const candTotalPages = Vue.computed(() => Math.max(1, Math.ceil(candTotal.value / CAND_PAGE_SIZE)));
+  const orgFallback = Vue.ref(false);
+
+  // 报名点下拉（真实机构字典，来自 /api/organization-units）
+  const orgOptions = Vue.ref([]);
+  const orgUnitsFull = Vue.ref([]);
+  getJ("/api/organization-units").then((d) => {
+    if (d.success) {
+      orgUnitsFull.value = (d.data || []).filter((u) => u.active !== false);
+      orgOptions.value = orgUnitsFull.value.map((u) => u.name).filter(Boolean);
+    }
+  }).catch(() => {});
+
+  // 提醒 / 成功
+  const phoneMismatch = Vue.ref("");
+  const residencyTip = Vue.ref("");
+  const successBar = Vue.ref(false);
+
+  function clearTransient() {
+    qErr.value = "";
+    phoneMismatch.value = "";
+    residencyTip.value = "";
+    successBar.value = false;
+  }
+
+  function maskLocalPhone(p) {
+    const s = String(p || "");
+    if (s.length >= 7) return s.slice(0, 3) + "****" + s.slice(-4);
+    return s;
+  }
+  function examStageClass(c) {
+    const s = c.exam_stage || c.student_status || "";
+    if (/已报名|未培训/.test(s)) return "reg";
+    if (/科目一|科一/.test(s)) return "s1";
+    if (/科目二|科二/.test(s)) return "s2";
+    if (/科目三|科三/.test(s)) return "s3";
+    if (/已拿证|已结业|科四|毕业/.test(s)) return "done";
+    return "reg";
+  }
+
+  // 路由判定：身份证 > 手机号(11位) > 姓名
+  function routeMode() {
+    const id = (form.id_card || "").trim();
+    const ph = (form.phone || "").trim().replace(/\D/g, "");
+    const nm = (studentName.value || "").trim();
+    if (id) return "id";
+    if (ph.length === 11) return "phone";
+    if (nm) return "name";
+    return "none";
+  }
+  const queryPrimary = Vue.computed(() => {
+    const m = routeMode();
+    if (m === "id") return "id";
+    if (m === "phone") return "phone";
+    return "";
+  });
+  function qFieldClass(field) {
+    const p = queryPrimary.value;
+    if (!p) return "";
+    return p === field ? "is-primary" : "is-dim";
+  }
+  const mainBtnText = Vue.computed(() => {
+    const m = routeMode();
+    if (m === "id" || m === "phone") return "查询三系统并建案";
+    if (m === "name") return "搜索学员";
+    return "查询三系统并建案";
+  });
+
+  async function searchStudents(page = 1) {
+    searching.value = true;
+    candEmpty.value = false;
+    candidates.value = [];
+    orgFallback.value = false;
+    phoneMismatch.value = "";
+    residencyTip.value = "";
+    selectedCand.value = null;
+    const t0 = Date.now();
+    try {
+      const d = await postJ("/api/students/search", {
+        name: studentName.value.trim(),
+        school_short: schoolShort.value === "全部" ? "" : schoolShort.value,
+        start_date: regStart.value,
+        end_date: regEnd.value,
+        page,
+      });
+      if (!d.success) {
+        qErr.value = d.error || "搜索失败";
+        return;
+      }
+      const list = (d.data && d.data.students) || [];
+      candidates.value = list;
+      candTotal.value = (d.data && d.data.total) || list.length;
+      candPage.value = page;
+      orgFallback.value = !!(d.data && d.data.org_fallback);
+      searchElapsed.value = d.data.elapsed_ms || (Date.now() - t0);
+      searchSource.value = `内部系统 · ${searchElapsed.value}ms`;
+      candEmpty.value = list.length === 0;
+      successBar.value = false;
+      // 查到结果后自动跳转到结果列表，避免列表被悬浮操作栏遮挡或留在首屏之外
+      if (list.length) {
+        Vue.nextTick(() => {
+          if (candWrapRef.value) candWrapRef.value.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+      }
+    } catch (e) {
+      qErr.value = e.message;
+    } finally {
+      searching.value = false;
+    }
+  }
+
+  function gotoCandPage(p) {
+    if (searching.value || p < 1 || p > candTotalPages.value || p === candPage.value) return;
+    searchStudents(p);
+  }
+
+  function chooseCandidate(i) {
+    const c = candidates.value[i];
+    if (!c) return;
+    selectedCand.value = i;
+    form.id_card = c.id_card || "";
+    form.phone = c.phone || "";
+    studentName.value = c.student_name || "";
+    runExactQuery();
+  }
+
+  async function runExactQuery(forceNew = false) {
+    clearTransient();
+    // 居留证自动补 F 前缀（如 1249468(8) -> F1249468(8)）
+    const rawId = (form.id_card || "").trim();
+    if (rawId && /^\d{6,17}[（(]\d{1,4}[)）]$/.test(rawId)) {
+      form.id_card = "F" + rawId;
+      residencyTip.value = `已按补全后的证件号 ${form.id_card} 查询（港澳居留证自动补 F 前缀）`;
+    }
+    const mode = routeMode();
+    candEmpty.value = false;
+    await queryAll(forceNew);
+    if (qr.value && qr.value.name) {
+      successBar.value = true;
+      if (mode === "phone" && qr.value.phone) {
+        const reg = String(qr.value.phone).replace(/\D/g, "");
+        const typed = String(form.phone).replace(/\D/g, "");
+        if (reg && typed && reg !== typed) {
+          phoneMismatch.value = `系统登记手机号为 ${maskLocalPhone(qr.value.phone)}，与你所填不同`;
+        }
+      }
+      setTimeout(() => {
+        if (onAutoQueryDone) onAutoQueryDone();
+      }, 1500);
+    }
+  }
+
+  // 同日同人预检：与 save_ticket 去重同一口径；失败不阻塞正常受理
+  async function checkSameDayTicket() {
+    try {
+      const d = await postJ("/api/tickets/same-day-check", {
+        id_card: form.id_card.trim(),
+        complaint_date: form.complaint_date,
+      });
+      return d.success ? (d.data || null) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function chooseMergeExisting() {
+    sameDayTicket.value = null;
+    await runExactQuery();
+  }
+  async function createNewAnyway() {
+    sameDayTicket.value = null;
+    await runExactQuery(true);
+  }
+  function dismissSameDayPrompt() {
+    sameDayTicket.value = null;
+  }
+
+  async function onMainClick() {
+    clearTransient();
+    const m = routeMode();
+    if (m === "id" || m === "phone") {
+      await runExactQuery();
+    } else if (m === "name") {
+      await searchStudents();
+    } else {
+      qErr.value = "请填写查询条件";
+    }
+  }
 
   function resetQueryProgress() {
     queryProgress.show = true;
@@ -138,6 +374,18 @@ export function useComplaint(onAutoQueryDone = null) {
     return "查到学员";
   }
 
+  // 判定东莞驾培是否确认无电子合同；返回原因文案，空串表示可尝试下载
+  function noEContractReason(qr) {
+    const r = qr || {};
+    const driving = r.sources?.driving;
+    if (driving === "not_found") return "东莞驾培查无该学员记录，无电子合同";
+    if (driving === "no_contract") return "该学员2024年3月15日前报名，东莞驾培无电子合同";
+    if (driving === "success" && r.contract_checked && !r.contract_available) return "东莞驾培确认该学员无电子合同";
+    const reg = String(r.registration_date || "").replace(/\//g, "-");
+    if (/^\d{4}-\d{2}-\d{2}/.test(reg) && reg.slice(0, 10) < "2024-03-15") return "该学员2024年3月15日前报名，东莞驾培无电子合同";
+    return "";
+  }
+
   // 驾培合同标记：初始查询已用 checkContract 快速判定，成功时显示「有合同/无合同」
   function drivingContractTag(qr) {
     const r = qr || {};
@@ -161,6 +409,14 @@ export function useComplaint(onAutoQueryDone = null) {
     if (status === "error") return "bi-x-circle-fill";
     if (status === "no_contract") return "bi-dash-circle";
     return "bi-info-circle-fill";
+  }
+
+  // 徽章三档：绿=查到数据，灰=查无记录/无合同，红=访问失败，黄=其余（查询中/未知）
+  function sourcePillClass(status) {
+    if (status === "success") return "ok";
+    if (status === "not_found" || status === "no_contract") return "na";
+    if (status === "error" || status === "timeout") return "err";
+    return "warn";
   }
 
   // 来源查询耗时明细：登录等待/查询/重试次数，及错误原因
@@ -237,19 +493,7 @@ export function useComplaint(onAutoQueryDone = null) {
     try {
       const d = await uploadFile("/api/intake/parse", file);
       if (d.success && d.data) {
-        intakeResult.value = d.data;
-        // 自动填充表单
-        if (d.data.id_card) form.id_card = d.data.id_card;
-        if (d.data.phone) form.phone = d.data.phone;
-
-        // 提取到身份证号或手机号后，自动触发三系统查询（手机号场景不再需手动点）
-        const phoneDigits = (d.data.phone || "").replace(/\D/g, "");
-        if ((d.data.id_card && d.data.id_card.length >= 7) || phoneDigits.length >= 7) {
-          setTimeout(async () => {
-            await queryAll();
-            if (onAutoQueryDone) onAutoQueryDone();
-          }, 500);
-        }
+        applyIntakeResult(d.data);
       } else {
         intakeErr.value = d.error || "提取失败";
       }
@@ -257,6 +501,38 @@ export function useComplaint(onAutoQueryDone = null) {
       intakeErr.value = e.message;
     } finally {
       intakeLoading.value = false;
+    }
+  }
+
+  // 提取结果统一处理：回填线索 → 有证号/手机号直接查三系统；否则用姓名自动模糊搜索
+  function applyIntakeResult(data) {
+    intakeResult.value = data;
+    // 重新提取新材料时，清掉上一位学员的候选列表与提示，避免旧数据残留误导
+    candidates.value = [];
+    selectedCand.value = null;
+    candTotal.value = 0;
+    candPage.value = 1;
+    candEmpty.value = false;
+    orgFallback.value = false;
+    sameDayTicket.value = null;
+    clearTransient();
+    if (data.id_card) { form.id_card = data.id_card; pulseIdCard.value = true; }
+    if (data.phone) { form.phone = data.phone; pulsePhone.value = true; }
+    if (data.student_name) studentName.value = data.student_name;
+    setTimeout(() => { pulseIdCard.value = false; pulsePhone.value = false; }, 2200);
+
+    const phoneDigits = (data.phone || "").replace(/\D/g, "");
+    if ((data.id_card && data.id_card.length >= 7) || phoneDigits.length >= 7) {
+      setTimeout(async () => {
+        await queryAll();
+        if (onAutoQueryDone) onAutoQueryDone();
+      }, 500);
+    } else if (data.student_name) {
+      searchStudents();
+    } else {
+      intakeErr.value = data.ai_error
+        ? `AI 提取失败：${data.ai_error}，请手动填写姓名或证件号`
+        : "未能自动识别证件号和手机号，请手动填写后再查询";
     }
   }
 
@@ -275,9 +551,21 @@ export function useComplaint(onAutoQueryDone = null) {
       return;
     }
 
-    // 将文本包装为 File 对象，复用已有的上传 + LLM 提取流程
-    const file = new File([text], "paste.txt", { type: "text/plain" });
-    await handleIntakeFileInner(file);
+    intakeLoading.value = true;
+    intakeErr.value = "";
+    intakeResult.value = null;
+    try {
+      const d = await postJ("/api/intake/parse", { text });
+      if (d.success && d.data) {
+        applyIntakeResult(d.data);
+      } else {
+        intakeErr.value = d.error || "提取失败";
+      }
+    } catch (e) {
+      intakeErr.value = e.message;
+    } finally {
+      intakeLoading.value = false;
+    }
   }
 
   // ── 粘贴图片处理 ──
@@ -318,7 +606,7 @@ export function useComplaint(onAutoQueryDone = null) {
   function validateIdCard(id) {
     /**
      * 只验证18位大陆身份证（GB 11643-1999 校验码算法）
-     * 其他证件（居留证、港澳台等）不验证，直接放行交给系统判断
+     * 其他证件仅放行已知格式白名单（居留证、外国人永久居留证等），与服务端口径一致
      */
     id = (id || "").trim().toUpperCase();
     if (!id) return { valid: false, msg: "证件号不能为空" };
@@ -338,15 +626,16 @@ export function useComplaint(onAutoQueryDone = null) {
       return { valid: true };
     }
     
-    // 其他所有证件 → 不验格式，直接放行
-    if (id.length >= 7) {
+    // 非18位：与服务端白名单口径一致（前缀≤3大写字母 + 6~17位数字 + 可选括号尾注，
+    // 兼容居留证 F1249468(8)、外国人永久居留证），拦截明显乱码
+    if (/^[A-Z]{0,3}\d{6,17}(?:[（(]\d{1,4}[)）])?$/.test(id)) {
       return { valid: true };
     }
-    
-    return { valid: false, msg: "证件号至少7位" };
+
+    return { valid: false, msg: "证件号格式不正确" };
   }
 
-  async function queryAll() {
+  async function queryAll(forceNew = false) {
     const rawId = (form.id_card || "").trim();
     const rawPhone = (form.phone || "").trim().replace(/\D/g, "");
     const concreteChannel = form.source_channel === "其他途径"
@@ -383,10 +672,35 @@ export function useComplaint(onAutoQueryDone = null) {
       return;
     }
 
+    // 同日同人预检：已绑定工单（restore 场景，走显式更新）或用户选择另建时跳过；
+    // 命中则暂停受理并展示选择横幅，由用户决定「并入」或「另建新工单」
+    if (!forceNew && !currentTicketId.value && form.id_card.trim()) {
+      const hit = await checkSameDayTicket();
+      if (hit) {
+        sameDayTicket.value = hit;
+        return;
+      }
+    }
+    sameDayTicket.value = null;
+
     querying.value = true;
     qErr.value = "";
     qr.value = null;
     resetQueryProgress();
+
+    // P1-1：若当前绑定了旧工单，但本次查询的学员与绑定工单原证件号/手机号不一致，
+    // 说明用户在「新增投诉」页改成了另一名学员，必须新建工单，避免把他人数据写回旧工单。
+    if (currentTicketId.value && (boundIdCard.value || boundPhone.value)) {
+      const fId = (form.id_card || "").trim().toUpperCase();
+      const fPhone = (form.phone || "").trim();
+      const bId = (boundIdCard.value || "").trim().toUpperCase();
+      const bPhone = (boundPhone.value || "").trim();
+      const idMatch = fId && bId && fId === bId;
+      const phoneMatch = fPhone && bPhone && fPhone === bPhone;
+      if (!idMatch && !phoneMatch) {
+        currentTicketId.value = "";
+      }
+    }
 
     try {
       const payload = {
@@ -395,13 +709,16 @@ export function useComplaint(onAutoQueryDone = null) {
         complaint_type: form.complaint_type,
         source_channel: concreteChannel,
         handler_name: form.handler_name.trim(),
-        complaint_summary: form.complaint_summary.trim(),
+        complaint_desc: (intakeText.value || "").trim(),
+        complaint_summary: (intakeResult.value && intakeResult.value.complaint_summary) || "",
+        complaint_demands: (intakeResult.value && intakeResult.value.complaint_demands) || "",
+        force_new: !!forceNew,
         attachments: intakeResult.value?._filepath ? [{
           _filepath: intakeResult.value._filepath,
           _filename: intakeResult.value._filename || "",
         }] : [],
       };
-      if (methodLabel === "身份证号") payload.id_card = idToQuery;
+      if (methodLabel === "身份证号") { payload.id_card = idToQuery; payload.phone = rawPhone; }
       else payload.phone = idToQuery;
 
       const started = await postJ("/api/query/start", payload);
@@ -419,6 +736,17 @@ export function useComplaint(onAutoQueryDone = null) {
           currentTicketId.value = status.result.ticket_id || currentTicketId.value;
         }
         if (status.status === "failed") {
+          // 三系统均查无：置引导状态供受理页展示「转人工建案」入口
+          //（eligible=false 表示存在超时/异常，前端只提示重新查询，不给入口）
+          if (status.no_match) {
+            noMatchInfo.value = {
+              eligible: !!status.manual_intake_eligible,
+              sources: status.sources || {},
+            };
+            qErr.value = status.error || "未匹配到学员档案";
+            queryProgress.message = "未匹配到学员档案";
+            return;
+          }
           throw new Error(status.error || "三系统查询失败");
         }
         if (status.status === "done") {
@@ -437,6 +765,9 @@ export function useComplaint(onAutoQueryDone = null) {
         queryProgress.hasError = true;
       } else {
         qr.value = d;
+        // 摘要已改为查询阶段与爬虫并行生成，完成后回填受理区横幅
+        if (d.complaint_summary && intakeResult.value) intakeResult.value.complaint_summary = d.complaint_summary;
+        if (d.complaint_demands && intakeResult.value) intakeResult.value.complaint_demands = d.complaint_demands;
         if (d.sources) updateQueryProgress(d.sources, d.query_durations_ms || {});
         queryProgress.done = true;
         if (queryProgress._timer) clearInterval(queryProgress._timer);
@@ -462,6 +793,64 @@ export function useComplaint(onAutoQueryDone = null) {
     }
   }
 
+  // ── 三系统无信息 · 人工建案 ──
+  function dismissNoMatch() { noMatchInfo.value = null; }
+
+  function openManualIntake() {
+    manualErr.value = "";
+    manualForm.student_name = studentName.value || "";
+    manualForm.id_card = form.id_card || "";
+    manualForm.phone = form.phone || "";
+    manualForm.organization_unit_id = "";
+    manualForm.registration_date = "";
+    manualForm.license_type = "";
+    if (!manualForm.complaint_content.trim()) {
+      manualForm.complaint_content = (intakeResult.value && intakeResult.value.complaint_summary)
+        || (intakeText.value || "").trim();
+    }
+    manualOpen.value = true;
+  }
+
+  function closeManualIntake() { manualOpen.value = false; }
+
+  async function submitManualIntake() {
+    if (manualCreating.value) return;
+    manualErr.value = "";
+    const missing = [];
+    if (!manualForm.student_name.trim()) missing.push("学员姓名");
+    if (!manualForm.id_card.trim()) missing.push("身份证号");
+    if (!manualForm.organization_unit_id) missing.push("所属分校/分店");
+    if (!manualForm.registration_date) missing.push("报名时间");
+    if (missing.length) {
+      manualErr.value = "缺少必填项：" + missing.join("、");
+      return;
+    }
+    manualCreating.value = true;
+    try {
+      const resp = await postJ("/api/tickets/manual-create", {
+        ...manualForm,
+        student_name: manualForm.student_name.trim(),
+        id_card: manualForm.id_card.trim(),
+        phone: manualForm.phone.trim(),
+        complaint_content: manualForm.complaint_content.trim(),
+        complaint_demands: manualForm.complaint_demands.trim(),
+        complaint_date: form.complaint_date || todayStr(),
+        handler_name: form.handler_name || "",
+      });
+      if (!resp.success) throw new Error(resp.error || "人工建案失败");
+      currentTicketId.value = resp.data.ticket_id || "";
+      manualOpen.value = false;
+      noMatchInfo.value = null;
+      successBar.value = true;
+      // 与三系统建案成功走同一收尾：刷新列表 + 打开工作台
+      if (onAutoQueryDone) await onAutoQueryDone();
+    } catch (e) {
+      manualErr.value = e.message || "人工建案失败";
+    } finally {
+      manualCreating.value = false;
+    }
+  }
+
   function restore(ticket) {
     const knownChannels = ["12345", "交通部门", "电话来访", "信访", "邮件投诉", "驾培协会"];
     const savedChannel = ticket.source_channel || "交通部门";
@@ -472,11 +861,25 @@ export function useComplaint(onAutoQueryDone = null) {
     form.complaint_date = (ticket.complaint_date || todayStr()).slice(0, 10);
     form.complaint_type = ticket.complaint_type || "A";
     form.handler_name = ticket.handler_name || "";
-    form.complaint_summary = ticket.complaint_summary || "";
+    studentName.value = ticket.student_name || ticket.query_result?.name || "";
+    schoolShort.value = "全部";
+    regStart.value = "";
+    regEnd.value = "";
+    candidates.value = [];
+    candEmpty.value = false;
+    selectedCand.value = null;
+    candTotal.value = 0;
+    candPage.value = 1;
+    orgFallback.value = false;
+    phoneMismatch.value = "";
+    residencyTip.value = "";
+    successBar.value = false;
     intakeResult.value = Array.isArray(ticket.attachments) && ticket.attachments.length
       ? ticket.attachments[0]
       : null;
     currentTicketId.value = ticket.id || "";
+    boundIdCard.value = ticket.id_card || "";
+    boundPhone.value = ticket.phone || "";
     qr.value = {
       ...(ticket.query_result || {}),
       ticket_id: ticket.id || "",
@@ -502,7 +905,19 @@ export function useComplaint(onAutoQueryDone = null) {
     form.complaint_date = todayStr();
     form.complaint_type = "A";
     form.handler_name = "";
-    form.complaint_summary = "";
+    studentName.value = "";
+    schoolShort.value = "全部";
+    regStart.value = "";
+    regEnd.value = "";
+    candidates.value = [];
+    candEmpty.value = false;
+    selectedCand.value = null;
+    candTotal.value = 0;
+    candPage.value = 1;
+    orgFallback.value = false;
+    phoneMismatch.value = "";
+    residencyTip.value = "";
+    successBar.value = false;
     intakeFile.value = null;
     intakeResult.value = null;
     intakeErr.value = "";
@@ -511,6 +926,12 @@ export function useComplaint(onAutoQueryDone = null) {
     qr.value = null;
     qErr.value = "";
     currentTicketId.value = "";
+    boundIdCard.value = "";
+    boundPhone.value = "";
+    sameDayTicket.value = null;
+    noMatchInfo.value = null;
+    manualOpen.value = false;
+    manualErr.value = "";
   }
 
   return {
@@ -521,6 +942,8 @@ export function useComplaint(onAutoQueryDone = null) {
     intakeLoading,
     intakeResult,
     intakeErr,
+    pulseIdCard,
+    pulsePhone,
     intakeText,
     handleIntakeText,
     intakeTextareaRef,
@@ -534,7 +957,9 @@ export function useComplaint(onAutoQueryDone = null) {
     sourceStatusText,
     sourceStatusColor,
     sourceStatusIcon,
+    sourcePillClass,
     phaseDetail,
+    noEContractReason,
     drivingContractTag,
     currentTicketId,
     triggerFileInput,
@@ -547,5 +972,52 @@ export function useComplaint(onAutoQueryDone = null) {
     queryAll,
     restore,
     reset,
+    // 统一智能查询
+    studentName,
+    schoolShort,
+    regStart,
+    regEnd,
+    candidates,
+    candWrapRef,
+    searching,
+    candEmpty,
+    searchSource,
+    selectedCand,
+    candTotal,
+    candPage,
+    candTotalPages,
+    gotoCandPage,
+    orgFallback,
+    orgOptions,
+    phoneMismatch,
+    residencyTip,
+    successBar,
+    clearTransient,
+    maskLocalPhone,
+    examStageClass,
+    routeMode,
+    queryPrimary,
+    qFieldClass,
+    mainBtnText,
+    searchStudents,
+    chooseCandidate,
+    onMainClick,
+    runExactQuery,
+    // 同日同人预检：并入 / 另建选择
+    sameDayTicket,
+    chooseMergeExisting,
+    createNewAnyway,
+    dismissSameDayPrompt,
+    // 三系统无信息 · 人工建案
+    noMatchInfo,
+    dismissNoMatch,
+    manualOpen,
+    manualCreating,
+    manualErr,
+    manualForm,
+    orgUnitsFull,
+    openManualIntake,
+    closeManualIntake,
+    submitManualIntake,
   };
 }

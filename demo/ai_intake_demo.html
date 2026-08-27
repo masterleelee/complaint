@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>原型 v3：AI 智能受理（粘贴文本 → 关键信息提取 → 自动走现有流程）</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--primary:#2563eb;--plight:#e0ecff;--pdark:#1d4ed8;--success:#059669;--slight:#ecfdf5;--warning:#d97706;--wlight:#fffbeb;--danger:#dc2626;--dlight:#fef2f2;--surface:#fff;--bg:#eef3f8;--text:#0f172a;--t2:#64748b;--border:#e2e8f0}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex;min-height:100vh}
+
+/* ── 左侧导航 ── */
+.side{width:210px;background:linear-gradient(180deg,#1e40af,#1e3a8a);color:#dbeafe;display:flex;flex-direction:column;padding:18px 12px;position:sticky;top:0;height:100vh;flex-shrink:0}
+.logo{padding:4px 10px 18px;border-bottom:1px solid rgba(255,255,255,.15)}
+.logo b{display:block;font-size:16px;color:#fff}
+.logo span{font-size:11px;color:#93c5fd}
+nav{margin-top:14px;display:flex;flex-direction:column;gap:4px}
+nav a{padding:9px 12px;border-radius:8px;font-size:13.5px;color:#cbd5f5;cursor:pointer;text-decoration:none}
+nav a.on{background:rgba(255,255,255,.18);color:#fff;font-weight:600}
+.side-date{margin-top:auto;font-size:11px;color:#93c5fd;padding:0 10px}
+
+main{flex:1;padding:18px 22px 26px;max-width:1180px}
+.page-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.page-head h1{font-size:20px}
+.proto-tag{background:#111827;color:#fbbf24;font-size:11px;padding:3px 8px;border-radius:6px}
+.scenes{margin-left:auto;display:flex;gap:6px}
+.scenes button{border:1px solid var(--border);background:#fff;color:var(--t2);border-radius:7px;padding:4px 11px;cursor:pointer;font-size:12px}
+.scenes button.on{background:var(--primary);border-color:var(--primary);color:#fff}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:14px;box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.ch{padding:11px 16px;border-bottom:1px solid var(--border);font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.cb{padding:14px 16px}
+
+textarea#pasteBox{width:100%;min-height:150px;border:1px solid var(--border);border-radius:10px;padding:10px 12px;font-size:13.5px;line-height:1.65;resize:vertical;font-family:inherit;background:#fbfdff}
+textarea#pasteBox:focus{outline:none;border-color:var(--primary)}
+.btnrow{display:flex;gap:10px;margin-top:10px;align-items:center}
+.btn{border:none;border-radius:8px;padding:8px 16px;font-size:13.5px;cursor:pointer;font-weight:500}
+.btn.pri{background:var(--primary);color:#fff}
+.btn.pri:hover{background:var(--pdark)}
+.btn.ghost{background:#fff;border:1px solid var(--border);color:var(--t2)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.hint{font-size:12px;color:var(--t2)}
+
+.ai-loading{display:none;margin-top:12px;padding:10px 14px;border-radius:10px;background:var(--plight);color:var(--pdark);font-size:13px}
+.ai-loading.show{display:block}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--pdark);margin-right:3px;animation:b 1s infinite}
+.dot:nth-child(2){animation-delay:.15s}.dot:nth-child(3){animation-delay:.3s}
+@keyframes b{0%,100%{opacity:.25}50%{opacity:1}}
+
+/* 提取结果字段卡片 */
+.fields{display:none;grid-template-columns:repeat(auto-fill,minmax(215px,1fr));gap:8px}
+.fields.show{display:grid}
+.fld{border:1px solid var(--border);border-radius:9px;padding:8px 10px;background:#fbfdff}
+.fld .k{font-size:11px;color:var(--t2);margin-bottom:2px;display:flex;justify-content:space-between;align-items:center}
+.fld .v{font-size:13.5px;font-weight:600;word-break:break-all}
+.fld .src{font-size:11px;color:#94a3b8;margin-top:4px;line-height:1.5;border-left:2px solid var(--border);padding-left:6px}
+.fld.miss{background:var(--dlight);border-color:#fecaca}
+.fld.miss .v{color:var(--danger)}
+.badge{font-size:10.5px;padding:1px 6px;border-radius:5px;font-weight:400}
+.b-ok{background:var(--slight);color:var(--success)}
+.b-mid{background:var(--wlight);color:var(--warning)}
+.b-miss{background:#fee2e2;color:var(--danger)}
+
+/* 缺失提示条 */
+.gap-bar{display:none;margin-top:12px;border:1px dashed #f59e0b;background:var(--wlight);border-radius:10px;padding:11px 14px;font-size:13px;line-height:1.7}
+.gap-bar.show{display:block}
+
+/* 候选表 */
+.cand-wrap{display:none}
+.cand-wrap.show{display:block}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f8fafc;color:var(--t2);font-weight:600;text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+td{padding:9px 10px;border-bottom:1px solid var(--border);word-break:break-all}
+tr.pick{cursor:pointer}
+tr.pick:hover td{background:var(--plight)}
+tr.sel td{background:var(--plight)}
+.match-tag{display:inline-block;font-size:10.5px;color:var(--success);border:1px solid #a7f3d0;background:var(--slight);border-radius:5px;padding:0 5px;margin-left:4px}
+
+/* 流程进度 */
+.pipe{display:none;margin-top:4px}
+.pipe.show{display:flex;flex-direction:column;gap:8px}
+.step{display:flex;align-items:center;gap:10px;font-size:13px}
+.step .ic{width:20px;height:20px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-size:12px;background:#e2e8f0;color:#94a3b8}
+.step.run .ic{background:var(--plight);color:var(--pdark);animation:pulse 1s infinite}
+.step.ok .ic{background:var(--success);color:#fff}
+@keyframes pulse{50%{opacity:.5}}
+
+.done-banner{display:none;margin-top:12px;background:var(--slight);border:1px solid #a7f3d0;border-radius:10px;padding:12px 14px;font-size:13.5px;line-height:1.7}
+.done-banner.show{display:block}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.chip{font-size:12px;background:#fff;border:1px solid #a7f3d0;color:var(--success);border-radius:6px;padding:2px 9px}
+
+/* JSON 预览 */
+details.jsonbox{margin-top:10px}
+details.jsonbox summary{cursor:pointer;font-size:12px;color:var(--t2)}
+details.jsonbox pre{margin-top:6px;background:#0f172a;color:#a5f3fc;border-radius:10px;padding:12px;font-size:12px;line-height:1.6;overflow:auto;max-height:260px}
+
+.degrade{display:none;background:var(--wlight);border:1px solid #fde68a;border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.7}
+.degrade.show{display:block}
+.note{font-size:12.5px;color:var(--t2);line-height:1.7;background:#f8fafc;border-radius:8px;padding:9px 12px}
+.formline{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.mini-field{border:1px solid var(--border);border-radius:8px;padding:7px 10px;min-width:170px;background:#fff}
+.mini-field .k{font-size:11px;color:var(--t2)}
+.mini-field .v{font-weight:600;font-size:13.5px}
+.mini-field.hl{animation:hl 2.2s ease}
+@keyframes hl{0%{background:var(--plight);border-color:var(--primary)}100%{background:#fff}}
+</style>
+</head>
+<body>
+
+<aside class="side">
+  <div class="logo"><b></b><span>学员投诉自动处理系统 · 原型</span></div>
+  <nav>
+    <a class="on">新增投诉</a><a>案件列表</a><a>合同分析</a><a>退费计算</a><a>文书生成</a><a>系统设置</a>
+  </nav>
+  <div class="side-date">2026-08-25 · 仅原型演示</div>
+</aside>
+
+<main>
+  <div class="page-head">
+    <h1>新增投诉</h1><span class="proto-tag">AI 智能受理 · 原型 v3</span>
+    <div class="scenes">
+      <button class="on" id="swA" onclick="demo('A')">场景A 纯文字投诉（无证号）</button>
+      <button id="swB" onclick="demo('B')">场景B 含证号手机号</button>
+      <button id="swC" onclick="demo('C')">场景C AI服务异常</button>
+    </div>
+  </div>
+
+  <!-- ① 粘贴 -->
+  <div class="card">
+    <div class="ch">① 粘贴或上传投诉材料 <span class="hint" style="margin-left:auto">正则优先提证件号/手机号；缺失时由 AI 补齐语义要素</span></div>
+    <div class="cb">
+      <textarea id="pasteBox"></textarea>
+      <div class="btnrow">
+        <button class="btn pri" id="btnExtract" onclick="doExtract()">AI 智能提取</button>
+        <button class="btn ghost" onclick="resetAll()">清空重来</button>
+        <span class="hint">支持直接粘贴文字、上传 PDF / 图片 / Word / Excel</span>
+      </div>
+      <div class="ai-loading" id="loading">AI 正在解析投诉内容<span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <div class="degrade" id="degrade"><b>AI 服务暂不可用（超时/配额不足）。</b><br>系统自动降级为现有手动模式：请直接在下方填写姓名进行模糊查找，或手工录入证件号 / 手机号。<b>业务不中断。</b></div>
+      <details class="jsonbox"><summary>工程预览：AI 实际返回的结构化 JSON</summary><pre id="jsonPre"></pre></details>
+    </div>
+  </div>
+
+  <!-- ② 提取结果 -->
+  <div class="card">
+    <div class="ch">② AI 提取结果 <span style="margin-left:auto" class="hint">每个字段均附原文依据，供人工核对</span></div>
+    <div class="cb">
+      <div class="fields" id="fields"></div>
+      <div class="gap-bar" id="gapBar"></div>
+      <div id="formEcho" class="formline"></div>
+    </div>
+  </div>
+
+  <!-- ③ 模糊搜索候选 -->
+  <div class="card">
+    <div class="ch">③ 内部系统候选学员 <span style="margin-left:auto" class="hint">按 姓名+报名点 模糊查询，一次命中后其余两系统走现有精确流程</span></div>
+    <div class="cb">
+      <div class="cand-wrap" id="candWrap">
+        <div style="margin-bottom:8px" class="hint" id="candMeta"></div>
+        <table><thead><tr><th style="width:26px"></th><th>姓名</th><th>证件号</th><th>手机号</th><th>报名点</th><th>车型</th><th>报名日期</th><th>当前进度</th></tr></thead><tbody id="candBody"></tbody></table>
+        <div class="btnrow"><button class="btn pri" id="btnConfirm" onclick="confirmPick()" disabled>确认该学员并进入三系统查询</button></div>
+      </div>
+      <div class="pipe" id="pipe"></div>
+      <div class="done-banner" id="doneBanner"></div>
+    </div>
+  </div>
+
+  <div class="note">
+    设计原则：① 身份证/手机号仍用<b>确定性正则</b>优先提取，不过 AI，保证准确；② AI 只产出「预填草稿」，<b>人工确认后才建案</b>；③ AI 失败时降级回现有手动流程。本页为纯静态演示，未接入任何生产代码。
+  </div>
+</main>
+
+<script>
+const TEXT_A = "（刘乐怡）我投诉东莞市快捷机动车驾驶员培训有限公司（主山训练场），学员刘乐怡，C2，缴费2000元。我没有上过任何课程、学时全部为0，没有约考科目一，体检是我自己掏钱。驾校退费表要扣我1270元，只退730元。里面包含320元违约金，还有550元综合服务费，驾校提供不出该费用明细，建档工作已经单独收取400档案费，属于重复收费。驾校至今也没有把我签署的培训合同给到我本人。我只愿意承担400元档案建档费，要求退回剩余1600元。我手上有聊天记录、退费审批表作为证据。";
+const TEXT_B = "（刘乐怡）我投诉东莞市快捷机动车驾驶员培训有限公司（主山训练场），学员刘乐怡，身份证号110101199003070011，手机号13800000000，C2，缴费2000元。我没有上过任何课程，学时全部为0，要求退费1600元。我手上有聊天记录作为证据。";
+
+// AI 提取的模拟返回（真实实现中为 LLM JSON mode 输出）
+const EXTRACT_A = {
+  student_name:"刘乐怡", license_type:"C2", paid_amount:"¥2000",
+  training_ground:"主山训练场", hours_done:"0学时（未上课）",
+  booked_subject1:"否，未约考", physical_fee:"自付",
+  refund_table:"扣1270元 / 只退730元", penalty_fee:"¥320（有争议）",
+  service_fee:"¥550（驾校无法提供明细）", archive_fee:"¥400（已单独收取）",
+  demand_refund:"退回 ¥1600", contract_delivered:"否",
+  evidences:"聊天记录、退费审批表",
+  id_card:"", phone:""
+};
+const CANDS = [
+  {name:"刘乐怡", id:"110101199003070011", ph:"137****5678", org:"主山训练场（东城）", car:"C2", date:"2026-03-12", stage:"已约科目一"},
+  {name:"刘乐怡", id:"110101199003070011", ph:"159****8821", org:"主山训练场（东城）", car:"C2", date:"2026-05-08", stage:"未培训", best:true},
+  {name:"刘乐怡", id:"110101199003070011", ph:"136****6655", org:"寮步报名点", car:"C1", date:"2025-11-20", stage:"科目二"}
+];
+let pickedIdx=-1;
+
+function demo(sc){
+  ["swA","swB","swC"].forEach((id,i)=>document.getElementById(id).classList.toggle("on",(sc==="ABC"[i])));
+  resetAll(false);
+  if(sc==="A"){ document.getElementById("pasteBox").value=TEXT_A;
+    document.getElementById("gapBar").innerHTML=''; }
+  else if(sc==="B"){ document.getElementById("pasteBox").value=TEXT_B; }
+  else { document.getElementById("pasteBox").value=TEXT_A; }
+}
+function resetAll(clearText=true){
+  pickedIdx=-1;
+  if(clearText) document.getElementById("pasteBox").value="";
+  document.getElementById("fields").className="fields";document.getElementById("fields").innerHTML="";
+  const gb=document.getElementById("gapBar");gb.className="gap-bar";gb.innerHTML="";
+  document.getElementById("formEcho").innerHTML="";
+  const cw=document.getElementById("candWrap");cw.className="cand-wrap";cw.querySelector("tbody").innerHTML="";
+  document.getElementById("pipe").className="pipe";document.getElementById("pipe").innerHTML="";
+  document.getElementById("doneBanner").className="done-banner";
+  document.getElementById("degrade").className="degrade";
+  document.getElementById("jsonPre").textContent="";
+  document.getElementById("btnConfirm").disabled=true;
+}
+
+async function doExtract(){
+  const text=document.getElementById("pasteBox").value.trim();
+  if(text.length<10){alert("请先粘贴投诉内容");return;}
+  resetAll(false);
+  document.getElementById("pasteBox").value=text;
+  const isC=document.getElementById("swC").classList.contains("on");
+  document.getElementById("loading").classList.add("show");
+  await sleep(isC?1400:1100);
+  document.getElementById("loading").classList.remove("show");
+
+  // ── 第一步：确定性正则（与现网 intake_service 相同逻辑）──
+  const reId=/(?<!\d)(\d[\d\s\-._]{15,24}[\dXx])(?![A-Za-z0-9])/.exec(text);
+  const idCard=reId?reId[1].replace(/[\s\-._]/g,"").toUpperCase():"";
+  const rePh=/(?<!\d)(1[3-9]\d[\s\-]?\d{4}[\s\-]?\d{4})(?!\d)/.exec(text);
+  const phone=rePh?rePh[1].replace(/\D/g,""):"";
+
+  if(isC){
+    document.getElementById("degrade").classList.add("show");
+    return;
+  }
+  let data;
+  if(idCard||phone){
+    data={student_name:(text.match(/学员([\u4e00-\u9fa5]{2,4})/)||[])[1]||"",license_type:/C\d/i.test(text)?text.match(/C\d/i)[0].toUpperCase():"",
+          paid_amount:"",training_ground:(text.match(/（([^（）]*训练场[^（）]*)）/)||[])[1]||"",
+          demand_refund:"",evidences:"",id_card:idCard,phone:phone};
+    document.getElementById("jsonPre").textContent=
+`// 正则已命中核心线索，跳过 AI 提取（省成本）
+${JSON.stringify({id_card:idCard,phone:phone},null,2)}`;
+    renderFields(data,true);
+    document.getElementById("gapBar").className="gap-bar show";
+    document.getElementById("gapBar").innerHTML="<b>证件号/手机号已识别</b>，即将自动执行三系统精确查询…";
+    setTimeout(()=>runPipe(data.id_card,data.phone,"已按证号直查"),600);
+    return;
+  }
+
+  // ── 第二步：AI 结构化提取 ──
+  data={...EXTRACT_A,id_card:"",phone:""};
+  document.getElementById("jsonPre").textContent=
+`POST /api/intake/parse  { "text": "…" }
+→ ${JSON.stringify(data,null,2)}
+
+// prompt 要点：
+// 1. 只输出 JSON，禁止编造文本中不存在的信息
+// 2. 证件号/手机号若文本未出现必须留空串
+// 3. 金额保留原文表述，不做换算`;
+  renderFields(data,false);
+
+  // ── 第三步：缺失 → 引导姓名模糊搜索 ──
+  document.getElementById("gapBar").className="gap-bar show";
+  document.getElementById("gapBar").innerHTML=
+   `<b>证件号、手机号在文本中未出现</b>（这不是错误，很多口头投诉本来就不写）。<br>
+    建议：用已提取的姓名「<b>${data.student_name}</b>」+ 训练场「<b>${data.training_ground}</b>」到内部系统模糊查找，
+    由候选列表确认后自动补全证号和手机号。<br>
+    <button class="btn pri" style="margin-top:6px" onclick="autoSearch()">按姓名模糊查找</button>
+    <button class="btn ghost" style="margin-top:6px" onclick="alert('演示页：请手动联系投诉人索要')">改为人工补录</button>`;
+}
+
+function renderFields(d,isRegex){
+  const labels={
+    student_name:["学员姓名","high"],license_type:["准驾车型","high"],paid_amount:["缴费金额","high"],
+    training_ground:["训练场/报名点","high"],hours_done:["已上学时","high"],booked_subject1:["约考情况","mid"],
+    physical_fee:["体检费","mid"],refund_table:["退费表口径","mid"],penalty_fee:["违约金","mid"],
+    service_fee:["综合服务费","mid"],archive_fee:["档案费","mid"],demand_refund:["诉求金额","high"],
+    contract_delivered:["合同交付","mid"],evidences:["证据清单","high"],id_card:["证件号","miss"],phone:["手机号","miss"]};
+  const srcMap={
+    student_name:"学员刘乐怡，C2，缴费2000元",license_type:"学员刘乐怡，C2，缴费2000元",
+    paid_amount:"缴费2000元",training_ground:"东莞市快捷机动车驾驶员培训有限公司（主山训练场）",
+    hours_done:"我没有上过任何课程、学时全部为0",booked_subject1:"没有约考科目一",
+    physical_fee:"体检是我自己掏钱",refund_table:"退费表要扣我1270元，只退730元",
+    penalty_fee:"里面包含320元违约金",service_fee:"还有550元综合服务费，驾校提供不出该费用明细",
+    archive_fee:"已经单独收取400档案费，属于重复收费",demand_refund:"要求退回剩余1600元",
+    contract_delivered:"至今也没有把我签署的培训合同给到我本人",evidences:"我手上有聊天记录、退费审批表"};
+  let html="";
+  for(const k in labels){
+    const [lab,cls]=labels[k];const v=d[k]?String(d[k]):"";
+    if(!v&&cls!=="miss")continue;
+    const isMiss=cls==="miss"&&!v;
+    const badge=isMiss?'<span class="badge b-miss">缺失</span>'
+              :cls==="mid"?'<span class="badge b-mid">待核对</span>':`<span class="badge b-ok">${cls==="miss"?"已识别":"已提取"}</span>`;
+    html+=`<div class="fld ${isMiss?'miss':''}"><div class="k">${lab}${badge}</div><div class="v">${v||"未提供"}</div>`
+        +(!isMiss&&srcMap[k]?`<div class="src">原文：${srcMap[k]}</div>`:"")+"</div>";
+  }
+  const f=document.getElementById("fields");f.innerHTML=html;f.classList.add("show");
+}
+
+function autoSearch(){
+  document.getElementById("candWrap").classList.add("show");
+  document.getElementById("candMeta").innerHTML=
+    '<span style="background:var(--slight);color:var(--success);border-radius:6px;padding:1px 8px">内部系统响应 0.9s</span>'
+    +' 共 3 条候选 · 条件：姓名含「刘乐怡」· 报名点不限';
+  const tb=document.getElementById("candBody");tb.innerHTML="";
+  CANDS.forEach((c,i)=>{
+    const tr=document.createElement("tr");tr.className="pick";
+    tr.innerHTML=`<td><input type="radio" name="cand"></td><td>${c.name}${c.best?'<span class="match-tag">与投诉内容匹配度最高</span>':""}</td><td>${c.id}</td><td>${c.ph}</td><td>${c.org}</td><td>${c.car}</td><td>${c.date}</td><td>${c.stage}</td>`;
+    tr.onclick=()=>{pickedIdx=i;tb.querySelectorAll("tr").forEach(r=>r.classList.remove("sel"));tr.classList.add("sel");
+      document.getElementById("btnConfirm").disabled=false;};
+    tb.appendChild(tr);
+  });
+  document.getElementById("candWrap").scrollIntoView({behavior:"smooth",block:"start"});
+}
+
+function confirmPick(){
+  if(pickedIdx<0)return;
+  const c=CANDS[pickedIdx];
+  document.getElementById("formEcho").innerHTML=
+    `<div class="mini-field hl"><div class="k">学员姓名</div><div class="v">${c.name}</div></div>
+     <div class="mini-field hl"><div class="k">证件号（自动回填）</div><div class="v">${c.id}</div></div>
+     <div class="mini-field hl"><div class="k">手机号（自动回填）</div><div class="v">${c.ph}</div></div>
+     <div class="mini-field"><div class="k">车型 / 报名点</div><div class="v">${c.car} · ${c.org}</div></div>`;
+  runPipe(c.id,c.ph,"候选确认");
+}
+
+async function runPipe(id,ph,mode){
+  const steps=[
+    ["内部系统","查到数据 · 0.8s"],
+    ["第三系统","查到学时 · 1.2s"],
+    ["东莞驾培",mode==="已按证号直查"?"无电子合同（2026年报名应有）· 0.9s":"查到学员 · 0.9s"]];
+  const pipe=document.getElementById("pipe");pipe.classList.add("show");
+  pipe.innerHTML=steps.map(s=>`<div class="step run"><span class="ic">…</span>${s[0]}：查询中</div>`).join("")
+    +`<div class="hint" style="margin-top:4px">复用现有 /api/query/start 异步任务机制，此处仅演示进度</div>`;
+  for(let i=0;i<steps.length;i++){
+    await sleep(i===0?800:i===1?1200:900);
+    pipe.children[i].outerHTML=`<div class="step ok"><span class="ic">&#10003;</span>${steps[i][0]}：${steps[i][1]}</div>`;
+  }
+  await sleep(300);
+  const b=document.getElementById("doneBanner");b.classList.add("show");
+  b.innerHTML=`<b>工单 T-20260825-007 已创建</b> —— 投诉人 刘乐怡 · 证件号 ${id} · 手机号 ${ph}<br>
+    结构化投诉摘要（AI提取 + 人工确认）已随工单存档，后续环节直接引用：<br>
+    <div class="chips"><span class="chip">合同分析：核对320违约金条款</span><span class="chip">退费计算：比对1270/730口径</span><span class="chip">回复函生成</span><span class="chip">飞书归档</span></div>
+    <div class="hint" style="margin-top:6px">以上四个环节全部复用现有流程代码，本方案只改「受理录入」这一段入口。</div>`;
+  b.scrollIntoView({behavior:"smooth",block:"center"});
+}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+demo("A");
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 """SQLite 本地数据库 - 投诉工单 + 操作日志 + 回复模板"""
 import math
+import re
 import sqlite3
 import json
 import uuid
@@ -86,17 +87,17 @@ def init_db():
                 deduction_detail TEXT DEFAULT '[]',
                 contract_set TEXT DEFAULT '{}',
                 contract_manifest TEXT DEFAULT '{}',
+                contract_text TEXT DEFAULT '{}',
 
                 -- 处理状态
                 handle_status TEXT DEFAULT '待处理',
+                intake_type TEXT DEFAULT '',
                 handle_steps TEXT DEFAULT '[]',
                 attachments TEXT DEFAULT '[]',
 
                 -- 产出物
                 reply_path TEXT DEFAULT '',
                 reply_outdated INTEGER DEFAULT 0,
-                feishu_record_id TEXT DEFAULT '',
-                feishu_handle_no TEXT DEFAULT '',
 
                 -- 学员信息缓存（三系统查询结果中常用的字段）
                 license_type TEXT DEFAULT '',
@@ -125,6 +126,9 @@ def init_db():
                 branch_cooperation TEXT DEFAULT '',
                 branch_cooperation_note TEXT DEFAULT '',
                 archive_status TEXT DEFAULT '',
+                handling_notes TEXT DEFAULT '',
+                withdrawn_at TEXT DEFAULT '',
+                withdraw_reason TEXT DEFAULT '',
                 cancellation_date TEXT DEFAULT '',
                 cancellation_source TEXT DEFAULT '',
                 cancellation_note TEXT DEFAULT '',
@@ -156,20 +160,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_contract_analysis_jobs_active
                 ON contract_analysis_jobs(fingerprint, status);
 
-            -- 沟通记录表（多轮联系学员，取代旧版回访记录表）
-            CREATE TABLE IF NOT EXISTS communication_records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticket_id TEXT NOT NULL,
-                fee_plan_version INTEGER NOT NULL DEFAULT 0,
-                contact_time TEXT NOT NULL DEFAULT '',
-                contact_method TEXT NOT NULL DEFAULT '',
-                summary TEXT NOT NULL DEFAULT '',
-                student_intention TEXT NOT NULL DEFAULT '',
-                next_follow_up TEXT DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT '',
-                FOREIGN KEY (ticket_id) REFERENCES complaint_tickets(id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_communication_records_ticket ON communication_records(ticket_id);
+            -- 沟通记录表已废弃（Wave2 迁移至 handling_notes 后由迁移函数 DROP）
 
             -- 网点车辆数配置表（投诉率分母，人工维护）
             CREATE TABLE IF NOT EXISTS org_vehicle_counts (
@@ -200,6 +191,12 @@ def init_db():
                 detail TEXT DEFAULT '',
                 success INTEGER DEFAULT 1,
                 created_at TEXT DEFAULT ''
+            );
+
+            -- 数据迁移标记表（避免一次性迁移重复执行）
+            CREATE TABLE IF NOT EXISTS migration_flags (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
             );
 
             -- 兼容旧版 complaints_v1 表（用于 get_complaint_by_idcard）
@@ -244,6 +241,7 @@ def init_db():
             ("reply_outdated", "INTEGER DEFAULT 0"),
             ("contract_set", "TEXT DEFAULT '{}'"),
             ("contract_manifest", "TEXT DEFAULT '{}'"),
+            ("contract_text", "TEXT DEFAULT '{}'"),
             ("visit_status", "TEXT DEFAULT ''"),
             ("visit_remark", "TEXT DEFAULT ''"),
             ("visit_time", "TEXT DEFAULT ''"),
@@ -264,6 +262,9 @@ def init_db():
             ("branch_cooperation", "TEXT DEFAULT ''"),
             ("branch_cooperation_note", "TEXT DEFAULT ''"),
             ("archive_status", "TEXT DEFAULT ''"),
+            ("handling_notes", "TEXT DEFAULT ''"),
+            ("withdrawn_at", "TEXT DEFAULT ''"),
+            ("withdraw_reason", "TEXT DEFAULT ''"),
             ("organization_unit_id", "TEXT DEFAULT ''"),
             ("organization_unit_type", "TEXT DEFAULT ''"),
             ("organization_unit_name", "TEXT DEFAULT ''"),
@@ -274,6 +275,8 @@ def init_db():
             ("withdraw_status", "TEXT DEFAULT '未撤诉'"),
             ("withdraw_updated_at", "TEXT DEFAULT ''"),
             ("negotiation_outcome", "TEXT DEFAULT ''"),
+            ("archived_dir", "TEXT DEFAULT ''"),
+            ("intake_type", "TEXT DEFAULT ''"),
         ]
         cursor = conn.execute("PRAGMA table_info(complaint_tickets)")
         existing_columns = [row[1] for row in cursor.fetchall()]
@@ -284,14 +287,6 @@ def init_db():
                     system_logger.info("[数据库] 已迁移: complaint_tickets 增加 %s 列", col_name)
                 except Exception as e:
                     system_logger.error("[数据库] 迁移 %s 失败: %s", col_name, e)
-
-        communication_columns = [
-            row[1] for row in conn.execute("PRAGMA table_info(communication_records)").fetchall()
-        ]
-        if "fee_plan_version" not in communication_columns:
-            conn.execute(
-                "ALTER TABLE communication_records ADD COLUMN fee_plan_version INTEGER NOT NULL DEFAULT 0"
-            )
 
         # ── 网点车辆数表：增加 unit_type 列（空表时用经营单位字典初始化）──
         vc_columns = [row[1] for row in conn.execute("PRAGMA table_info(org_vehicle_counts)").fetchall()]
@@ -331,8 +326,11 @@ def init_db():
 #  投诉工单 CRUD
 # ═══════════════════════════════════════════════════
 
-def save_ticket(data: dict) -> str:
-    """保存或更新投诉工单，返回 id"""
+def save_ticket(data: dict, force_new: bool = False) -> str:
+    """保存或更新投诉工单，返回 id
+
+    force_new=True 时跳过「同日同人」去重合并，强制新建一条工单。
+    """
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     record_id = data.get("id") or str(uuid.uuid4())
     data = normalize_ticket_org_fields(dict(data))
@@ -349,6 +347,20 @@ def save_ticket(data: dict) -> str:
         if isinstance(val, (list, dict)):
             data[key] = json.dumps(val, ensure_ascii=False)
 
+    # complaint_date 规范化：非空必须为 YYYY-MM-DD（正则+strptime 双验），
+    # 空串/脏格式一律回退当天，杜绝脏日期流入归档目录名与去重 key
+    if "complaint_date" in data:
+        raw_date = str(data.get("complaint_date") or "").strip()
+        date_ok = False
+        if raw_date and re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_date):
+            try:
+                datetime.strptime(raw_date, "%Y-%m-%d")
+                date_ok = True
+            except ValueError:
+                date_ok = False
+        if not date_ok:
+            data["complaint_date"] = now[:10]
+
     # 白名单防护：只允许表结构中存在的列名
     ALLOWED_COLUMNS = {
         "id", "ticket_no", "student_name", "id_card", "phone",
@@ -356,9 +368,9 @@ def save_ticket(data: dict) -> str:
         "forwarding_dept", "caller_number", "complaint_date",
         "complaint_type", "priority", "query_result",
         "contract_path", "contract_code", "total_fee", "actual_paid",
-        "deduction_fee", "refund_fee", "deduction_detail", "contract_set", "contract_manifest",
+        "deduction_fee", "refund_fee", "deduction_detail", "contract_set", "contract_manifest", "contract_text",
         "handle_status", "handle_steps", "attachments",
-        "reply_path", "reply_outdated", "feishu_record_id", "feishu_handle_no",
+        "reply_path", "reply_outdated",
         "license_type", "school_name", "school_short",
         "organization_unit_id", "organization_unit_type",
         "organization_unit_name", "organization_unit_code",
@@ -372,29 +384,38 @@ def save_ticket(data: dict) -> str:
         "fee_confirmed_by", "fee_confirmed_at", "fee_confirm_note",
         "branch_cooperation",
         "branch_cooperation_note", "archive_status",
+        "handling_notes",
         "cancellation_date", "cancellation_source",
         "cancellation_note",
         "withdraw_status", "withdraw_updated_at",
+        "withdrawn_at", "withdraw_reason",
         "negotiation_outcome",
+        "archived_dir",
+        "intake_type",
     }
 
     with get_db() as conn:
-        # 去重逻辑：仅在「新建工单」（data 未显式携带 id）时生效，
+        # 去重逻辑：仅在「新建工单」（data 未显式携带 id 且未指定 force_new）时生效，
         # 避免更新既有工单时把改动静默串写到同日最早工单。
-        if not data.get("id"):
+        if not data.get("id") and not force_new:
             # 检查同一天同一人是否已有记录（去重逻辑）
             complaint_date = data.get("complaint_date", "")
             id_card = data.get("id_card", "")
             if complaint_date and id_card:
                 date_only = complaint_date[:10]  # 取日期部分 YYYY-MM-DD
                 existing_same_day = conn.execute(
-                    "SELECT id FROM complaint_tickets WHERE id_card=? AND date(complaint_date)=? ORDER BY created_at ASC LIMIT 1",
+                    "SELECT id, complaint_content, source_channel FROM complaint_tickets WHERE id_card=? AND date(complaint_date)=? ORDER BY created_at ASC LIMIT 1",
                     (id_card, date_only),
                 ).fetchone()
                 if existing_same_day and existing_same_day[0] != record_id:
                     # 同一天已有记录，更新最早的记录
                     record_id = existing_same_day[0]
                     data["id"] = record_id
+                    # 保底：原记录已有投诉内容/来源渠道时不覆盖，防止二次提交清掉人工补录信息
+                    if existing_same_day["complaint_content"]:
+                        data.pop("complaint_content", None)
+                    if existing_same_day["source_channel"]:
+                        data.pop("source_channel", None)
 
         existing = conn.execute("SELECT id FROM complaint_tickets WHERE id=?", (record_id,)).fetchone()
         if existing:
@@ -420,6 +441,20 @@ def save_ticket(data: dict) -> str:
                 [data.get(c, "") for c in columns],
             )
     return record_id
+
+
+def find_same_day_ticket(id_card: str, complaint_date: str) -> dict | None:
+    """按 save_ticket 去重同一口径查找「同日同人」既有工单，供受理页预检提示。"""
+    id_card = (id_card or "").strip()
+    complaint_date = (complaint_date or "").strip()[:10]
+    if not id_card or not complaint_date:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM complaint_tickets WHERE id_card=? AND date(complaint_date)=? ORDER BY created_at ASC LIMIT 1",
+            (id_card, complaint_date),
+        ).fetchone()
+    return _row_to_dict_ticket(row) if row else None
 
 
 def get_ticket(record_id: str) -> dict | None:
@@ -535,10 +570,14 @@ def list_tickets(
     search: str = "",
     start_date: str = "",
     end_date: str = "",
+    repeat_only: bool = False,
     limit: int = 10,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
-    """查询投诉工单列表，返回 (records, total)"""
+    """查询投诉工单列表，返回 (records, total)
+
+    repeat_only: 仅保留同一身份证出现多次的重复投诉工单
+    """
     conditions = []
     params = []
 
@@ -549,18 +588,28 @@ def list_tickets(
         conditions.append("source_channel=?")
         params.append(source)
     if school:
-        conditions.append("school_short LIKE ?")
-        params.append(f"%{school}%")
+        # 下钻网点时同时匹配分店自身代号与所属分校代号
+        like = f"%{school}%"
+        conditions.append("(school_short LIKE ? OR organization_unit_code LIKE ?)")
+        params.extend([like, like])
     if search:
-        conditions.append("(student_name LIKE ? OR id_card LIKE ? OR ticket_no LIKE ?)")
+        # 合一模糊搜索：学员姓名 / 身份证 / 工单号 / 网点代号
         like = f"%{search}%"
-        params.extend([like, like, like])
+        conditions.append("(student_name LIKE ? OR id_card LIKE ? OR ticket_no LIKE ? OR school_short LIKE ?)")
+        params.extend([like, like, like, like])
     if start_date:
         conditions.append("complaint_date>=?")
         params.append(start_date)
     if end_date:
         conditions.append("complaint_date<=?")
         params.append(end_date)
+    if repeat_only:
+        inner = " AND ".join(conditions) if conditions else "1=1"
+        conditions.append(
+            "id_card IN (SELECT id_card FROM complaint_tickets "
+            f"WHERE {inner} AND id_card != '' GROUP BY id_card HAVING COUNT(*)>1)"
+        )
+        params = params + list(params)
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -575,9 +624,59 @@ def list_tickets(
     return records, total
 
 
+def search_students(
+    name: str = "",
+    school_short: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 30,
+) -> list[dict]:
+    """统一智能查询：按学员姓名（模糊）+ 报名点 + 报名时间范围检索本地学员档案。
+
+    返回按身份证号聚合（取最新一条）的去重学员列表，用于受理员只知道姓名/报名点/
+    报名时间时模糊查找学员。
+    """
+    conditions = []
+    params = []
+    if name:
+        like = f"%{name}%"
+        conditions.append("(student_name LIKE ? OR id_card LIKE ?)")
+        params.extend([like, like])
+    if school_short and school_short != "全部":
+        conditions.append("school_short=?")
+        params.append(school_short)
+    if start_date:
+        conditions.append("registration_date>=?")
+        params.append(start_date)
+    if end_date:
+        conditions.append("registration_date<=?")
+        params.append(end_date)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""SELECT id_card, student_name, phone, school_short, license_type,
+                       registration_date, exam_stage, student_status,
+                       MAX(created_at) AS created_at
+                FROM complaint_tickets {where}
+                GROUP BY id_card
+                ORDER BY created_at DESC
+                LIMIT ?""",
+            params + [limit],
+        ).fetchall()
+    return [_row_to_dict_ticket(r) for r in rows]
+
+
 def update_ticket(record_id: str, data: dict) -> bool:
     """更新投诉工单指定字段"""
     return bool(save_ticket({**data, "id": record_id}))
+
+
+def delete_ticket(record_id: str) -> bool:
+    """删除投诉工单及其关联的合同分析任务记录"""
+    with get_db() as conn:
+        conn.execute("DELETE FROM contract_analysis_jobs WHERE ticket_id=?", (record_id,))
+        cur = conn.execute("DELETE FROM complaint_tickets WHERE id=?", (record_id,))
+        return cur.rowcount > 0
 
 
 def _row_to_dict_ticket(row: sqlite3.Row) -> dict:
@@ -607,6 +706,8 @@ def save_template(data: dict) -> str:
         data["variables"] = json.dumps(data["variables"], ensure_ascii=False)
 
     with get_db() as conn:
+        if data.get("is_default"):
+            conn.execute("UPDATE reply_templates SET is_default=0")
         existing = conn.execute("SELECT id FROM reply_templates WHERE id=?", (template_id,)).fetchone()
         if existing:
             fields = []
@@ -621,8 +722,6 @@ def save_template(data: dict) -> str:
             values.append(template_id)
             conn.execute(f"UPDATE reply_templates SET {','.join(fields)} WHERE id=?", values)
         else:
-            if data.get("is_default"):
-                conn.execute("UPDATE reply_templates SET is_default=0")
             data["id"] = template_id
             data["created_at"] = now
             data["updated_at"] = now
@@ -659,8 +758,8 @@ def get_default_template() -> dict | None:
 def delete_template(template_id: str) -> bool:
     """删除回复模板"""
     with get_db() as conn:
-        conn.execute("DELETE FROM reply_templates WHERE id=?", (template_id,))
-        return conn.total_changes > 0
+        cur = conn.execute("DELETE FROM reply_templates WHERE id=?", (template_id,))
+        return cur.rowcount > 0
 
 
 # ═══════════════════════════════════════════════════
@@ -787,30 +886,38 @@ def get_ticket_statistics(
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else "WHERE 1=1"
 
-        # 一条 SQL 聚合：总数 + 各状态 + 有效投诉量 + 撤销量
+        # 一条 SQL 聚合：总数 + 各状态（三桶均排除已撤诉）+ 撤诉独立桶 + 有效投诉量（未撤诉）
         agg_row = conn.execute(f"""
             SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN handle_status='待处理' THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN handle_status='处理中' THEN 1 ELSE 0 END) AS processing,
-                SUM(CASE WHEN handle_status='已完结' OR archive_status='已归档' THEN 1 ELSE 0 END) AS completed,
-                SUM(CASE WHEN final_outcome='投诉撤销' THEN 1 ELSE 0 END) AS cancelled_total,
-                SUM(CASE WHEN final_outcome!='投诉撤销' OR final_outcome='' THEN 1 ELSE 0 END) AS effective_total
+                SUM(CASE WHEN handle_status='待处理' AND COALESCE(withdraw_status,'')!='已撤诉' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN handle_status='处理中' AND COALESCE(withdraw_status,'')!='已撤诉' THEN 1 ELSE 0 END) AS processing,
+                SUM(CASE WHEN (handle_status='已完结' OR archive_status='已归档') AND COALESCE(withdraw_status,'')!='已撤诉' THEN 1 ELSE 0 END) AS completed,
+                SUM(CASE WHEN COALESCE(withdraw_status,'')='已撤诉' THEN 1 ELSE 0 END) AS withdrawn_bucket,
+                SUM(CASE WHEN TRIM(COALESCE(withdrawn_at,''))!='' OR withdraw_status='已撤诉'
+                         THEN 1 ELSE 0 END) AS withdrawn_total,
+                SUM(CASE WHEN TRIM(COALESCE(withdrawn_at,''))='' AND COALESCE(withdraw_status,'')!='已撤诉'
+                         THEN 1 ELSE 0 END) AS effective_total,
+                SUM(CASE WHEN TRIM(COALESCE(intake_type,''))!='' THEN 1 ELSE 0 END) AS manual_no_record
             FROM complaint_tickets {where_clause}
         """, params).fetchone()
 
         integrity_row = conn.execute(f"""
             SELECT
-                SUM(CASE WHEN archive_status='已归档' AND handle_status!='已完结' THEN 1 ELSE 0 END) AS archived_not_completed,
-                SUM(CASE WHEN handle_status='已完结' AND TRIM(final_outcome)='' THEN 1 ELSE 0 END) AS completed_without_final_outcome
+                SUM(CASE WHEN archive_status='已归档' AND handle_status!='已完结' THEN 1 ELSE 0 END) AS archived_not_completed
             FROM complaint_tickets {where_clause}
         """, params).fetchone()
 
-        # 一条 SQL 聚合：经营单位 / 渠道 / 类型 / 结果 / 配合度分组
+        # 一条 SQL 聚合：经营单位 / 渠道 / 类型 / 结果 / 配合度分组（撤诉量单独累计）
         group_rows = conn.execute(f"""
             SELECT school_short, organization_unit_name, organization_unit_code, organization_unit_type,
                    source_channel, complaint_type, final_outcome, branch_cooperation,
-                   COUNT(*) as cnt
+                   COUNT(*) as cnt,
+                   SUM(CASE WHEN TRIM(COALESCE(withdrawn_at,''))!='' OR withdraw_status='已撤诉'
+                            THEN 1 ELSE 0 END) as withdrawn_cnt,
+                   SUM(CASE WHEN COALESCE(withdraw_status,'')!='已撤诉'
+                            THEN 1 ELSE 0 END) as active_cnt,
+                   SUM(CASE WHEN TRIM(COALESCE(intake_type,''))!='' THEN 1 ELSE 0 END) as manual_cnt
             FROM complaint_tickets {where_clause}
             GROUP BY school_short, organization_unit_name, organization_unit_code, organization_unit_type,
                      source_channel, complaint_type, final_outcome, branch_cooperation
@@ -828,6 +935,7 @@ def get_ticket_statistics(
             SELECT date(complaint_date) AS complaint_day, COUNT(*) AS cnt
             FROM complaint_tickets {where_clause}
             AND complaint_date != ''
+            AND COALESCE(withdraw_status,'')!='已撤诉'
             GROUP BY date(complaint_date)
             ORDER BY complaint_day ASC
         """, params).fetchall()
@@ -837,6 +945,7 @@ def get_ticket_statistics(
             SELECT substr(complaint_date, 1, 7) AS ym, COUNT(*) AS cnt
             FROM complaint_tickets {where_clause}
             AND complaint_date != ''
+            AND COALESCE(withdraw_status,'')!='已撤诉'
             GROUP BY ym
             ORDER BY ym ASC
         """, params).fetchall()
@@ -862,9 +971,15 @@ def get_ticket_statistics(
         processing = agg_row["processing"] or 0
         completed = agg_row["completed"] or 0
         effective_total = agg_row["effective_total"] or 0
-        cancelled_total = agg_row["cancelled_total"] or 0
+        withdrawn_total = agg_row["withdrawn_total"] or 0
         archived_not_completed = integrity_row["archived_not_completed"] or 0
-        completed_without_final_outcome = integrity_row["completed_without_final_outcome"] or 0
+
+        # 按 complaint_type 分组计数（撤诉案件不计入有效，但单独列出撤诉量）
+        type_group_rows = conn.execute(f"""
+            SELECT complaint_type, COUNT(*) as cnt
+            FROM complaint_tickets {where_clause}
+            GROUP BY complaint_type
+        """, params).fetchall()
 
         # 解析分组结果
         type_map = {"A": "退费纠纷", "B": "教学服务", "C": "考试安排", "D": "合同争议", "E": "其他"}
@@ -886,16 +1001,18 @@ def get_ticket_statistics(
                 "count": 0,
                 "total_count": 0,
                 "cancelled_count": 0,
+                "manual_count": 0,
             })
             school_counts[key]["total_count"] += row["cnt"]
-            if row["final_outcome"] == "投诉撤销":
-                school_counts[key]["cancelled_count"] += row["cnt"]
-            else:
-                school_counts[key]["count"] += row["cnt"]
-            src = row["source_channel"] or "未知"
-            source_counts[src] = source_counts.get(src, 0) + row["cnt"]
-            t = type_map.get(row["complaint_type"], row["complaint_type"] or "未知")
-            type_counts[t] = type_counts.get(t, 0) + row["cnt"]
+            withdrawn_cnt = row["withdrawn_cnt"] or 0
+            school_counts[key]["cancelled_count"] += withdrawn_cnt
+            school_counts[key]["count"] += row["cnt"] - withdrawn_cnt
+            school_counts[key]["manual_count"] += row["manual_cnt"] or 0
+            if (row["active_cnt"] or 0) > 0:
+                src = row["source_channel"] or "未知"
+                source_counts[src] = source_counts.get(src, 0) + row["active_cnt"]
+                t = type_map.get(row["complaint_type"], row["complaint_type"] or "未知")
+                type_counts[t] = type_counts.get(t, 0) + row["active_cnt"]
             outcome = row["final_outcome"] or "未定结果"
             outcome_counts[outcome] = outcome_counts.get(outcome, 0) + row["cnt"]
             cooperation = row["branch_cooperation"] or "未评价"
@@ -917,6 +1034,14 @@ def get_ticket_statistics(
 
         by_source = sorted([{"source": k, "count": v} for k, v in source_counts.items()], key=lambda x: x["count"], reverse=True)
         by_type = sorted([{"type": k, "count": v} for k, v in type_counts.items()], key=lambda x: x["count"], reverse=True)
+        by_complaint_type = sorted(
+            [
+                {"complaint_type": row["complaint_type"] or "未知", "count": row["cnt"] or 0}
+                for row in type_group_rows
+            ],
+            key=lambda x: x["count"],
+            reverse=True,
+        )
         by_outcome = sorted([{"outcome": k, "count": v} for k, v in outcome_counts.items()], key=lambda x: x["count"], reverse=True)
         by_branch_cooperation = sorted(
             [{"cooperation": k, "count": v} for k, v in cooperation_counts.items()],
@@ -930,18 +1055,21 @@ def get_ticket_statistics(
             "pending": pending,
             "processing": processing,
             "completed": completed,
+            "withdrawn": agg_row["withdrawn_bucket"] or 0,
             "effective_total": effective_total,
-            "cancelled_total": cancelled_total,
+            "withdrawn_total": withdrawn_total,
+            "cancelled_total": withdrawn_total,
+            "manual_no_record_count": agg_row["manual_no_record"] or 0,
             "integrity_issues": {
                 "archived_not_completed": archived_not_completed,
-                "completed_without_final_outcome": completed_without_final_outcome,
-                "total": archived_not_completed + completed_without_final_outcome,
+                "total": archived_not_completed,
             },
             "refund_sum": 0,
             "by_school": by_school,
             "by_rate": by_rate,
             "by_source": by_source,
             "by_type": by_type,
+            "by_complaint_type": by_complaint_type,
             "by_outcome": by_outcome,
             "by_branch_cooperation": by_branch_cooperation,
             "monthly_trend": [
@@ -1012,8 +1140,10 @@ def get_processing_duration_stats(date_start: str = "", date_end: str = "", unit
         overdue = conn.execute(f"""
             SELECT COUNT(*) FROM complaint_tickets
             WHERE handle_status IN ('待处理', '处理中')
-            AND created_at != ''
-            AND julianday('now') - julianday(created_at) > 2
+            AND COALESCE(withdraw_status,'')!='已撤诉'
+            AND COALESCE(archive_status,'')!='已归档'
+            AND complaint_date != ''
+            AND julianday(date('now')) - julianday(date(complaint_date)) > 7
             AND {where}
         """, params).fetchone()[0]
 
@@ -1116,7 +1246,6 @@ def save_complaint(data: dict) -> str:
         "contract_code": data.get("contract_code", ""),
         "contract_path": data.get("contract_path", ""),
         "reply_path": data.get("reply_path", ""),
-        "feishu_record_id": data.get("feishu_record_id", ""),
         "handle_status": data.get("handle_status", "待处理"),
         "license_type": data.get("license_type", ""),
         "school_name": data.get("school_name", ""),
@@ -1299,6 +1428,65 @@ def delete_communication_record(record_id: int, ticket_id: str = "") -> bool:
         else:
             cursor = conn.execute("DELETE FROM communication_records WHERE id=?", (record_id,))
         return cursor.rowcount > 0
+
+
+# ═══════════════════════════════════════════════════
+#  v2 迁移：多轮沟通记录 → handling_notes
+# ═══════════════════════════════════════════════════
+
+def migrate_communications_to_notes() -> int:
+    """把每个工单的存量沟通记录摘要拼接为 handling_notes 初始文本（幂等）。
+
+    格式：每条一行「[日期] 摘要；」。迁完即删除源记录并打标记，
+    再次执行时无源记录可迁，直接返回 0，不会重复追加。
+    """
+    with get_db() as conn:
+        marked = conn.execute(
+            "SELECT value FROM migration_flags WHERE key='communications_to_notes'"
+        ).fetchone()
+        if marked and marked["value"] == "done":
+            conn.execute("DROP TABLE IF EXISTS communication_records")
+            return 0
+        has_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='communication_records'"
+        ).fetchone()
+        rows = (
+            conn.execute(
+                "SELECT ticket_id, contact_time, created_at, summary"
+                " FROM communication_records ORDER BY ticket_id, contact_time ASC, id ASC"
+            ).fetchall()
+            if has_table
+            else []
+        )
+        grouped: dict[str, list[str]] = {}
+        for r in rows:
+            stamp = (r["contact_time"] or r["created_at"] or "")[:10]
+            summary = (r["summary"] or "").strip()
+            if not summary:
+                continue
+            grouped.setdefault(r["ticket_id"], []).append(f"[{stamp}] {summary}；")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        migrated = 0
+        for ticket_id, lines in grouped.items():
+            row = conn.execute(
+                "SELECT handling_notes FROM complaint_tickets WHERE id=?", (ticket_id,)
+            ).fetchone()
+            if not row:
+                continue
+            existing = (row["handling_notes"] or "").strip()
+            text = "\n".join(lines)
+            new_notes = text if not existing else existing + "\n" + text
+            conn.execute(
+                "UPDATE complaint_tickets SET handling_notes=?, updated_at=? WHERE id=?",
+                (new_notes, now, ticket_id),
+            )
+            migrated += 1
+        conn.execute("DROP TABLE IF EXISTS communication_records")
+        conn.execute(
+            "INSERT OR REPLACE INTO migration_flags (key, value) VALUES ('communications_to_notes', 'done')"
+        )
+    system_logger.info("[数据库] 沟通记录已迁移至 handling_notes，源表已删除：%d 个工单", migrated)
+    return migrated
 
 
 # 模块加载时初始化

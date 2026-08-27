@@ -39,6 +39,10 @@ export async function putJ(url, body) {
   });
 }
 
+export async function delJ(url) {
+  return _fetch(url, { method: "DELETE" });
+}
+
 export async function uploadFile(url, file, extraFields = {}) {
   const fd = new FormData();
   fd.append("file", file);

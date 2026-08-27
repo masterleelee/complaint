@@ -233,12 +233,13 @@ body {
   background: #047857;
 }
 
-.btn-danger {
+/* 双类名提升优先级：覆盖 index.html 内联<style>中后加载的 .btn 基础规则 */
+.btn.btn-danger {
   background: var(--danger);
   color: #fff;
 }
 
-.btn-danger:hover:not(:disabled) {
+.btn.btn-danger:hover:not(:disabled) {
   background: #b91c1c;
 }
 
@@ -405,7 +406,7 @@ textarea.form-control { resize: vertical; min-height: 60px; }
   height: 100%;
   background: linear-gradient(90deg, var(--primary), #3b82f6, #60a5fa);
   border-radius: 999px;
-  transition: width .4s ease;
+  transition: width .3s ease;
 }
 
 .progress-status { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -1001,7 +1002,7 @@ tbody tr:hover { background: #f8fafc; }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 4px;
   padding: 32px;
   color: var(--text-secondary);
 }
@@ -1619,6 +1620,7 @@ tbody tr:hover { background: #f8fafc; }
 /* navbar-footer 已在上方唯一定义（修正对比度 .62，删除重复） */
 
 /* Modal */
+[v-cloak] { display: none !important; }
 .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }
 .modal-content { background: #fff; border-radius: 12px; max-width: 600px; width: 90%; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
 .modal-lg { max-width: 720px; }
@@ -1627,6 +1629,10 @@ tbody tr:hover { background: #f8fafc; }
 .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
 .modal-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; }
 .btn-close { background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-secondary); padding: 0; line-height: 1; }
+
+/* ── 登记表预览：长文本分区行（标签加粗 + 内容保留换行）── */
+.reg-section-cell { line-height: 1.7; word-break: break-word; }
+.reg-section-label { font-weight: 600; }
 
 /* ── Contract preview modal ── */
 .preview-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.6); z-index: 2000; display: flex; align-items: center; justify-content: center; }
@@ -1720,4 +1726,55 @@ tbody tr:hover { background: #f8fafc; }
   .outcome-grid { grid-template-columns: repeat(2, 1fr); }
   .compact-row { grid-template-columns: 1fr; }
   .drawer { width: 100%; min-width: 0; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   新增投诉 · 统一智能查询（工单属性上移单行 + 学员查询左右结构）
+   ═══════════════════════════════════════════════════════════════ */
+
+/* A. 工单属性：单行紧凑 4 列（具体途径出现时换到下一行首列） */
+.attr-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.attr-grid .form-control { font-size: 13px; }
+
+/* B. 学员身份 · 统一智能查询：左右结构（标签左、输入右），2 列 */
+.query-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px 28px; }
+.hfield { display: flex; align-items: center; gap: 10px; }
+.hfield .form-label { flex: none; width: 78px; text-align: right; margin-bottom: 0; color: var(--text-secondary); }
+.hfield .form-control { flex: 1; min-width: 0; font-size: 13px; }
+.hfield.is-dim { opacity: .4; filter: grayscale(.6); }
+.hfield.is-primary .form-control { box-shadow: 0 0 0 3px var(--primary-50); border-color: var(--primary); }
+.query-hint { font-size: 11px; color: var(--text-secondary); margin-top: 10px; }
+.query-hint i { color: var(--primary); }
+
+/* 错误 / 提醒 / 成功条 */
+.uc-bar { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; padding: 10px 14px; border-radius: var(--radius); margin-top: 12px; }
+.uc-warn { background: var(--warning-50); color: var(--warning); border: 1px solid #fde68a; }
+.uc-ok { background: var(--success-50); color: var(--success); border: 1px solid var(--success-border); }
+
+/* 候选学员列表 */
+.cand-wrap { margin-top: 14px; }
+.src-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; margin-bottom: 8px; }
+.table-card { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.table-card .table { margin-bottom: 0; }
+.cand-table th { background: var(--bg); font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
+.cand-table td { font-size: 12.5px; vertical-align: middle; }
+.cand-table tbody tr.row-sel { background: var(--success-50); box-shadow: inset 0 0 0 2px var(--success); }
+.mask-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.showlink { font-size: 11px; color: var(--primary); cursor: pointer; border: none; background: none; padding: 0; }
+.showlink:hover { text-decoration: underline; }
+.pbadge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 9px; font-size: 11px; font-weight: 600; background: var(--bg); color: var(--text-secondary); border: 1px solid var(--border); white-space: nowrap; }
+.pbadge.reg { color: #0e7490; background: #ecfeff; border-color: #a5f3fc; }
+.pbadge.s1 { color: #7c3aed; background: #f5f3ff; border-color: #ddd6fe; }
+.pbadge.s2 { color: var(--primary); background: var(--primary-50); border-color: #bfdbfe; }
+.pbadge.s3 { color: var(--warning); background: var(--warning-50); border-color: #fde68a; }
+.pbadge.done { color: var(--success); background: var(--success-50); border-color: var(--success-border); }
+.empty-state { text-align: center; padding: 14px 16px; }
+.empty-state i { font-size: 28px; color: #cbd5e1; display: block; margin-bottom: 2px; }
+.empty-state p { font-size: 15px; color: var(--text-secondary); font-weight: 600; }
+.empty-state .empty-sub { margin-top: 8px; font-size: 12.5px; font-weight: 400; color: var(--text-secondary); line-height: 1.7; }
+.empty-state .empty-sub b { color: var(--warning); }
+
+@media (max-width: 768px) {
+  .attr-grid { grid-template-columns: repeat(2, 1fr); }
+  .query-grid { grid-template-columns: 1fr; }
 }

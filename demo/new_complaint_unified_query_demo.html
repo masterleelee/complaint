@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 Demo · 新增投诉 · 统一智能查询</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<style>
+:root{
+  --primary:#2563EB;--primary-dark:#1D4ED8;--primary-50:#EFF6FF;
+  --success:#16A34A;--success-50:#F0FDF4;
+  --warning:#D97706;--warning-50:#FFFBEB;
+  --danger:#DC2626;--danger-50:#FEF2F2;
+  --text:#0F172A;--text-secondary:#64748B;
+  --border:#E2E8F0;--bg:#EEF3F8;--surface:#FFF;
+  --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
+  --accent:#4F46E5;
+  --font-sans:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.04);
+  --radius:8px;--radius-lg:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;background:var(--bg);color:var(--text);font:400 13px/1.6 var(--font-sans)}
+.mono{font-family:var(--font-mono)}
+.app-shell{display:flex;min-height:100vh}
+.sidebar{width:240px;flex:none;background:var(--brand-gradient);color:#fff;display:flex;flex-direction:column;padding:20px 12px;position:sticky;top:0;height:100vh}
+.sidebar .brand{font:700 15px/1.3 var(--font-sans);padding:0 8px 20px;white-space:nowrap}
+.sidebar .brand small{display:block;font-weight:400;font-size:11px;color:rgba(255,255,255,.62)}
+.nav-link{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.78);padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600;margin-bottom:2px;border:none;background:none;width:100%;text-align:left;font-size:13px;font-family:var(--font-sans)}
+.nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-link.active{background:rgba(255,255,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--accent)}
+.sidebar .footer{margin-top:auto;padding:0 8px;font-size:11px;color:rgba(255,255,255,.62)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.content{flex:1;padding:24px 32px 120px;max-width:1180px}
+
+.page-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.page-title{font-size:20px;font-weight:700}
+.proto-tag{font-size:11px;font-weight:600;color:var(--warning);background:var(--warning-50);border:1px dashed var(--warning);border-radius:99px;padding:2px 10px}
+
+.proto-banner{background:#0F172A;color:#E2E8F0;border-radius:var(--radius);padding:10px 14px;margin-bottom:16px;box-shadow:var(--shadow-sm)}
+.proto-banner .pb-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;margin-bottom:8px}
+.proto-banner .pb-head i{color:#FBBF24}
+.proto-banner .pb-head small{font-weight:400;color:#94A3B8}
+.pb-states{display:flex;flex-wrap:wrap;gap:6px}
+.pb-btn{font:600 12px var(--font-sans);border:1px solid #334155;background:#1E293B;color:#CBD5E1;padding:5px 11px;border-radius:99px;cursor:pointer;transition:.15s}
+.pb-btn:hover{border-color:#64748B;color:#fff}
+.pb-btn.active{background:var(--primary);border-color:var(--primary);color:#fff}
+
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);margin-bottom:14px}
+.panel-head{padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px}
+.step-no{flex:none;width:20px;height:20px;border-radius:50%;background:var(--primary);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+.panel-body{padding:16px}
+
+.dropzone{border:1.5px dashed var(--border);border-radius:var(--radius);background:#F8FAFC;transition:border-color .15s,background .15s;padding:12px;display:flex;flex-direction:column;gap:10px}
+.dropzone.drag{border-color:var(--primary);background:var(--primary-50)}
+.dz-top{display:flex;gap:14px;align-items:center}
+.dz-icon{flex:none;width:46px;height:46px;border-radius:10px;background:var(--primary-50);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:22px}
+.dz-text b{display:block;font-size:13px}
+.dz-text small{color:var(--text-secondary);font-size:11px}
+.dropzone textarea{width:100%;min-height:90px;resize:vertical;border:1px solid var(--border);border-radius:var(--radius);padding:10px;font:400 13px/1.6 var(--font-sans);outline:none;background:#fff}
+.dropzone textarea:focus{border-color:var(--primary)}
+.dz-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dz-hint{font-size:11px;color:var(--text-secondary)}
+
+.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:var(--radius);padding:9px 18px;font:600 13px var(--font-sans);cursor:pointer;transition:filter .15s}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:not(:disabled):hover{filter:brightness(1.08)}
+.btn-secondary{background:#fff;color:var(--text);border:1px solid var(--border)}
+.btn-secondary:hover{border-color:var(--primary);color:var(--primary)}
+.btn-sm{padding:6px 12px;font-size:12px}
+
+.clues{margin-top:12px;border-radius:var(--radius);border:1px solid #BBF7D0;background:var(--success-50);padding:12px 14px;display:none}
+.clues.show{display:block;animation:fadeUp .25s ease}
+.clues-head{display:flex;align-items:center;gap:6px;font-weight:700;color:var(--success);font-size:12px;margin-bottom:8px}
+.clue-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.clue-chip{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #BBF7D0;border-radius:99px;padding:4px 12px;font-size:12px}
+.clue-chip b{font-family:var(--font-mono);font-weight:600}
+
+.fgroup+.fgroup{margin-top:18px;padding-top:16px;border-top:1px dashed var(--border)}
+.fgroup-title{font-size:12px;font-weight:700;color:var(--text-secondary);letter-spacing:.05em;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.fgroup-title i{color:var(--primary)}
+.fgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.field label{display:block;font-size:12px;font-weight:600;margin-bottom:4px}
+.field input,.field select{width:100%;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);font:400 13px var(--font-sans);outline:none;background:#fff}
+.field input:focus,.field select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-50)}
+.field.is-dim,.hfield.is-dim{opacity:.4;filter:grayscale(.6)}
+.field.is-primary input,.field.is-primary select,.hfield.is-primary input,.hfield.is-primary select{box-shadow:0 0 0 3px #BFDBFE;border-color:var(--primary)}
+
+/* 学员查询：左右结构（标签左、输入右） */
+.fgrid.query{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 28px}
+.hfield{display:flex;align-items:center;gap:10px}
+.hfield label{flex:none;width:78px;text-align:right;font-size:12px;font-weight:600;margin-bottom:0;color:var(--text-secondary)}
+.hfield input,.hfield select{flex:1;min-width:0;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius);font:400 13px var(--font-sans);outline:none;background:#fff}
+.hfield input:focus,.hfield select:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-50)}
+.query-hint{grid-column:1/-1;font-size:11px;color:var(--text-secondary);margin-top:2px}
+.query-hint i{color:var(--primary)}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+.action-bar{position:sticky;bottom:0;z-index:10;background:rgba(255,255,255,.94);backdrop-filter:blur(8px);border-top:1px solid var(--border);padding:14px 32px;display:flex;align-items:center;gap:16px}
+.action-bar .hint{font-size:12px;color:var(--text-secondary)}
+.action-bar .btns{display:flex;gap:10px;margin-left:auto}
+
+.msg{display:none;align-items:center;gap:8px;font-weight:600;font-size:13px;padding:10px 14px;border-radius:var(--radius);margin-top:12px;animation:fadeUp .25s ease}
+.msg.show{display:flex}
+.msg.err{background:var(--danger-50);color:var(--danger);border:1px solid #FECACA}
+.msg.warn{background:var(--warning-50);color:var(--warning);border:1px solid #FDE68A}
+.msg.ok{background:var(--success-50);color:var(--success);border:1px solid #BBF7D0}
+
+.result-wrap{margin-top:14px}
+.src-badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;background:#F1F5F9;color:var(--text-secondary);border:1px solid var(--border);border-radius:99px;padding:3px 10px;margin-bottom:8px}
+.src-badge i{font-size:11px}
+
+.table-card{border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{background:#F8FAFC;text-align:left;padding:9px 12px;font-weight:700;color:var(--text-secondary);border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.row-sel{background:var(--success-50);box-shadow:inset 0 0 0 2px var(--success)}
+
+.mask-cell{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.mask-cell .val{font-family:var(--font-mono)}
+.showlink{font-size:11px;color:var(--primary);cursor:pointer;border:none;background:none;padding:0;font-family:var(--font-sans)}
+.showlink:hover{text-decoration:underline}
+
+.pbadge{display:inline-flex;align-items:center;gap:4px;border-radius:99px;padding:2px 9px;font-size:11px;font-weight:600;background:#F1F5F9;color:var(--text-secondary);border:1px solid var(--border);white-space:nowrap}
+.pbadge.reg{color:#0E7490;background:#ECFEFF;border-color:#A5F3FC}
+.pbadge.s1{color:#7C3AED;background:#F5F3FF;border-color:#DDD6FE}
+.pbadge.s2{color:#2563EB;background:var(--primary-50);border-color:#BFDBFE}
+.pbadge.s3{color:#CA8A04;background:#FEFCE8;border-color:#FDE68A}
+.pbadge.done{color:var(--success);background:var(--success-50);border-color:#BBF7D0}
+.pbadge.debt{color:var(--danger);background:var(--danger-50);border-color:#FECACA}
+
+.empty-state{display:none;text-align:center;padding:48px 16px;animation:fadeUp .25s ease}
+.empty-state.show{display:block}
+.empty-state i{font-size:54px;color:#CBD5E1;display:block;margin-bottom:14px}
+.empty-state p{font-size:15px;color:var(--text-secondary);font-weight:600}
+
+.progress-card{display:none;margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);padding:14px;background:#F8FAFC;animation:fadeUp .25s ease}
+.progress-card.show{display:block}
+.pc-title{font-weight:700;font-size:13px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.bar-bg{height:8px;border-radius:99px;background:var(--border);overflow:hidden;margin-bottom:12px}
+.bar-fill{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--primary));transition:width .5s ease}
+.bar-fill.full{width:100%;background:var(--success)}
+.sys-badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.sbadge{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:4px 12px;font-size:12px;font-weight:600;background:#fff;border:1px solid var(--border);color:var(--text-secondary)}
+.sbadge.running{border-color:#FCD34D;background:var(--warning-50);color:var(--warning);animation:blink 1s infinite}
+.sbadge.ok{border-color:#BBF7D0;background:var(--success-50);color:var(--success)}
+@keyframes blink{50%{opacity:.55}}
+.pc-msg{font-size:11px;color:var(--text-secondary);font-family:var(--font-mono)}
+
+.bfill{display:none;margin-top:12px;flex-wrap:wrap;gap:8px}
+.bfill.show{display:flex}
+.bfill .fchip{display:inline-flex;align-items:center;gap:6px;background:var(--primary-50);border:1px solid #BFDBFE;border-radius:99px;padding:4px 12px;font-size:12px;font-weight:600;color:var(--primary-dark)}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">投诉系统<small>v2 智能工作台</small></div>
+    <button class="nav-link"><i class="bi bi-house-door"></i> 工作台</button>
+    <button class="nav-link active"><i class="bi bi-plus-circle"></i> 新增投诉</button>
+    <button class="nav-link"><i class="bi bi-list-ul"></i> 投诉列表</button>
+    <button class="nav-link"><i class="bi bi-bar-chart"></i> 统计报表</button>
+    <button class="nav-link"><i class="bi bi-gear"></i> 系统设置</button>
+    <div class="footer">2026-08-23</div>
+  </aside>
+
+  <div class="main">
+    <div class="content">
+      <div class="page-head">
+        <div class="page-title">新增投诉</div>
+        <span class="proto-tag">原型 DEMO</span>
+      </div>
+
+      <div class="proto-banner">
+        <div class="pb-head"><i class="bi bi-flask"></i> 交互原型（纯静态演示，数据均为虚构模拟） <small>· 点击下方按钮切换演示状态</small></div>
+        <div class="pb-states" id="pbStates">
+          <button class="pb-btn" data-st="1">① 证件号精确</button>
+          <button class="pb-btn" data-st="2">② 仅手机号</button>
+          <button class="pb-btn" data-st="3">③ 模糊搜索·有结果</button>
+          <button class="pb-btn" data-st="4">④ 模糊搜索·无结果</button>
+          <button class="pb-btn" data-st="5">⑤ 手机号不一致提醒</button>
+          <button class="pb-btn" data-st="6">⑥ 居留证补全提醒</button>
+          <button class="pb-btn" data-st="7">⑦ 三系统查询中</button>
+          <button class="pb-btn" data-st="8">⑧ 建案成功</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><span class="step-no">1</span> 粘贴或上传投诉材料</div>
+        <div class="panel-body">
+          <div class="dropzone" id="dropzone">
+            <div class="dz-top">
+              <div class="dz-icon"><i class="bi bi-cloud-arrow-up"></i></div>
+              <div class="dz-text">
+                <b>拖拽文件到此处，或粘贴通话记录 / 微信截图文字</b>
+                <small>支持 txt / 图片 / 录音转写文本，系统自动提取学员线索</small>
+              </div>
+            </div>
+            <textarea id="rawInput" placeholder="例如：学员陈金生，南城报名点，大概去年三月份报的名，电话 13800000000，反映教练乱收费……"></textarea>
+            <div class="dz-foot">
+              <span class="dz-hint"><i class="bi bi-shield-check"></i> 材料仅用于本次建案，不会外传</span>
+              <button class="btn btn-primary" id="btnExtract"><i class="bi bi-magic"></i> 提取线索</button>
+            </div>
+          </div>
+          <div class="clues" id="clues">
+            <div class="clues-head"><i class="bi bi-check-circle"></i> 已识别线索（点击「回填」可填入下方表单）</div>
+            <div class="clue-row">
+              <span class="clue-chip"><i class="bi bi-person-badge"></i> 身份证 <b>4419***********533</b></span>
+              <span class="clue-chip"><i class="bi bi-telephone"></i> 手机号 <b>158****0340</b></span>
+              <span class="clue-chip"><i class="bi bi-geo-alt"></i> 报名点 <b>南城</b></span>
+              <button class="btn btn-secondary btn-sm clue-fill" id="btnFillClue"><i class="bi bi-arrow-down"></i> 回填</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><span class="step-no">2</span> 登记投诉信息</div>
+        <div class="panel-body">
+          <div class="fgroup">
+            <div class="fgroup-title"><i class="bi bi-sliders"></i> 工单属性</div>
+            <div class="fgrid">
+              <div class="field">
+                <label>来源渠道</label>
+                <select id="fChannel">
+                  <option>12345</option>
+                  <option>交通部门</option>
+                  <option selected>电话来访</option>
+                  <option>信访</option>
+                  <option>邮件投诉</option>
+                  <option>驾培协会</option>
+                  <option>其他途径</option>
+                </select>
+              </div>
+              <div class="field" id="fChannelDetailWrap" style="display:none">
+                <label>具体途径</label>
+                <input id="fChannelDetail" placeholder="请填写具体途径">
+              </div>
+              <div class="field">
+                <label>投诉日期</label>
+                <input type="date" id="fDate" value="2026-08-23">
+              </div>
+              <div class="field">
+                <label>投诉类型</label>
+                <select id="fType">
+                  <option value="A">A-退费纠纷</option>
+                  <option value="B">B-教学服务</option>
+                  <option value="C">C-考试安排</option>
+                  <option value="D">D-合同争议</option>
+                  <option value="E">E-其他</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>处理人</label>
+                <input id="fHandler" value="张敏">
+              </div>
+            </div>
+          </div>
+
+          <div class="fgroup">
+            <div class="fgroup-title"><i class="bi bi-search"></i> 学员身份 · 统一智能查询</div>
+            <div class="fgrid query" id="queryGrid">
+              <div class="hfield" id="q-id">
+                <label>身份证号</label>
+                <input id="inId" placeholder="大陆身份证/港澳/台湾/居留证">
+              </div>
+              <div class="hfield" id="q-phone">
+                <label>手机号</label>
+                <input id="inPhone" maxlength="11" placeholder="11 位手机号">
+              </div>
+              <div class="hfield" id="q-name">
+                <label>学员姓名</label>
+                <input id="inName" placeholder="模糊匹配">
+              </div>
+              <div class="hfield" id="q-site">
+                <label>报名点</label>
+                <select id="inSite">
+                  <option>全部</option>
+                  <option>南城</option>
+                  <option>东城</option>
+                  <option>虎门</option>
+                  <option>长安</option>
+                  <option>厚街</option>
+                  <option>寮步</option>
+                  <option>大朗</option>
+                </select>
+              </div>
+              <div class="hfield" id="q-start">
+                <label>报名时间 起</label>
+                <input type="date" id="inStart">
+              </div>
+              <div class="hfield" id="q-end">
+                <label>报名时间 止</label>
+                <input type="date" id="inEnd">
+              </div>
+              <div class="query-hint"><i class="bi bi-info-circle"></i> 有什么填什么：证件号/手机号走精确查询；只填姓名时自动模糊搜索学员。</div>
+            </div>
+
+            <div class="msg err" id="errBar"><i class="bi bi-exclamation-circle"></i> 请填写查询条件</div>
+            <div class="msg warn" id="warnBar"></div>
+
+            <div class="result-wrap">
+              <span class="src-badge" id="srcBadge" style="display:none"><i class="bi bi-hdd-network"></i> <span id="srcText"></span></span>
+              <div class="table-card" id="candTable" style="display:none">
+                <table>
+                  <thead>
+                    <tr>
+                      <th style="width:46px">选择</th>
+                      <th>姓名</th>
+                      <th>身份证号</th>
+                      <th>手机号</th>
+                      <th>报名点</th>
+                      <th>车型</th>
+                      <th>报名日期</th>
+                      <th>当前进度</th>
+                      <th style="width:96px">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="candBody"></tbody>
+                </table>
+              </div>
+              <div class="empty-state" id="emptyResult">
+                <i class="bi bi-person-x"></i>
+                <p>未找到匹配学员</p>
+              </div>
+            </div>
+
+            <div class="progress-card" id="progressCard">
+              <div class="pc-title"><i class="bi bi-activity"></i> 三系统查询进度</div>
+              <div class="bar-bg"><div class="bar-fill" id="barFill"></div></div>
+              <div class="sys-badges" id="sysBadges">
+                <span class="sbadge" data-sys="1"><i class="bi bi-circle"></i> 内部系统</span>
+                <span class="sbadge" data-sys="2"><i class="bi bi-circle"></i> 第三系统</span>
+                <span class="sbadge" data-sys="3"><i class="bi bi-circle"></i> 东莞驾培</span>
+              </div>
+              <div class="pc-msg" id="pcMsg">初始化查询任务…</div>
+            </div>
+
+            <div class="msg ok" id="okBar"><i class="bi bi-check-circle"></i> 建案成功，正在进入工作台…</div>
+            <div class="bfill" id="bFill"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="action-bar">
+      <span class="hint"><i class="bi bi-info-circle"></i> 建案后立即计入统计，并自动进入工作台</span>
+      <div class="btns">
+        <button class="btn btn-secondary" id="btnReset">重置</button>
+        <button class="btn btn-primary" id="btnMain"><i class="bi bi-search"></i> 查询三系统并建案</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const CANDIDATES = [
+  {name:'陈金生', id:'110101199003070011', phone:'13800000000', site:'南城', car:'C1', date:'2024-03-12', prog:'科目二训练中', cls:'s2', debt:'欠费 ¥1200', src:'内部系统'},
+  {name:'陈金生', id:'110101199003070011', phone:'13800000000', site:'东城', car:'C2', date:'2023-09-05', prog:'科目三待考', cls:'s3', debt:null, src:'内部系统'},
+  {name:'林晓芳', id:'110101199003070011', phone:'13800000000', site:'虎门', car:'C1', date:'2025-01-18', prog:'科目一待考', cls:'s1', debt:null, src:'内部系统'},
+  {name:'黄志强', id:'110101199003070011', phone:'13800000000', site:'长安', car:'C1', date:'2024-11-02', prog:'已拿证', cls:'done', debt:null, src:'内部系统'},
+  {name:'吴美玲', id:'110101199003070011', phone:'13800000000', site:'厚街', car:'C2', date:'2025-06-30', prog:'已报名', cls:'reg', debt:null, src:'内部系统'},
+  {name:'陈金生', id:'110101199003070011', phone:'13800000000', site:'寮步', car:'C1', date:'2025-04-21', prog:'科目二训练中', cls:'s2', debt:null, src:'第三系统'},
+];
+
+function maskId(id){ return id.slice(0,4) + '*'.repeat(id.length-7) + id.slice(-3); }
+function maskPhone(p){ return p.slice(0,3) + '****' + p.slice(-4); }
+
+function renderCandidates(){
+  const body = document.getElementById('candBody');
+  body.innerHTML = '';
+  CANDIDATES.forEach((c,i)=>{
+    const tr = document.createElement('tr');
+    tr.id = 'cand-'+i;
+    const progBadge = '<span class="pbadge '+c.cls+'">'+c.prog+'</span>' + (c.debt?' <span class="pbadge debt">'+c.debt+'</span>':'');
+    tr.innerHTML =
+      '<td><input type="radio" name="cand" value="'+i+'"></td>'+
+      '<td><b>'+c.name+'</b></td>'+
+      '<td><span class="mask-cell"><span class="val">'+maskId(c.id)+'</span><button class="showlink" data-plain="'+c.id+'" data-mask="'+maskId(c.id)+'">显示</button></span></td>'+
+      '<td><span class="mask-cell"><span class="val">'+maskPhone(c.phone)+'</span><button class="showlink" data-plain="'+c.phone+'" data-mask="'+maskPhone(c.phone)+'">显示</button></span></td>'+
+      '<td>'+c.site+'</td>'+
+      '<td>'+c.car+'</td>'+
+      '<td>'+c.date+'</td>'+
+      '<td>'+progBadge+'</td>'+
+      '<td><button class="btn btn-primary btn-sm act-btn" data-i="'+i+'">投诉处理</button></td>';
+    body.appendChild(tr);
+  });
+}
+
+document.addEventListener('click', e=>{
+  if(e.target.classList.contains('showlink')){
+    const b = e.target;
+    const cur = b.previousElementSibling;
+    if(b.textContent === '显示'){ cur.textContent = b.dataset.plain; b.textContent = '隐藏'; }
+    else { cur.textContent = b.dataset.mask; b.textContent = '显示'; }
+  }
+});
+
+document.addEventListener('click', e=>{
+  if(e.target.classList.contains('act-btn')){
+    const i = +e.target.dataset.i;
+    const c = CANDIDATES[i];
+    document.querySelectorAll('#candBody tr').forEach(tr=>tr.classList.remove('row-sel'));
+    document.getElementById('cand-'+i).classList.add('row-sel');
+    document.querySelector('input[name="cand"][value="'+i+'"]').checked = true;
+    document.getElementById('inName').value = c.name;
+    document.getElementById('inId').value = c.id;
+    document.getElementById('inPhone').value = c.phone;
+    document.getElementById('inSite').value = c.site;
+    runExactFlow(c);
+  }
+});
+
+const inId = document.getElementById('inId');
+const inPhone = document.getElementById('inPhone');
+const inName = document.getElementById('inName');
+const mainBtn = document.getElementById('btnMain');
+
+function isExact(){ return inId.value.trim() !== '' || (inPhone.value.trim().length === 11); }
+function onlyName(){ return inName.value.trim() !== '' && inId.value.trim()==='' && inPhone.value.trim()===''; }
+
+function updateBtnText(){
+  if(isExact()) mainBtn.innerHTML = '<i class="bi bi-search"></i> 查询三系统并建案';
+  else if(onlyName()) mainBtn.innerHTML = '<i class="bi bi-search"></i> 搜索学员';
+  else mainBtn.innerHTML = '<i class="bi bi-search"></i> 查询三系统并建案';
+}
+[inId,inPhone,inName].forEach(el=>el.addEventListener('input', ()=>{ clearMsgs(); updateBtnText(); }));
+
+document.getElementById('fChannel').addEventListener('change', e=>{
+  document.getElementById('fChannelDetailWrap').style.display = e.target.value==='其他途径' ? '' : 'none';
+});
+
+document.getElementById('btnExtract').addEventListener('click', ()=>{ document.getElementById('clues').classList.add('show'); });
+document.getElementById('btnFillClue').addEventListener('click', ()=>{
+  inId.value='110101199003070011'; inPhone.value='13800000000'; inSite.value='南城'; updateBtnText();
+});
+
+function clearMsgs(){
+  document.getElementById('errBar').classList.remove('show');
+  document.getElementById('warnBar').classList.remove('show');
+}
+function hideResult(){
+  document.getElementById('candTable').style.display='none';
+  document.getElementById('emptyResult').classList.remove('show');
+  document.getElementById('srcBadge').style.display='none';
+  document.getElementById('progressCard').classList.remove('show');
+  document.getElementById('okBar').classList.remove('show');
+  document.getElementById('bFill').classList.remove('show');
+  document.querySelectorAll('#sysBadges .sbadge').forEach(b=>{ b.className='sbadge'; b.innerHTML='<i class="bi bi-circle"></i> '+b.textContent.trim(); });
+  document.getElementById('barFill').style.width='0';
+  document.getElementById('barFill').classList.remove('full');
+}
+function setDim(activeId){
+  ['q-id','q-phone','q-name','q-site','q-start','q-end'].forEach(id=>{
+    document.getElementById(id).classList.toggle('is-dim', activeId!==null && id!==activeId);
+    document.getElementById(id).classList.toggle('is-primary', id===activeId);
+  });
+}
+
+mainBtn.addEventListener('click', ()=>{
+  hideResult(); clearMsgs();
+  if(isExact()){ runExactFlow(); }
+  else if(onlyName()){ showCandidates(); }
+  else { document.getElementById('errBar').classList.add('show'); }
+});
+
+function showCandidates(srcLabel){
+  document.getElementById('candTable').style.display='';
+  const badge = document.getElementById('srcBadge');
+  badge.style.display='';
+  document.getElementById('srcText').textContent = srcLabel || ('内部系统 · ' + (900+Math.floor(Math.random()*40)) + 'ms');
+  setTimeout(()=>{ document.getElementById('candTable').scrollIntoView({behavior:'smooth',block:'center'}); }, 50);
+}
+
+function runExactFlow(c){
+  hideResult(); clearMsgs();
+  setDim(c ? null : (inId.value.trim()? 'q-id' : 'q-phone'));
+  document.getElementById('progressCard').classList.add('show');
+  const badges = document.querySelectorAll('#sysBadges .sbadge');
+  const msg = document.getElementById('pcMsg');
+  const bar = document.getElementById('barFill');
+  const seq = [
+    {i:0, ok:'内部系统 ✓ 1.2s', w:'内部系统查询完成，命中学员档案', p:38},
+    {i:1, ok:'第三系统 ✓ 2.8s', w:'第三系统比对完成，合同与缴费记录已获取', p:72},
+    {i:2, ok:'东莞驾培 ✓ 3.5s', w:'东莞驾培核验完成，培训进度已同步', p:100},
+  ];
+  let step = 0;
+  function tick(){
+    if(step<seq.length){
+      const s = seq[step];
+      const b = badges[s.i];
+      if(step>0) badges[step-1].className='sbadge ok';
+      b.className='sbadge running';
+      b.innerHTML='<i class="bi bi-arrow-repeat"></i> '+b.textContent.trim();
+      msg.textContent = '正在查询：'+b.textContent.trim()+' …';
+      bar.style.width = s.p+'%';
+      setTimeout(()=>{
+        b.className='sbadge ok';
+        b.innerHTML='<i class="bi bi-check-circle"></i> '+s.ok;
+        msg.textContent = s.w;
+        step++;
+        if(step<seq.length){ setTimeout(tick, 600); }
+        else { setTimeout(finishFlow, 700); }
+      }, 900);
+    }
+  }
+  badges[0].className='sbadge running';
+  badges[0].innerHTML='<i class="bi bi-arrow-repeat"></i> 内部系统';
+  msg.textContent='正在查询：内部系统 …';
+  setTimeout(tick, 600);
+}
+function finishFlow(){
+  const bar = document.getElementById('barFill');
+  bar.classList.add('full'); bar.style.width='100%';
+  document.getElementById('okBar').classList.add('show');
+  const bf = document.getElementById('bFill');
+  const nm = inName.value || '陈金生';
+  const st = inSite.value || '南城';
+  bf.innerHTML = '<span class="fchip"><i class="bi bi-check"></i> 已选中：'+nm+' · '+st+' · 科目二训练中</span>';
+  bf.classList.add('show');
+  setDim(null);
+}
+
+function runExactFlowThenOk(){
+  const pc = document.getElementById('progressCard');
+  pc.classList.add('show');
+  const badges = document.querySelectorAll('#sysBadges .sbadge');
+  const bar = document.getElementById('barFill');
+  setTimeout(()=>{
+    badges[0].className='sbadge ok'; badges[0].innerHTML='<i class="bi bi-check-circle"></i> 内部系统 ✓ 1.2s';
+    badges[1].className='sbadge ok'; badges[1].innerHTML='<i class="bi bi-check-circle"></i> 第三系统 ✓ 2.8s';
+    badges[2].className='sbadge ok'; badges[2].innerHTML='<i class="bi bi-check-circle"></i> 东莞驾培 ✓ 3.5s';
+    bar.classList.add('full'); bar.style.width='100%';
+    document.getElementById('okBar').classList.add('show');
+    const bf=document.getElementById('bFill');
+    bf.innerHTML = '<span class="fchip"><i class="bi bi-check"></i> 已选中：陈金生 · 南城 · 科目二训练中</span>';
+    bf.classList.add('show');
+  }, 400);
+}
+
+function setState(s){
+  hideResult(); clearMsgs(); setDim(null);
+  ['q-id','q-phone','q-name','q-site','q-start','q-end'].forEach(id=>{
+    document.getElementById(id).classList.remove('is-dim');
+    document.getElementById(id).classList.remove('is-primary');
+  });
+  inId.value=''; inPhone.value=''; inName.value=''; inSite.value='全部'; inStart.value=''; inEnd.value='';
+  document.querySelectorAll('#candBody tr').forEach(tr=>tr.classList.remove('row-sel'));
+  document.getElementById('candTable').style.display='none';
+  document.getElementById('emptyResult').classList.remove('show');
+
+  if(s===1){
+    inId.value='110101199003070011';
+    setDim('q-id'); updateBtnText();
+  } else if(s===2){
+    inPhone.value='13800000000';
+    setDim('q-phone'); updateBtnText();
+  } else if(s===3){
+    inName.value='陈金生'; inSite.value='南城'; inStart.value='2024-01-01'; inEnd.value='2024-12-31';
+    updateBtnText(); showCandidates('内部系统 · 912ms');
+  } else if(s===4){
+    inName.value='张三丰'; inSite.value='大朗';
+    updateBtnText();
+    document.getElementById('emptyResult').classList.add('show');
+  } else if(s===5){
+    inPhone.value='13800000000';
+    updateBtnText();
+    const w=document.getElementById('warnBar');
+    w.innerHTML='<i class="bi bi-exclamation-triangle"></i> 系统登记手机号为 158****0340，与你所填不同';
+    w.classList.add('show');
+  } else if(s===6){
+    inId.value='1249468(8)';
+    updateBtnText();
+    const w=document.getElementById('warnBar');
+    w.innerHTML='<i class="bi bi-exclamation-triangle"></i> 已按补全后的证件号 F1249468(8) 查询（港澳居留证自动补 F 前缀）';
+    w.classList.add('show');
+  } else if(s===7){
+    inId.value='110101199003070011';
+    runExactFlow();
+  } else if(s===8){
+    inName.value='陈金生'; inSite.value='南城';
+    runExactFlowThenOk();
+  }
+  document.querySelectorAll('#pbStates .pb-btn').forEach(b=>b.classList.toggle('active', +b.dataset.st===s));
+}
+
+document.querySelectorAll('#pbStates .pb-btn').forEach(b=>{
+  b.addEventListener('click', ()=>setState(+b.dataset.st));
+});
+
+document.getElementById('btnReset').addEventListener('click', ()=>{
+  hideResult(); clearMsgs(); setDim(null);
+  ['q-id','q-phone','q-name','q-site','q-start','q-end'].forEach(id=>{
+    document.getElementById(id).classList.remove('is-dim','is-primary');
+  });
+  inId.value=''; inPhone.value=''; inName.value=''; inSite.value='全部'; inStart.value=''; inEnd.value='';
+  document.querySelectorAll('#candBody tr').forEach(tr=>tr.classList.remove('row-sel'));
+  document.querySelectorAll('.pb-btn').forEach(b=>b.classList.remove('active'));
+  updateBtnText();
+});
+
+renderCandidates();
+updateBtnText();
+</script>
+</body>
+</html>

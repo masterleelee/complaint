@@ -314,12 +314,9 @@ class DrivingCrawler(BaseCrawler):
         if not logged_in:
             raise RuntimeError("东莞驾培登录失败，无法查询学员信息")
 
-        # 交费订单只依赖身份证号，与列表查询并行以缩短总耗时
-        import concurrent.futures
-        orders_submitted_at = time.perf_counter()
-        orders_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        orders_future = orders_executor.submit(self.query_pay_orders, id_card)
-
+        # 交费订单改为查到学员后再顺序请求：该站对同一会话的并发请求近似串行，
+        # 并行会导致一方等待超时后重试，实测反而更慢（日志 lookup 阶段累计 > 总耗时）；
+        # 且学员不存在时可直接跳过订单查询，节省一次 API 调用。
         lookup_started = time.perf_counter()
         lookup_recorded = False
         try:
@@ -392,9 +389,10 @@ class DrivingCrawler(BaseCrawler):
                 "subject3_retrain": float(student.get("phase3Fee1", 0) or 0),
                 "pickup_fee": float(student.get("jiesongFee", 0) or 0),
             }
-            info.pay_orders = orders_future.result()
+            orders_started = time.perf_counter()
+            info.pay_orders = self.query_pay_orders(id_card)
             self._record_query_phase(
-                "pay_orders", (time.perf_counter() - orders_submitted_at) * 1000
+                "pay_orders", (time.perf_counter() - orders_started) * 1000
             )
 
             # 检查合同（快速模式：只检查是否有合同，不获取URL）
@@ -444,7 +442,6 @@ class DrivingCrawler(BaseCrawler):
                 self._record_query_phase(
                     "lookup", (time.perf_counter() - lookup_started) * 1000
                 )
-            orders_executor.shutdown(wait=False, cancel_futures=True)
 
     def query_pay_orders(self, id_card: str) -> list:
         """查询学员交费订单明细（divsionOrder/list，按身份证号）"""

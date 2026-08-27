@@ -9,7 +9,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from config import load_config, normalize_llm_api_url
 from services.image_compressor import compress_for_vision_api
-from services.file_parser import extract_text as _file_parser_extract_text
+from services.file_parser import (
+    extract_text as _file_parser_extract_text,
+    _flatten_paddleocr_result,
+    _create_paddle_ocr,
+    _run_paddle_ocr,
+)
 from utils.logger import system_logger
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
@@ -64,77 +69,6 @@ def _extract_pdf_text(filepath: str) -> str:
             if t:
                 pages_text.append(t)
     return _compact_spaced_digits("\n".join(pages_text))
-
-
-def _flatten_paddleocr_result(result) -> list[str]:
-    """兼容 PaddleOCR 不同版本的返回结构，抽取识别文本。"""
-    texts = []
-
-    def walk(node):
-        if not node:
-            return
-        if isinstance(node, str):
-            return
-        if isinstance(node, dict):
-            for key in ("rec_texts", "texts"):
-                value = node.get(key)
-                if isinstance(value, list):
-                    texts.extend(str(item) for item in value if item)
-                    return
-            value = node.get("text")
-            if isinstance(value, str):
-                texts.append(value)
-                return
-            for value in node.values():
-                walk(value)
-            return
-        if hasattr(node, "json"):
-            walk(getattr(node, "json"))
-            return
-        if isinstance(node, tuple) and len(node) >= 1 and isinstance(node[0], str):
-            texts.append(node[0])
-            return
-        if isinstance(node, list):
-            if len(node) >= 2 and isinstance(node[1], tuple) and node[1] and isinstance(node[1][0], str):
-                texts.append(node[1][0])
-                return
-            for item in node:
-                walk(item)
-
-    walk(result)
-    return texts
-
-
-def _create_paddle_ocr(PaddleOCR):
-    """优先适配 PaddleOCR 3.x，必要时回退旧版参数。"""
-    init_attempts = [
-        {
-            "lang": "ch",
-            "use_textline_orientation": True,
-            "text_det_limit_side_len": 1600,
-        },
-        {"use_angle_cls": True, "lang": "ch"},
-    ]
-    last_error = None
-    for kwargs in init_attempts:
-        try:
-            return PaddleOCR(**kwargs)
-        except Exception as e:
-            last_error = e
-    raise last_error
-
-
-def _run_paddle_ocr(ocr, path: str):
-    """兼容 PaddleOCR 2.x/3.x 的识别入口。"""
-    if hasattr(ocr, "predict"):
-        try:
-            return ocr.predict(path)
-        except TypeError:
-            pass
-    try:
-        return ocr.ocr(path)
-    except TypeError:
-        return ocr.ocr(path, cls=True)
 
 
 def _extract_contract_text_easyocr(image_paths: list[str]) -> str:
@@ -306,6 +240,38 @@ def extract_contract_text_from_file(filepath: str, image_paths: list[str] = None
         return {"error": "无法从合同文件中提取可分析文本"}
 
     return _build_extraction_result(contract_text, source or "unknown")
+
+
+def build_contract_clauses(filepath: str) -> dict:
+    """仅用 pdfplumber 提取文本层并按"第X条"切块，预览路径不触发 LLM/Vision/OCR。"""
+    if not filepath or not os.path.exists(filepath):
+        return {"clauses": [], "error": "合同文件不存在"}
+    try:
+        text = _extract_pdf_text(filepath)
+    except Exception as e:
+        system_logger.warning("[合同条款] pdfplumber 提取失败: %s", e)
+        text = ""
+
+    if not text or len(text.strip()) < 20:
+        return {"clauses": [], "error": "no_text_layer"}
+
+    matches = list(re.finditer(r"(?m)^\s*第([一二三四五六七八九十百零\d]+)条", text))
+    clauses = []
+    preamble = text[:matches[0].start()].strip() if matches else text.strip()
+    if preamble:
+        clauses.append({"no": "", "title": "", "body": preamble})
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        segment = text[start:end]
+        if "\n" in segment:
+            title, body = segment.split("\n", 1)
+            title, body = title.strip(), body.strip()
+        else:
+            title, body = "", segment.strip()
+        clauses.append({"no": m.group(1), "title": title, "body": body})
+
+    return {"clauses": clauses, "error": ""}
 
 
 def _blank_analysis_result(message: str = "") -> dict:
@@ -576,6 +542,7 @@ def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_ca
             })
     # 违约金：统一为固定金额（元）。优先取 deduction_items 里的违约金金额；
     # 若仅有比例（penalty_rate），按合同总额折算成金额。
+    # 注意：违约金规则固定排在所有扣费规则之后（展示顺序：违约金最后）。
     penalty_amount = 0.0
     for item in data.get("deduction_items", []):
         if "违约金" in str(item.get("item") or ""):
@@ -587,13 +554,6 @@ def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_ca
             penalty_rate *= 100
         if penalty_amount <= 0 and total_fee > 0:
             penalty_amount = round(total_fee * penalty_rate / 100, 2)
-    if penalty_amount > 0:
-        rules.append({
-            "type": "fixed_penalty",
-            "item": "违约金",
-            "amount": penalty_amount,
-            "clause": "合同退费违约金条款",
-        })
 
     for subject_key, subject_label in (("subject2", "科目二"), ("subject3", "科目三")):
         fee = (data.get("training_fees") or {}).get(subject_key, {})
@@ -625,7 +585,7 @@ def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_ca
                 "clause": "合同退费考试费条款",
             })
         makeup_fee = _as_float(makeup_table.get(subject_key, 0))
-        if includes_makeup and makeup_fee > 0:
+        if includes_makeup and makeup_count > 0 and makeup_fee > 0:
             rules.append({
                 "type": "makeup_fee",
                 "item": f"{subject_label}补考费",
@@ -633,6 +593,13 @@ def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_ca
                 "amount": makeup_fee,
                 "clause": "合同退费补考费条款",
             })
+    if penalty_amount > 0:
+        rules.append({
+            "type": "fixed_penalty",
+            "item": "违约金",
+            "amount": penalty_amount,
+            "clause": "合同退费违约金条款",
+        })
     return {
         "contracts": [{
             "contract_id": str(data.get("contract_code") or "extracted-contract"),
@@ -1022,19 +989,20 @@ def _parse_ai_response(content: str, exam_counts: dict = None, training_hours: d
                 })
                 result["total_deduction"] += amt
 
-    # 从违约金比例计算违约金（如果尚未包含在 deduction_items 中）
+    # 从违约金比例计算违约金（如果尚未包含在 deduction_items 中）。
+    # 违约金固定排在所有扣费项之后（展示顺序：违约金最后）。
+    penalty_row = None
     penalty_rate = result["penalty_rate"]
     if penalty_rate > 0 and result["total_fee"] > 0:
         has_penalty = any("违约金" in d.get("item", "") for d in result["deductions"])
         if not has_penalty:
             penalty_amount = round(result["total_fee"] * penalty_rate, 2)
-            result["deductions"].append({
+            penalty_row = {
                 "item": "违约金",
                 "amount": penalty_amount,
                 "penalty_rate": penalty_rate,
                 "reason": f"违约金={result['total_fee']}×{penalty_rate*100}%={penalty_amount}元",
-            })
-            result["total_deduction"] += penalty_amount
+            }
 
     if result["includes_exam_fee"] and result["exam_fee_table"] and exam_counts:
         for subject_key, subject_label in [("subject1", "科目一"), ("subject2", "科目二"), ("subject3", "科目三")]:
@@ -1081,24 +1049,25 @@ def _parse_ai_response(content: str, exam_counts: dict = None, training_hours: d
             if hours_val <= 0:
                 continue
             calculated = round(hours_val * unit_price, 2)
-            if cap > 0 and calculated > cap:
-                calculated = cap
-            raw_calc = round(hours_val * unit_price, 2)
+            raw_calc = calculated
             is_capped = cap > 0 and raw_calc > cap
+            if is_capped:
+                calculated = cap
             result["deductions"].append({
                 "item": f"{subject_label}实操费",
                 "amount": calculated,
                 "duration": hours_str,
                 "unit_price": f"{unit_price}元/学时",
-                "max_amount": cap if is_capped else 0,
+                "max_amount": cap if cap > 0 else 0,
                 "raw_amount": raw_calc if is_capped else 0,
-                "reason": f"{hours_val}学时×{unit_price}元/学时{'，已超合同科目上限'+str(cap)+'元' if is_capped else ''}",
+                "reason": f"总时长{hours_str}×{unit_price}元/学时{'，已超合同科目上限'+str(cap)+'元' if is_capped else ''}",
             })
             result["total_deduction"] += calculated
 
-    # 封顶：总扣费不超过总培训费
-    if result["total_fee"] > 0 and result["total_deduction"] > result["total_fee"]:
-        result["total_deduction"] = result["total_fee"]
+    # 违约金固定排在最后
+    if penalty_row:
+        result["deductions"].append(penalty_row)
+        result["total_deduction"] += penalty_row["amount"]
 
     result["refund"] = max(0, result["actual_paid"] - result["total_deduction"])
     result["summary"] = (
@@ -1134,8 +1103,6 @@ def apply_authoritative_total_fee(result: dict, contract_fee: float) -> dict:
     result["total_deduction"] = round(
         sum(float(d.get("amount", 0) or 0) for d in result.get("deductions", [])), 2
     )
-    if result["total_deduction"] > contract_fee:
-        result["total_deduction"] = contract_fee
     result["refund"] = max(0, round(result["actual_paid"] - result["total_deduction"], 2))
     result["summary"] = (
         f"合同金额{result['total_fee']}元，"

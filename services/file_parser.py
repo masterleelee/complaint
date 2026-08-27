@@ -24,7 +24,15 @@ def extract_text(filepath: str) -> str:
 
 
 def _extract_pdf(filepath: str) -> str:
-    """从 PDF 提取文本"""
+    """从 PDF 提取文本；文字层为空时（扫描件）回退到图片 OCR"""
+    text = _extract_pdf_text_layer(filepath)
+    if len(text.strip()) >= 10:
+        return text
+    return _extract_pdf_ocr(filepath)
+
+
+def _extract_pdf_text_layer(filepath: str) -> str:
+    """从 PDF 文字层提取文本"""
     try:
         import pdfplumber
         text_parts = []
@@ -45,16 +53,90 @@ def _extract_pdf(filepath: str) -> str:
         return ""
 
 
-def _extract_image(filepath: str) -> str:
-    """从图片 OCR 提取文本（使用 easyocr + 图像预处理）"""
+def _extract_pdf_ocr(filepath: str) -> str:
+    """扫描件 PDF：逐页渲染成图片后走 OCR"""
     try:
-        # 修复 macOS Python 3.14 的 SSL 证书问题
+        import pypdfium2 as pdfium
+        pdf = pdfium.PdfDocument(filepath)
+        lines = []
+        for i in range(len(pdf)):
+            bitmap = pdf[i].render(scale=2)
+            pil_image = bitmap.to_pil()
+            temp_path = f"{filepath}_page{i}_ocr.png"
+            pil_image.convert('RGB').save(temp_path)
+            try:
+                page_text = _extract_image(temp_path)
+                if page_text.strip():
+                    lines.append(page_text)
+            finally:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+        return "\n".join(lines)
+    except Exception as e:
+        system_logger.warning("PDF OCR Error: %s", e)
+        return ""
+
+
+def _extract_image(filepath: str) -> str:
+    """从图片提取文本：macOS Vision 优先（系统原生，亚秒级），失败回退 EasyOCR"""
+    text = _extract_image_vision(filepath)
+    if text.strip():
+        return text
+    return _extract_image_easyocr(filepath)
+
+
+def _extract_image_vision(filepath: str) -> str:
+    """使用 macOS 系统 Vision 框架识别图片文本（需 pyobjc-framework-Vision）"""
+    try:
+        import Vision
+        from Foundation import NSURL
+
+        url = NSURL.fileURLWithPath_(os.path.abspath(filepath))
+        handler = Vision.VNImageRequestHandler.alloc().initWithURL_options_(url, None)
+        request = Vision.VNRecognizeTextRequest.alloc().init()
+        request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
+        request.setRecognitionLanguages_(["zh-Hans", "en-US"])
+        request.setUsesLanguageCorrection_(True)
+        ok, err = handler.performRequests_error_([request], None)
+        if not ok:
+            raise RuntimeError(str(err))
+        lines = [r.topCandidates_(1)[0].string() for r in request.results()]
+        return "\n".join(line for line in lines if line)
+    except ImportError:
+        system_logger.info("[OCR] pyobjc-framework-Vision 未安装，改用 EasyOCR")
+        return ""
+    except Exception as e:
+        system_logger.warning("Vision OCR Error: %s，回退 EasyOCR", e)
+        return ""
+
+
+def warmup_ocr():
+    """预热 OCR 引擎，消除服务重启后首个图片请求的冷启动延迟。"""
+    try:
+        import Vision  # noqa: F401 预加载 macOS Vision 框架
+    except Exception:
+        pass
+    _get_easyocr_reader()
+
+
+def _get_easyocr_reader():
+    """获取全局唯一的 EasyOCR 实例（延迟初始化）"""
+    global _EASYOCR_READER
+    if _EASYOCR_READER is None:
+        # 修复 macOS Python 3.14 的 SSL 证书问题（easyocr 首次下载模型）
         import ssl, urllib.request
         ssl_ctx = ssl.create_default_context(cafile=__import__("certifi").where())
         urllib.request.install_opener(
             urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_ctx))
         )
-        
+        import easyocr
+        _EASYOCR_READER = easyocr.Reader(['ch_sim', 'en'], gpu=False, verbose=False)
+    return _EASYOCR_READER
+
+
+def _extract_image_easyocr(filepath: str) -> str:
+    """从图片 OCR 提取文本（EasyOCR 兜底 + 图像预处理）"""
+    try:
         # 图像预处理：提升 OCR 识别率
         from PIL import Image, ImageEnhance, ImageFilter
         img = Image.open(filepath)
@@ -67,11 +149,7 @@ def _extract_image(filepath: str) -> str:
         temp_path = filepath + "_temp_processed.png"
         img.save(temp_path)
         
-        global _EASYOCR_READER
-        if _EASYOCR_READER is None:
-            import easyocr
-            _EASYOCR_READER = easyocr.Reader(['ch_sim', 'en'], gpu=False, verbose=False)
-        reader = _EASYOCR_READER
+        reader = _get_easyocr_reader()
         result = reader.readtext(temp_path)
         
         # 清理临时文件
@@ -124,3 +202,74 @@ def _extract_txt(filepath: str) -> str:
                 return f.read()
         except Exception:
             return ""
+
+
+def _flatten_paddleocr_result(result) -> list[str]:
+    """兼容 PaddleOCR 不同版本的返回结构，抽取识别文本。"""
+    texts = []
+
+    def walk(node):
+        if not node:
+            return
+        if isinstance(node, str):
+            return
+        if isinstance(node, dict):
+            for key in ("rec_texts", "texts"):
+                value = node.get(key)
+                if isinstance(value, list):
+                    texts.extend(str(item) for item in value if item)
+                    return
+            value = node.get("text")
+            if isinstance(value, str):
+                texts.append(value)
+                return
+            for value in node.values():
+                walk(value)
+            return
+        if hasattr(node, "json"):
+            walk(getattr(node, "json"))
+            return
+        if isinstance(node, tuple) and len(node) >= 1 and isinstance(node[0], str):
+            texts.append(node[0])
+            return
+        if isinstance(node, list):
+            if len(node) >= 2 and isinstance(node[1], tuple) and node[1] and isinstance(node[1][0], str):
+                texts.append(node[1][0])
+                return
+            for item in node:
+                walk(item)
+
+    walk(result)
+    return texts
+
+
+def _create_paddle_ocr(PaddleOCR):
+    """优先适配 PaddleOCR 3.x，必要时回退旧版参数。"""
+    init_attempts = [
+        {
+            "lang": "ch",
+            "use_textline_orientation": True,
+            "text_det_limit_side_len": 1600,
+        },
+        {"use_angle_cls": True, "lang": "ch"},
+    ]
+    last_error = None
+    for kwargs in init_attempts:
+        try:
+            return PaddleOCR(**kwargs)
+        except Exception as e:
+            last_error = e
+    raise last_error
+
+
+def _run_paddle_ocr(ocr, path: str):
+    """兼容 PaddleOCR 2.x/3.x 的识别入口。"""
+    if hasattr(ocr, "predict"):
+        try:
+            return ocr.predict(path)
+        except TypeError:
+            pass
+    try:
+        return ocr.ocr(path)
+    except TypeError:
+        return ocr.ocr(path, cls=True)

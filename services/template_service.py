@@ -198,7 +198,12 @@ def get_available_templates() -> list[dict]:
 
 
 def set_default_template(template_id: str) -> bool:
-    """设置默认模板"""
+    """设置默认模板（目标不存在时拒绝，避免产生幽灵默认行）"""
+    from database import get_db
+    with get_db() as conn:
+        exists = conn.execute("SELECT id FROM reply_templates WHERE id=?", (template_id,)).fetchone()
+    if not exists:
+        return False
     return bool(save_template({"id": template_id, "is_default": 1}))
 
 
@@ -236,15 +241,38 @@ def create_default_template() -> str:
     """
     创建默认 .docx 模板并存入数据库。
     返回模板文件路径。
+    判重：已存在任一默认模板或同名「默认模板」记录时不再插入新行，
+    仅在文件缺失时按既有记录的路径重建文件并复用。
     """
     template_dir = _get_template_dir()
     filepath = os.path.join(template_dir, "default_template.docx")
 
-    # 检查数据库中是否已有默认模板
     default_tmpl = get_default_template()
-    if default_tmpl and os.path.exists(default_tmpl.get("template_path", "")):
-        return default_tmpl["template_path"]
+    existing = default_tmpl or next(
+        (t for t in list_templates() if t.get("name") == "默认模板"), None
+    )
+    if existing:
+        existing_path = existing.get("template_path", "") or filepath
+        if not os.path.exists(existing_path):
+            _write_default_reply_doc(existing_path)
+        return existing_path
 
+    _write_default_reply_doc(filepath)
+
+    # 注册到数据库
+    save_template({
+        "name": "默认模板",
+        "description": "默认回复函模板，含 {{name}}, {{id_card}} 等变量",
+        "template_path": filepath,
+        "variables": json.dumps(list(SUPPORTED_VARIABLES.keys()), ensure_ascii=False),
+        "is_default": 1,
+    })
+
+    return filepath
+
+
+def _write_default_reply_doc(filepath: str):
+    """生成默认回复函 .docx 文件并写入 filepath。"""
     doc = Document()
 
     # 设置默认字体
@@ -308,17 +336,6 @@ def create_default_template() -> str:
     run.element.rPr.rFonts.set(qn("w:eastAsia"), "仿宋_GB2312")
 
     doc.save(filepath)
-
-    # 注册到数据库
-    save_template({
-        "name": "默认模板",
-        "description": "默认回复函模板，含 {{name}}, {{id_card}} 等变量",
-        "template_path": filepath,
-        "variables": json.dumps(list(SUPPORTED_VARIABLES.keys()), ensure_ascii=False),
-        "is_default": 1,
-    })
-
-    return filepath
 
 
 def _add_t_para(doc, text: str):

@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 Demo · 投诉列表重设计</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<style>
+:root{
+  --color-primary:#2563EB;--color-primary-dark:#1D4ED8;--color-primary-50:#EFF6FF;
+  --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
+  --color-brand-accent:#4F46E5;
+  --color-success:#16A34A;--color-success-50:#F0FDF4;
+  --color-warning:#D97706;--color-warning-50:#FFFBEB;
+  --color-danger:#DC2626;--color-danger-50:#FEF2F2;
+  --color-text:#0F172A;--color-text-secondary:#64748B;
+  --color-border:#E2E8F0;--color-surface-50:#F8FAFC;--color-bg:#EEF3F8;--color-surface:#FFFFFF;
+  --font-sans:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.04);
+  --shadow-md:0 4px 12px rgba(15,23,42,.08);
+  --radius:8px;--radius-lg:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;background:var(--color-bg);color:var(--color-text);font:400 13px/1.6 var(--font-sans)}
+.mono{font-family:var(--font-mono)}
+.app-shell{display:flex;min-height:100vh}
+.sidebar{width:240px;flex:none;background:var(--brand-gradient);color:#fff;display:flex;flex-direction:column;padding:20px 12px;position:sticky;top:0;height:100vh}
+.sidebar .brand{font:700 15px/1.3 var(--font-sans);padding:0 8px 20px;white-space:nowrap}
+.sidebar .brand small{display:block;font-weight:400;font-size:11px;color:rgba(255,255,255,.62)}
+.nav-link{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.78);padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600;margin-bottom:2px;border:none;background:none;width:100%;text-align:left;font-size:13px;font-family:var(--font-sans)}
+.nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-link.active{background:rgba(255,255,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--color-brand-accent)}
+.sidebar .footer{margin-top:auto;padding:0 8px;font-size:11px;color:rgba(255,255,255,.62)}
+.main{flex:1;min-width:0;padding:24px 32px}
+
+.page-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.page-title{font-size:20px;font-weight:700}
+.proto-tag{font-size:11px;font-weight:600;color:var(--color-warning);background:var(--color-warning-50);border:1px dashed var(--color-warning);border-radius:99px;padding:2px 10px}
+
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:14px}
+.kpi{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:12px 16px;cursor:pointer;border:1.5px solid transparent;transition:border-color .15s}
+.kpi:hover{border-color:var(--color-border)}
+.kpi.on{border-color:var(--color-primary)}
+.kpi .num{font-size:24px;font-weight:700;line-height:1.2;display:flex;align-items:center;gap:8px}
+.kpi .lbl{font-size:12px;color:var(--color-text-secondary)}
+.kpi .sub{display:inline-block;margin-left:6px;font-size:11px;font-weight:600;color:var(--color-danger);background:var(--color-danger-50);border-radius:99px;padding:0 8px}
+
+.toolbar{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:12px 16px;margin-bottom:16px;display:flex;flex-direction:column;gap:10px}
+.toolbar-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.search-wrap{position:relative;flex:1;min-width:240px;max-width:360px}
+.search-wrap i{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--color-text-secondary)}
+input,select{font-family:var(--font-sans);font-size:13px;color:var(--color-text)}
+.search-wrap input{width:100%;padding:8px 10px 8px 32px;border:1px solid var(--color-border);border-radius:var(--radius);outline:none;background:var(--color-surface-50)}
+.search-wrap input:focus{border-color:var(--color-primary);background:#fff}
+select{padding:7px 28px 7px 10px;border:1px solid var(--color-border);border-radius:var(--radius);background:#fff;cursor:pointer;appearance:auto}
+select:focus{outline:2px solid var(--color-primary);outline-offset:1px}
+.chip{border:1px solid var(--color-border);background:#fff;border-radius:99px;padding:4px 14px;font-size:12px;font-weight:600;color:var(--color-text-secondary);cursor:pointer}
+.chip:hover{border-color:var(--color-primary);color:var(--color-primary)}
+.chip.on{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+.date-inputs{display:flex;align-items:center;gap:6px;color:var(--color-text-secondary);font-size:12px}
+.date-inputs input{padding:6px 8px;border:1px solid var(--color-border);border-radius:var(--radius)}
+.divider-v{width:1px;height:20px;background:var(--color-border)}
+
+.btn{display:inline-flex;align-items:center;gap:6px;font:600 13px/1 var(--font-sans);padding:8px 16px;border-radius:var(--radius);border:1px solid transparent;cursor:pointer;background:none;color:var(--color-text)}
+.btn-primary{background:var(--color-primary);color:#fff;border-color:var(--color-primary)}
+.btn-primary:hover{background:var(--color-primary-dark)}
+.btn-secondary{background:#fff;color:var(--color-text);border-color:var(--color-border)}
+.btn-secondary:hover{background:var(--color-surface-50);border-color:var(--color-text-secondary)}
+.btn-sm{padding:6px 12px;font-size:12px}
+
+.grp{margin-bottom:16px}
+.grp-card{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);overflow:hidden}
+.grp-head{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--color-border);cursor:pointer;user-select:none}
+.grp-head:hover{background:var(--color-surface-50)}
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;border-radius:99px;padding:2px 10px}
+.badge-processing{color:var(--color-primary);background:var(--color-primary-50)}
+.badge-completed{color:var(--color-success);background:var(--color-success-50)}
+.badge-muted{color:var(--color-text-secondary);background:var(--color-surface-50)}
+.badge-pending{color:var(--color-warning);background:var(--color-warning-50);border:1px solid rgba(217,119,6,.25)}
+.badge-ok{color:var(--color-success);background:var(--color-success-50);border:1px solid rgba(22,163,74,.25)}
+.badge-none{color:var(--color-text-secondary);background:var(--color-surface-50);border:1px dashed var(--color-border)}
+.badge-overdue{color:var(--color-danger);background:var(--color-danger-50);font-weight:700}
+.g-num{font-weight:700;font-size:13px}
+.g-overdue{font-size:12px;font-weight:600;color:var(--color-danger);background:var(--color-danger-50);border-radius:99px;padding:1px 10px}
+.g-caret{margin-left:auto;color:var(--color-text-secondary);transition:transform .15s}
+.collapsed .g-caret{transform:rotate(-90deg)}
+.collapsed table{display:none}
+
+table{width:100%;border-collapse:collapse}
+thead th{position:sticky;top:0;background:var(--color-surface-50);z-index:1;text-align:left;font-size:12px;font-weight:600;color:var(--color-text-secondary);padding:8px 12px;border-bottom:1px solid var(--color-border);white-space:nowrap}
+th.sortable{cursor:pointer}
+th.sortable:hover{color:var(--color-primary)}
+th .sort-icon{opacity:.35;font-size:10px}
+th.sorted .sort-icon{opacity:1;color:var(--color-primary)}
+tbody td{padding:10px 12px;border-bottom:1px solid var(--color-border);vertical-align:middle;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr.rowlink{cursor:pointer}
+tbody tr.rowlink:hover{background:var(--color-primary-50)}
+tr.overdue{box-shadow:inset 3px 0 0 var(--color-danger);background:#FFF7F7}
+tr.overdue:hover{background:#FFEEEE}
+.stu-name{font-weight:600}
+.org{color:var(--color-text-secondary);font-size:12px}
+.type-pill{display:inline-block;font-size:11px;font-weight:600;border-radius:6px;padding:1px 8px}
+.tp-A{color:#B91C1C;background:#FEF2F2}.tp-B{color:#1D4ED8;background:#EFF6FF}
+.tp-C{color:#047857;background:#ECFDF5}.tp-D{color:#B45309;background:#FFFBEB}.tp-E{color:#475569;background:#F1F5F9}
+.days-warn{color:var(--color-danger);font-weight:700}
+.fresh{color:var(--color-success);font-weight:600}
+.money{font-weight:700;text-align:right}
+td.r{text-align:right}
+th.r{text-align:right}
+.empty{padding:40px;text-align:center;color:var(--color-text-secondary)}
+.empty i{font-size:32px;display:block;margin-bottom:8px;color:var(--color-border)}
+.chk{width:15px;height:15px;cursor:pointer;accent-color:var(--color-primary)}
+tr.selrow td{background:var(--color-primary-50)}
+tr.overdue.selrow td{background:#FFEDED}
+.batch-bar{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(90px);display:flex;gap:10px;align-items:center;background:rgba(15,23,42,.95);color:#fff;padding:10px 20px;border-radius:99px;box-shadow:var(--shadow-lg);transition:transform .25s;z-index:97}
+.batch-bar.show{transform:translateX(-50%) translateY(0)}
+.batch-bar .btn-secondary{background:transparent;color:#fff;border-color:rgba(255,255,255,.35)}
+.batch-bar .btn-secondary:hover{background:rgba(255,255,255,.12);border-color:#fff}
+.batch-bar .divider-v{background:rgba(255,255,255,.25)}
+#batch-info{font-size:13px;font-weight:600}
+.new-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--color-success);margin-right:6px;vertical-align:middle}
+
+.placeholder-view{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);padding:80px;text-align:center;color:var(--color-text-secondary)}
+.placeholder-view i{font-size:40px;color:var(--color-border);display:block;margin-bottom:12px}
+
+.toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%) translateY(20px);background:rgba(15,23,42,.92);color:#fff;padding:10px 20px;border-radius:99px;font-size:13px;opacity:0;pointer-events:none;transition:all .25s;z-index:99}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.notes-fab{position:fixed;right:28px;bottom:28px;width:46px;height:46px;border-radius:50%;background:var(--color-brand-accent);color:#fff;border:none;cursor:pointer;box-shadow:var(--shadow-md);font-size:19px;z-index:98}
+.notes-panel{position:fixed;right:28px;bottom:86px;width:340px;max-height:70vh;overflow:auto;background:#fff;border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);padding:18px 20px;display:none;z-index:98}
+.notes-panel.open{display:block}
+.notes-panel h3{font-size:14px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.notes-panel h4{font-size:12px;color:var(--color-primary);margin:12px 0 4px}
+.notes-panel li{font-size:12px;color:var(--color-text-secondary);margin-left:16px;margin-bottom:3px}
+@media(max-width:1100px){.kpi-row{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">投诉系统<small>v2 原型 · 导航已按新顺序排列</small></div>
+    <button class="nav-link" data-view="intake"><i class="bi bi-plus-circle"></i><span>新增投诉</span></button>
+    <button class="nav-link" data-view="student"><i class="bi bi-person-badge"></i><span>学员信息</span></button>
+    <button class="nav-link active" data-view="list"><i class="bi bi-list-ul"></i><span>投诉列表</span></button>
+    <button class="nav-link" data-view="stats"><i class="bi bi-bar-chart"></i><span>投诉统计</span></button>
+    <div class="footer">原型演示 · 数据为模拟<br>[[ 今日 ]] <span id="today"></span></div>
+  </aside>
+
+  <main class="main">
+    <section id="view-list">
+      <div class="page-head">
+        <div class="page-title">投诉列表</div>
+        <span class="proto-tag">原型 DEMO · 可交互</span>
+      </div>
+
+      <div class="kpi-row">
+        <div class="kpi on" data-group="all"><div class="num">15</div><div class="lbl">累计受理（受理即入账）</div></div>
+        <div class="kpi" data-group="open"><div class="num" style="color:var(--color-primary)">8<span class="sub" id="overdue-sub">⚠ 超时 3</span></div><div class="lbl">在途（待处理+处理中）</div></div>
+        <div class="kpi" data-group="archived"><div class="num" style="color:var(--color-success)">4</div><div class="lbl">已归档</div></div>
+        <div class="kpi" data-group="withdrawn"><div class="num">3</div><div class="lbl">已撤诉<span class="hint" style="font-size:11px;color:var(--color-text-secondary)"> 不计有效投诉</span></div></div>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-row">
+          <div class="search-wrap">
+            <i class="bi bi-search"></i>
+            <input id="kw" type="text" placeholder="搜索 姓名 / 工单号 / 手机号…">
+          </div>
+          <select id="f-type">
+            <option value="">类型：全部</option>
+            <option value="A">A-退费纠纷</option><option value="B">B-教学服务</option>
+            <option value="C">C-考试安排</option><option value="D">D-合同争议</option><option value="E">E-其他</option>
+          </select>
+          <select id="f-channel">
+            <option value="">渠道：全部</option>
+            <option>12345</option><option>交通部门</option><option>电话来访</option>
+            <option>信访</option><option>邮件投诉</option><option>驾培协会</option><option>其他途径</option>
+          </select>
+          <select id="f-handler">
+            <option value="">处理人：全部</option>
+            <option>张老师</option><option>李老师</option><option>王老师</option><option>未分配</option>
+          </select>
+          <select id="f-fee">
+            <option value="">费用状态：全部</option>
+            <option value="pending">费用待确认</option><option value="confirmed">费用已确认</option><option value="none">未核算</option>
+          </select>
+          <span style="flex:1"></span>
+          <button class="btn btn-secondary btn-sm" onclick="clearFilters()"><i class="bi bi-x-circle"></i> 清空筛选</button>
+        </div>
+        <div class="toolbar-row">
+          <button class="chip on" data-days="all">日期：全部</button>
+          <button class="chip" data-days="7">近 7 天</button>
+          <button class="chip" data-days="30">近 30 天</button>
+          <div class="date-inputs"><input type="date" id="d-from"> 至 <input type="date" id="d-to"></div>
+          <div class="divider-v"></div>
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--color-text-secondary);cursor:pointer">
+            <input type="checkbox" id="only-overdue" style="accent-color:var(--color-danger)"> 只看超时
+          </label>
+          <span style="flex:1"></span>
+          <span class="hint" id="result-count" style="font-size:12px;color:var(--color-text-secondary)"></span>
+          <button class="btn btn-secondary btn-sm"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+        </div>
+      </div>
+
+      <div id="groups"></div>
+      <div id="empty" class="grp-card empty" style="display:none">
+        <i class="bi bi-inbox"></i>没有符合条件的案件，试试调整筛选条件或<a href="#" onclick="clearFilters();return false" style="color:var(--color-primary);font-weight:600">清空筛选</a>
+      </div>
+    </section>
+
+    <section id="view-other" style="display:none">
+      <div class="placeholder-view">
+        <i class="bi bi-layout-split" id="other-icon"></i>
+        <h3 id="other-title" style="margin-bottom:6px"></h3>
+        <p>本原型聚焦「投诉列表」页重设计。此页面保持现状，评审通过后一并接入。</p>
+        <button class="btn btn-primary btn-sm" style="margin-top:16px" onclick="switchView('list')">← 返回投诉列表</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<button class="notes-fab" onclick="document.getElementById('notes').classList.toggle('open')" title="设计说明"><i class="bi bi-chat-square-text"></i></button>
+<div class="notes-panel" id="notes">
+  <h3><i class="bi bi-lightbulb" style="color:var(--color-brand-accent)"></i> 设计说明（评审用）</h3>
+  <h4>本次改动点</h4>
+  <li>导航顺序改为：新增投诉 → 学员信息 → 投诉列表 → 投诉统计</li>
+  <li>KPI 卡片即过滤器，点击即切换分组，替代原 chips 行</li>
+  <li>卡片列表改为「分组 + 多列表格」，一行看全关键字段</li>
+  <li>新增搜索框与四维下拉筛选（类型/渠道/处理人/费用状态）</li>
+  <li>新增日期快捷项与自定义区间；新增「只看超时」开关</li>
+  <li>在途 &gt; 7 天自动红色置顶并显示超时天数（阈值待定）</li>
+  <li>表头可排序（日期/天数/金额）；分组可折叠；结果计数实时显示</li>
+  <h4>已确认决策（2026-08-22）</h4>
+  <li>✅ 超时阈值 = 7 天，全类型统一</li>
+  <li>✅ 未分配新案不做特殊置顶，仅超时置顶</li>
+  <li>✅ 列表露出手机号列（脱敏显示 138****2211）</li>
+  <li>✅ 维持默认折叠策略（已撤诉组默认折叠），暂不分页</li>
+  <li>✅ 新增批量操作：勾选行 + 组头全选 + 底部批量栏（导出/转办）</li>
+</div>
+
+<div class="batch-bar" id="batchbar">
+  <span id="batch-info">已选 0 条</span>
+  <button class="btn btn-secondary btn-sm" onclick="selectAllShown()">全选当前结果</button>
+  <button class="btn btn-secondary btn-sm" onclick="clearSelection()">清除</button>
+  <div class="divider-v"></div>
+  <button class="btn btn-primary btn-sm" onclick="toast('原型演示：批量导出 '+selected.size+' 条为 Excel')"><i class="bi bi-download"></i> 批量导出</button>
+  <button class="btn btn-primary btn-sm" onclick="toast('原型演示：打开批量转办弹窗（'+selected.size+' 条）')"><i class="bi bi-arrow-left-right"></i> 批量转办</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const TODAY = new Date('2026-08-22');
+const TYPE = {A:'退费纠纷',B:'教学服务',C:'考试安排',D:'合同争议',E:'其他'};
+const CASES = [
+ {no:'TS-20260805-01',name:'罗文',org:'丁',type:'A',ch:'12345',phone:'138****2211',date:'2026-08-05',status:'处理中',handler:'张老师',refund:3200,fee:'pending'},
+ {no:'TS-20260807-02',name:'刘桂芳',org:'企',type:'A',ch:'交通部门',phone:'139****8876',date:'2026-08-07',status:'待处理',handler:'李老师',refund:5800,fee:'none'},
+ {no:'TS-20260812-03',name:'陈志强',org:'棚E',type:'B',ch:'电话来访',phone:'137****5590',date:'2026-08-12',status:'处理中',handler:'王老师',refund:null,fee:'none'},
+ {no:'TS-20260816-04',name:'周丽',org:'总校',type:'C',ch:'驾培协会',phone:'136****3302',date:'2026-08-16',status:'处理中',handler:'张老师',refund:1200,fee:'confirmed'},
+ {no:'TS-20260818-05',name:'吴敏',org:'环',type:'A',ch:'邮件投诉',phone:'135****7741',date:'2026-08-18',status:'待处理',handler:'李老师',refund:2600,fee:'pending'},
+ {no:'TS-20260820-06',name:'杨帆',org:'双流',type:'D',ch:'信访',phone:'188****9012',date:'2026-08-20',status:'待处理',handler:'王老师',refund:900,fee:'pending'},
+ {no:'TS-20260821-07',name:'黄阿根',org:'企',type:'E',ch:'其他途径',phone:'133****4456',date:'2026-08-21',status:'处理中',handler:'张老师',refund:450,fee:'confirmed'},
+ {no:'TS-20260822-08',name:'彭德香',org:'汤',type:'B',ch:'12345',phone:'159****6688',date:'2026-08-22',status:'待处理',handler:'未分配',refund:null,fee:'none'},
+ {no:'TS-20260710-09',name:'高永碧',org:'环',type:'A',ch:'交通部门',phone:'138****1122',date:'2026-07-10',status:'已归档',handler:'张老师',refund:3800,fee:'confirmed',outcome:'协商退费 ¥3,800 · 办结 18 天'},
+ {no:'TS-20260715-10',name:'姬晗宇',org:'总校',type:'B',ch:'电话来访',phone:'137****3344',date:'2026-07-15',status:'已归档',handler:'王老师',refund:0,fee:'confirmed',outcome:'和解继续培训 · 办结 12 天'},
+ {no:'TS-20260728-11',name:'郑洁莹',org:'棚A',type:'C',ch:'12345',phone:'136****5566',date:'2026-07-28',status:'已归档',handler:'李老师',refund:1500,fee:'confirmed',outcome:'协调补考 · 办结 20 天'},
+ {no:'TS-20260808-12',name:'孙强',org:'常',type:'D',ch:'驾培协会',phone:'135****7788',date:'2026-08-08',status:'已归档',handler:'张老师',refund:2200,fee:'confirmed',outcome:'按合同扣费后退还 · 办结 14 天'},
+ {no:'TS-20260802-13',name:'何静',org:'双流',type:'A',ch:'12345',phone:'188****9900',date:'2026-08-02',status:'已撤诉',handler:'李老师',refund:2800,fee:'pending',outcome:'撤诉 · 自行和解'},
+ {no:'TS-20260812-14',name:'马晓峰',org:'汤',type:'E',ch:'邮件投诉',phone:'139****2210',date:'2026-08-12',status:'已撤诉',handler:'王老师',refund:null,fee:'none',outcome:'撤诉 · 重复投诉'},
+ {no:'TS-20260816-15',name:'冯坤',org:'棚E',type:'B',ch:'电话来访',phone:'137****6644',date:'2026-08-16',status:'已撤诉',handler:'张老师',refund:null,fee:'none',outcome:'撤诉 · 误会澄清'}
+];
+const state = {group:'all', kw:'', type:'', channel:'', handler:'', fee:'', days:'all', from:'', to:'', onlyOverdue:false,
+               sort:{key:'', dir:1}, collapsed:{withdrawn:true}};
+const selected = new Set();
+let GROUP_ITEMS = {};
+const OVERDUE_DAYS = 7;
+
+function daysBetween(d){return Math.floor((TODAY - new Date(d)) / 86400000)}
+function fmtMoney(v){return v==null ? '—' : '¥' + v.toLocaleString()}
+function feeBadge(f){
+  if(f==='confirmed') return '<span class="badge badge-ok"><i class="bi bi-check-lg"></i>费用已确认</span>';
+  if(f==='pending') return '<span class="badge badge-pending"><i class="bi bi-hourglass-split"></i>费用待确认</span>';
+  return '<span class="badge badge-none">未核算</span>';
+}
+function statusBadge(s){
+  if(s==='处理中') return '<span class="badge badge-processing">● 处理中</span>';
+  if(s==='待处理') return '<span class="badge badge-muted">○ 待处理</span>';
+  return '';
+}
+
+function match(c){
+  const g = state.group;
+  if(g==='open' && !['待处理','处理中'].includes(c.status)) return false;
+  if(g==='archived' && c.status!=='已归档') return false;
+  if(g==='withdrawn' && c.status!=='已撤诉') return false;
+  if(state.type && c.type!==state.type) return false;
+  if(state.channel && c.ch!==state.channel) return false;
+  if(state.handler && c.handler!==state.handler) return false;
+  if(state.fee && c.fee!==state.fee) return false;
+  if(state.onlyOverdue && !(['待处理','处理中'].includes(c.status) && daysBetween(c.date)>OVERDUE_DAYS)) return false;
+  const d = new Date(c.date);
+  if(state.from && d < new Date(state.from)) return false;
+  if(state.to && d > new Date(state.to+'T23:59:59')) return false;
+  if(state.days!=='all'){
+    const diff = daysBetween(c.date);
+    if(state.days==='7' && diff>7) return false;
+    if(state.days==='30' && diff>30) return false;
+  }
+  if(state.kw){
+    const k = state.kw.toLowerCase();
+    if(!(c.name.toLowerCase().includes(k)||c.no.toLowerCase().includes(k)||(c.phone||'').includes(k))) return false;
+  }
+  return true;
+}
+
+function rowHtml(c){
+  const isOverdue = ['待处理','处理中'].includes(c.status) && daysBetween(c.date)>OVERDUE_DAYS;
+  const isNew = ['待处理','处理中'].includes(c.status) && daysBetween(c.date)<=1;
+  let midCol;
+  if(c.status==='已归档'||c.status==='已撤诉') midCol = `<span class="badge badge-muted">${c.outcome}</span>`;
+  else {
+    const n = daysBetween(c.date);
+    midCol = isOverdue
+      ? `<span class="days-warn">${n} 天</span> <span class="badge badge-overdue"><i class="bi bi-exclamation-triangle-fill"></i>超 ${n-OVERDUE_DAYS} 天</span>`
+      : `<span class="${isNew?'fresh':''}">${isNew?'<span class="new-dot"></span>':''}${n} 天</span>`;
+  }
+  return `<tr class="rowlink ${isOverdue?'overdue':''} ${selected.has(c.no)?'selrow':''}" onclick="toast('原型演示：打开案件详情 ${c.no}（实际跳转学员信息页）')">
+    <td><input type="checkbox" class="chk" ${selected.has(c.no)?'checked':''} onclick="event.stopPropagation()" onchange="toggleRow('${c.no}')"></td>
+    <td class="mono">${c.no}</td>
+    <td><span class="stu-name">${c.name}</span> <span class="org">（${c.org}）</span></td>
+    <td class="mono">${c.phone||'—'}</td>
+    <td><span class="type-pill tp-${c.type}">${c.type} ${TYPE[c.type]}</span></td>
+    <td>${c.ch}</td>
+    <td class="mono">${c.date}</td>
+    <td>${midCol}</td>
+    <td>${c.handler}</td>
+    <td class="money">${fmtMoney(c.refund)}</td>
+    <td>${feeBadge(c.fee)}</td>
+    <td>${statusBadge(c.status)}<i class="bi bi-chevron-right" style="float:right;color:var(--color-text-secondary)"></i></td>
+  </tr>`;
+}
+
+const HEADERS = `
+<tr>
+  <th style="width:36px"></th>
+  <th>工单号</th><th>学员</th><th>手机号</th><th>类型</th><th>来源渠道</th>
+  <th class="sortable" data-k="date">投诉日期 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+  <th class="sortable" data-k="days">在途/结局 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+  <th>处理人</th>
+  <th class="sortable r" data-k="refund">应退金额 <i class="bi bi-arrow-down-up sort-icon"></i></th>
+  <th>费用状态</th><th>状态</th>
+</tr>`;
+
+function render(){
+  const list = CASES.filter(match);
+  const groups = [
+    {key:'open', label:'在途', cls:'badge-processing', items:list.filter(c=>['待处理','处理中'].includes(c.status))},
+    {key:'archived', label:'已归档', cls:'badge-completed', items:list.filter(c=>c.status==='已归档')},
+    {key:'withdrawn', label:'已撤诉', cls:'badge-muted', items:list.filter(c=>c.status==='已撤诉')}
+  ];
+  if(state.sort.key){
+    list.forEach(c=>c._d=daysBetween(c.date));
+    const k=state.sort.key;
+    list.sort((a,b)=>{
+      const va = k==='days'?a._d : k==='refund'?(a.refund??-1) : a.date;
+      const vb = k==='days'?b._d : k==='refund'?(b.refund??-1) : b.date;
+      return (va<vb?-1:va>vb?1:0)*state.sort.dir;
+    });
+    groups.forEach(g=>{
+      g.items.sort((a,b)=>{
+        const va = k==='days'?a._d : k==='refund'?(a.refund??-1) : a.date;
+        const vb = k==='days'?b._d : k==='refund'?(b.refund??-1) : b.date;
+        return (va<vb?-1:va>vb?1:0)*state.sort.dir;
+      });
+    });
+  }
+  document.getElementById('empty').style.display = list.length?'none':'block';
+  document.getElementById('result-count').textContent = `共 ${list.length} 条`;
+  GROUP_ITEMS = {};
+  groups.forEach(g=>GROUP_ITEMS[g.key]=g.items.map(c=>c.no));
+
+  document.getElementById('groups').innerHTML = groups.map(g=>{
+    if(!g.items.length && state.group!==g.key) return '';
+    const od = g.items.filter(c=>daysBetween(c.date)>OVERDUE_DAYS).length;
+    const col = state.collapsed[g.key]?'collapsed':'';
+    const allSel = g.items.length && g.items.every(c=>selected.has(c.no));
+    return `<div class="grp ${col}">
+      <div class="grp-card">
+        <div class="grp-head" onclick="toggleGroup('${g.key}')">
+          <input type="checkbox" class="chk" ${allSel?'checked':''} onclick="event.stopPropagation()" onchange="toggleGroupSel('${g.key}')" title="全选本组">
+          <span class="badge ${g.cls}">${g.label}</span>
+          <span class="g-num">${g.items.length}</span>
+          ${g.key==='open'&&od?`<span class="g-overdue"><i class="bi bi-exclamation-triangle-fill"></i> 超时 ${od}</span>`:''}
+          <i class="bi bi-chevron-down g-caret"></i>
+        </div>
+        ${g.items.length?`<table><thead>${HEADERS}</thead><tbody>${g.items.map(rowHtml).join('')}</tbody></table>`:''}
+      </div>
+    </div>`;
+  }).join('');
+
+  document.querySelectorAll('th.sortable').forEach(th=>{
+    th.onclick = ()=>{
+      const k = th.dataset.k;
+      if(state.sort.key===k) state.sort.dir*=-1; else {state.sort.key=k;state.sort.dir=-1;}
+      render();
+    };
+    if(th.dataset.k===state.sort.key){
+      th.classList.add('sorted');
+      th.querySelector('.sort-icon').className = 'bi sort-icon '+(state.sort.dir===1?'bi-sort-down-alt':'bi-sort-down');
+    }
+  });
+}
+
+function toggleGroup(k){state.collapsed[k]=!state.collapsed[k];render()}
+function toggleRow(no){selected.has(no)?selected.delete(no):selected.add(no);updateBatchBar();render()}
+function toggleGroupSel(k){
+  const nos = GROUP_ITEMS[k]||[];
+  const allIn = nos.length && nos.every(n=>selected.has(n));
+  allIn ? nos.forEach(n=>selected.delete(n)) : nos.forEach(n=>selected.add(n));
+  updateBatchBar();render();
+}
+function selectAllShown(){CASES.filter(match).forEach(c=>selected.add(c.no));updateBatchBar();render()}
+function clearSelection(){selected.clear();updateBatchBar();render()}
+function updateBatchBar(){
+  const bar = document.getElementById('batchbar');
+  document.getElementById('batch-info').textContent = `已选 ${selected.size} 条`;
+  bar.classList.toggle('show', selected.size>0);
+}
+function clearFilters(){
+  Object.assign(state,{kw:'',type:'',channel:'',handler:'',fee:'',days:'all',from:'',to:'',onlyOverdue:false});
+  document.getElementById('kw').value='';
+  ['f-type','f-channel','f-handler','f-fee'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('d-from').value='';document.getElementById('d-to').value='';
+  document.getElementById('only-overdue').checked=false;
+  document.querySelectorAll('.chip[data-days]').forEach(b=>b.classList.toggle('on',b.dataset.days==='all'));
+  render();
+}
+let toastTimer;
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.classList.add('show');
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),2200);
+}
+
+document.getElementById('today').textContent = TODAY.toLocaleDateString('zh-CN',{month:'long',day:'numeric'});
+document.getElementById('overdue-sub').textContent = `⚠ 超时 ${CASES.filter(c=>['待处理','处理中'].includes(c.status)&&daysBetween(c.date)>OVERDUE_DAYS).length}`;
+document.getElementById('kw').addEventListener('input',e=>{state.kw=e.target.value.trim();render()});
+[['f-type','type'],['f-channel','channel'],['f-handler','handler'],['f-fee','fee']].forEach(([id,k])=>{
+  document.getElementById(id).addEventListener('change',e=>{state[k]=e.target.value;render()});
+});
+['d-from','d-to'].forEach((id,i)=>document.getElementById(id).addEventListener('change',e=>{state[i?'to':'from']=e.target.value;render()}));
+document.getElementById('only-overdue').addEventListener('change',e=>{state.onlyOverdue=e.target.checked;render()});
+document.querySelectorAll('.chip[data-days]').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.chip[data-days]').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');state.days=b.dataset.days;render();
+}));
+document.querySelectorAll('.kpi').forEach(k=>k.addEventListener('click',()=>{
+  document.querySelectorAll('.kpi').forEach(x=>x.classList.remove('on'));
+  k.classList.add('on');state.group=k.dataset.group;
+  if(k.dataset.group==='withdrawn') state.collapsed.withdrawn=false;
+  render();
+}));
+
+const OTHER = {intake:['bi-plus-circle','新增投诉'],student:['bi-person-badge','学员信息（原工作台）'],stats:['bi-bar-chart','投诉统计']};
+function switchView(v){
+  document.querySelectorAll('.nav-link').forEach(n=>n.classList.toggle('active',n.dataset.view===v));
+  const isList = v==='list';
+  document.getElementById('view-list').style.display=isList?'':'none';
+  document.getElementById('view-other').style.display=isList?'none':'';
+  if(!isList){
+    document.getElementById('other-icon').className='bi '+OTHER[v][0];
+    document.getElementById('other-title').textContent=OTHER[v][1];
+  }
+}
+document.querySelectorAll('.nav-link').forEach(n=>n.addEventListener('click',()=>switchView(n.dataset.view)));
+
+render();
+</script>
+</body>
+</html>

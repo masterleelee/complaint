@@ -109,6 +109,11 @@ def _money(value):
     return float(rounded)
 
 
+def _fmt_duration(minutes):
+    total = int(minutes)
+    return f"{total // 60}时{total % 60:02d}分"
+
+
 def _cents(value):
     rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return int(rounded * 100)
@@ -473,12 +478,12 @@ def _expiry_state(contract, progress, warnings, blockers):
     return True, None
 
 
-def _line(contract, rule, amount, trigger, formula):
+def _line(contract, rule, amount, trigger, formula, max_amount=None):
     evidence = (
         rule.get("evidence") if "evidence" in rule else contract["evidence"]
     )
     reason = f"{rule['clause']}；{trigger}" if trigger else rule["clause"]
-    return {
+    line = {
         "contract_id": contract["contract_id"],
         "contract_title": contract["title"],
         "item": rule["item"],
@@ -490,6 +495,9 @@ def _line(contract, rule, amount, trigger, formula):
         "evidence": evidence,
         "reason": reason,
     }
+    if max_amount is not None:
+        line["max_amount"] = _money(max_amount)
+    return line
 
 
 def _rule_is_usable(contract, rule, blockers):
@@ -639,8 +647,9 @@ def _calculate_rule(contract, rule, progress, stage_state, blockers):
         capped = cap is not None and total > cap
         if capped:
             total = cap
+        duration_text = _fmt_duration(minutes)
         formula = (
-            f"{_money(minutes)}分钟 ÷ 60 × "
+            f"总时长{duration_text}（{_money(minutes)}分钟）÷ 60 × "
             f"{_money(rate)}元/小时 = {_money(rate * minutes / Decimal('60'))}元"
         )
         if capped:
@@ -649,8 +658,9 @@ def _calculate_rule(contract, rule, progress, stage_state, blockers):
             contract,
             rule,
             total,
-            f"{_SUBJECT_NAMES[subject]}实操{_money(minutes)}分钟",
+            f"总时长：{duration_text}",
             formula,
+            max_amount=cap,
         )
 
     if rule_type == "percentage_penalty":
@@ -690,45 +700,8 @@ def _calculate_rule(contract, rule, progress, stage_state, blockers):
 
 
 def _cap_contract_lines(contract, lines, warnings):
-    total_fee = contract["total_fee"]
-    if total_fee is None:
-        return lines
-    total_fee_cents = _cents(total_fee)
-    original_total_cents = sum(line["amount_cents"] for line in lines)
-    if original_total_cents <= total_fee_cents:
-        return lines
-
-    capped = []
-    remaining_cents = total_fee_cents
-    for line in lines:
-        amount_cents = line["amount_cents"]
-        if remaining_cents <= 0:
-            break
-        if amount_cents <= remaining_cents:
-            capped.append(line)
-            remaining_cents -= amount_cents
-            continue
-        adjusted_amount = _from_cents(remaining_cents)
-        adjusted = {
-            **line,
-            "amount": _money(adjusted_amount),
-            "amount_cents": remaining_cents,
-        }
-        adjusted["formula"] = (
-            f"{line['formula']}；原本项{_money(_from_cents(amount_cents))}元，"
-            f"按合同总额封顶（{_money(total_fee)}元），"
-            f"本项调整为{_money(adjusted_amount)}元"
-        )
-        capped.append(adjusted)
-        remaining_cents = 0
-
-    _add_issue(
-        warnings,
-        "contract_deduction_capped",
-        f"{contract['title']}扣费超过合同总额，已按合同总额封顶",
-        contract["contract_id"],
-    )
-    return capped
+    """扣费合计允许大于合同总额（各科目仍受自身上限约束），不做总额封顶。"""
+    return lines
 
 
 def _empty_plan(warnings, blockers):

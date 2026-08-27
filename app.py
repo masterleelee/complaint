@@ -3,18 +3,22 @@ import asyncio
 import os
 import sys
 import json
+import re
 import traceback
 import mimetypes
 import certifi
 import uuid
 import hashlib
+import shutil
+import tempfile
 import atexit
-from datetime import datetime
+from datetime import datetime, date
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from threading import Event, Lock, Thread
 from flask import Flask, render_template, request, jsonify, send_file
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge, NotFound
 
 # 修复 macOS Python 3.14 SSL 证书问题，确保 OCR 库能下载模型
 os.environ['SSL_CERT_FILE'] = certifi.where()
@@ -26,31 +30,48 @@ sys.path.insert(0, BASE_DIR)
 from config import load_config, save_config, normalize_llm_api_url, BASE_DIR as PROJECT_DIR
 from database import (
     save_ticket, get_ticket, get_ticket_by_idcard, get_latest_ticket_by_idcard,
-    list_tickets, update_ticket, get_ticket_statistics, get_processing_duration_stats,
+    list_tickets, update_ticket, delete_ticket, get_ticket_statistics, get_processing_duration_stats,
     save_complaint, get_complaint_by_idcard,
     list_complaints, get_statistics,
-    add_log, get_recent_logs,
+    add_log, find_same_day_ticket,
     save_template, list_templates, get_default_template, delete_template,
     get_distinct_school_short,
-    save_communication_record, get_communication_records, delete_communication_record,
+    migrate_communications_to_notes,
     get_org_vehicle_count_items, get_org_vehicle_counts, save_org_vehicle_counts,
     create_contract_analysis_job, get_contract_analysis_job,
     find_active_contract_analysis_job, update_contract_analysis_job,
 )
 from core.query_engine import query_engine, query_all_systems_sync
-from core.case_workflow import calculate_saved_fee_plan
 from core.auth_manager import auth_manager, refresh_session_if_due, SystemType
-from services.contract_service import analyze_contract_from_file, contract_set_from_reviewed_fields, apply_authoritative_total_fee
-from services.reply_service import generate_reply
-from services.feishu_service import FeishuService
-from services.intake_service import parse_complaint_file, ensure_upload_dir
+from services.contract_service import (
+    analyze_contract_from_file, apply_authoritative_total_fee,
+    build_contract_clauses,
+    _llm_config, _format_llm_error,
+)
+from services.reply_docx import generate_reply_docx
+from services.archive_service import archive_gate_errors, build_archive_dir, archive_case
+from services.intake_service import parse_complaint_file, parse_complaint_text, ensure_upload_dir, ai_summarize_complaint
 from services.org_unit_service import ORGANIZATION_UNITS, resolve_org_unit
 from services.file_service import is_path_within, create_derived_copy, unique_path
+from services.file_parser import warmup_ocr
 from utils.logger import system_logger
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB
 app.config["TEMPLATES_AUTO_RELOAD"] = True  # 禁用模板缓存
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def _handle_request_entity_too_large(_e):
+    return _err("上传文件超过大小限制（50MB）", 413)
+
+
+@app.errorhandler(NotFound)
+def _handle_not_found(e):
+    """API 未知路由返回 JSON 404，页面路由保持原 HTML 404"""
+    if request.path.startswith("/api/"):
+        return _err("接口不存在", 404)
+    return e
 
 UPLOAD_DIR = os.path.join(PROJECT_DIR, "uploads")
 ARCHIVE_DIR = os.path.join(PROJECT_DIR, "案件归档")
@@ -64,6 +85,8 @@ CONTRACT_ANALYSIS_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 CONTRACT_ANALYSIS_JOBS = {}
 CONTRACT_ANALYSIS_LOCK = Lock()
 CONTRACT_ANALYSIS_MAX_JOBS = 100
+REPLY_GENERATE_LOCKS = {}
+REPLY_GENERATE_LOCKS_GUARD = Lock()
 QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 QUERY_JOBS = {}
 QUERY_JOBS_LOCK = Lock()
@@ -76,14 +99,6 @@ THIRD_SESSION_REFRESH_AFTER_SECONDS = 12 * 60
 DRIVING_SESSION_REFRESH_AFTER_SECONDS = 12 * 60
 INTERNAL_SESSION_CHECK_INTERVAL_SECONDS = 60
 INTERNAL_SESSION_MAINTENANCE_STOP = Event()
-FINAL_OUTCOMES = {
-    "投诉撤销",
-    "同意合同扣费",
-    "不同意合同扣费但协商一致",
-    "不同意合同扣费且协商失败",
-    "无法联系",
-    "继续培训/转校",
-}
 FEE_PLAN_FIELDS = {
     "total_fee",
     "actual_paid",
@@ -185,43 +200,47 @@ def _err(msg, code=400):
     return jsonify({"success": False, "error": msg}), code
 
 
-def _fee_plan_ticket_or_error(ticket_id: str, allowed_statuses: set[str], material_name: str):
-    """对外材料必须基于人工确认过的阶段或正式费用方案。"""
+def parse_deductions(raw) -> list:
+    """兼容解析扣费明细：list 直返；str 反序列化；dict（save_analysis 整包存储）提取其明细数组。"""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+    if isinstance(raw, dict):
+        inner = raw.get("deductions", raw.get("deduction_detail"))
+        return inner if isinstance(inner, list) else []
+    return raw if isinstance(raw, list) else []
+
+
+def _excel_safe_value(value):
+    """防公式注入：以 = + - @ 开头的字符串写入单元格前缀 ' 转义"""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def _fee_plan_ticket_or_error(ticket_id: str, material_name: str):
+    """对外材料必须基于人工确认过的费用明细。返回 (ticket, err, http_status)。"""
     if not ticket_id:
-        return None, f"缺少案件ID，不能生成{material_name}"
+        return None, f"缺少案件ID，不能生成{material_name}", 400
     ticket = get_ticket(ticket_id)
     if not ticket:
-        return None, "工单不存在"
-    if ticket.get("fee_plan_status") not in allowed_statuses:
-        if allowed_statuses == {"confirmed"}:
-            return None, "请先人工正式确认费用方案，再生成正式材料"
-        return None, "请先人工确认阶段或正式费用方案，再生成进展回复"
-    return ticket, ""
+        return None, "工单不存在", 404
+    if ticket.get("fee_plan_status") != "confirmed":
+        return None, "请先人工确认费用方案，再生成材料", 400
+    return ticket, "", 200
 
 
 def _confirmed_ticket_or_error(ticket_id: str):
-    """正式文档/归档输出必须基于已人工正式确认的费用方案。"""
-    return _fee_plan_ticket_or_error(ticket_id, {"confirmed"}, "正式材料")
+    """正式文档/归档输出必须基于已人工确认的费用明细。"""
+    return _fee_plan_ticket_or_error(ticket_id, "正式材料")
 
 
 def _official_case_payload(ticket: dict, incoming: dict | None = None) -> dict:
-    """以数据库中已确认的费用方案为准，忽略前端传入的金额/扣费草稿。"""
+    """以数据库中已确认的费用明细为准，忽略前端传入的金额/扣费草稿。"""
     incoming = incoming or {}
-    snapshot = ticket.get("fee_plan_snapshot", {})
-    if isinstance(snapshot, str):
-        try:
-            snapshot = json.loads(snapshot) if snapshot else {}
-        except json.JSONDecodeError:
-            snapshot = {}
-    if not isinstance(snapshot, dict):
-        snapshot = {}
-    official = snapshot if ticket.get("fee_plan_status") == "confirmed" else {}
-    deductions = official.get("deductions", ticket.get("deduction_detail", []))
-    if isinstance(deductions, str):
-        try:
-            deductions = json.loads(deductions) if deductions else []
-        except json.JSONDecodeError:
-            deductions = []
+    deductions = parse_deductions(ticket.get("deduction_detail"))
 
     return {
         **incoming,
@@ -237,14 +256,14 @@ def _official_case_payload(ticket: dict, incoming: dict | None = None) -> dict:
         "complaint_date": ticket.get("complaint_date") or incoming.get("complaint_date", ""),
         "complaint_channel": ticket.get("source_channel") or incoming.get("complaint_channel", ""),
         "complaint_type": ticket.get("complaint_type") or incoming.get("complaint_type", ""),
-        "total_fee": float(official.get("total_fee", ticket.get("total_fee", 0)) or 0),
-        "registration_fee": float(official.get("total_fee", ticket.get("total_fee", 0)) or 0),
-        "actual_paid": float(official.get("actual_paid", ticket.get("actual_paid", 0)) or 0),
+        "total_fee": float(ticket.get("total_fee", 0) or 0),
+        "registration_fee": float(ticket.get("total_fee", 0) or 0),
+        "actual_paid": float(ticket.get("actual_paid", 0) or 0),
         "deductions": deductions,
-        "total_deduction": float(official.get("total_deduction", ticket.get("deduction_fee", 0)) or 0),
-        "deduction": float(official.get("total_deduction", ticket.get("deduction_fee", 0)) or 0),
-        "deduction_fee": float(official.get("total_deduction", ticket.get("deduction_fee", 0)) or 0),
-        "refund": float(official.get("refund", ticket.get("refund_fee", 0)) or 0),
+        "total_deduction": float(ticket.get("deduction_fee", 0) or 0),
+        "deduction": float(ticket.get("deduction_fee", 0) or 0),
+        "deduction_fee": float(ticket.get("deduction_fee", 0) or 0),
+        "refund": float(ticket.get("refund_fee", 0) or 0),
         "contract_code": ticket.get("contract_code") or incoming.get("contract_code", ""),
         "training_hours": ticket.get("training_hours") or incoming.get("training_hours", {}),
         "final_outcome": ticket.get("final_outcome") or incoming.get("final_outcome", ""),
@@ -253,42 +272,22 @@ def _official_case_payload(ticket: dict, incoming: dict | None = None) -> dict:
 
 
 def _completion_gate_error(ticket: dict, incoming: dict) -> str:
-    """案件完结/归档必须满足闭环条件，避免空结论归档。"""
+    """案件完结/归档三闸门：处理情况已填 + 配合度已评 + 费用明细已确认。"""
     wants_complete = incoming.get("handle_status") == "已完结" or incoming.get("archive_status") == "已归档"
     if not wants_complete:
         return ""
 
-    final_outcome = (incoming.get("final_outcome") or ticket.get("final_outcome") or "").strip()
-    if not final_outcome:
-        return "请选择最终投诉结果，再完结归档案件"
-    if final_outcome not in FINAL_OUTCOMES:
-        return "最终投诉结果必须选择系统规定的六类结果之一"
-    if final_outcome == "投诉撤销":
-        if (incoming.get("withdraw_status") or ticket.get("withdraw_status") or "") != "已撤诉":
-            return "投诉撤销必须对应学员已撤诉（withdraw_status=已撤诉），请先更新撤诉状态再归档"
-        return ""
+    handling_notes = str(incoming.get("handling_notes") or ticket.get("handling_notes") or "").strip()
+    if not handling_notes:
+        return "请先填写处理情况，再完结归档案件"
+
+    cooperation = str(incoming.get("branch_cooperation") or ticket.get("branch_cooperation") or "").strip()
+    if not cooperation:
+        return "请先评价网点配合度，再完结归档案件"
 
     fee_status = incoming.get("fee_plan_status") or ticket.get("fee_plan_status", "")
     if fee_status != "confirmed":
-        return "请先人工正式确认费用方案，再完结归档案件"
-
-    communications = get_communication_records(ticket.get("id", ""))
-    if not communications:
-        return "请至少登记一次学员沟通记录，再完结归档案件"
-
-    current_version = int(ticket.get("fee_plan_version") or 0)
-    communication_versions = {
-        int(record.get("fee_plan_version") or 0) for record in communications
-    }
-    # 旧库中的沟通迁移为 v0；仅对历史/v1 方案兼容，v2 起必须严格对应。
-    if current_version == 0:
-        has_current_version = 0 in communication_versions
-    elif current_version == 1:
-        has_current_version = bool(communication_versions.intersection({0, 1}))
-    else:
-        has_current_version = current_version in communication_versions
-    if not has_current_version:
-        return f"请先登记当前费用方案版本 v{current_version} 的学员沟通记录，再完结归档案件"
+        return "请先人工确认费用明细，再完结归档案件"
 
     return ""
 
@@ -300,6 +299,154 @@ def _reopen_case_fields() -> dict:
         "archive_status": "未归档",
         "completed_at": "",
     }
+
+
+def _deduction_row_amount(row) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    try:
+        return float(row.get("amt", row.get("amount")) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _reply_generate_lock(ticket_id: str) -> Lock:
+    with REPLY_GENERATE_LOCKS_GUARD:
+        lock = REPLY_GENERATE_LOCKS.get(ticket_id)
+        if lock is None:
+            lock = Lock()
+            REPLY_GENERATE_LOCKS[ticket_id] = lock
+        return lock
+
+
+def _cleanup_withdraw_archive(ticket: dict) -> list:
+    """已归档工单取消撤诉后，移除归档夹内残留的撤诉说明。
+
+    返回失败描述列表（空列表=成功），任何失败不抛出。
+    """
+    errors = []
+    try:
+        case_dir, _reg_target, _reply_target = build_archive_dir(ticket)
+        name = str(ticket.get("student_name") or "").strip() or "未知"
+        date = str(ticket.get("complaint_date") or "").strip()
+        note_path = os.path.join(case_dir, f"{date}_{name}_撤诉说明.txt")
+        if os.path.isfile(note_path):
+            os.remove(note_path)
+    except Exception as e:
+        errors.append(f"撤诉说明清理失败: {e}")
+    return errors
+
+
+def _mask_id_card(id_card) -> str:
+    value = str(id_card or "").strip()
+    if len(value) <= 10:
+        return value[:3] + "*" * max(0, len(value) - 3)
+    return value[:6] + "*" * (len(value) - 10) + value[-4:]
+
+
+def _polish_registration_ticket(ticket: dict) -> tuple:
+    """登记表预览/归档前，AI 补齐缺失的 投诉内容/投诉诉求/处理经过 三段。
+
+    返回 (工单副本, ai_sections)。AI 失败返回空 sections，由登记表数据层按类型话术兜底；
+    AI 生成的 内容/诉求 在原字段为空时回写工单持久化，避免重复调用与多次生成内容漂移。
+    """
+    from services.intake_service import ai_polish_registration
+    from services.visit_service import _looks_like_idcard
+    ticket = dict(ticket)
+    # 防御：投诉内容/诉求被误填为身份证号（或与本工单 id_card 相同）时视为缺失，
+    # 交由 AI 重新整理，避免身份证号写入登记表文档
+    cc = str(ticket.get("complaint_content") or "").strip()
+    if _looks_like_idcard(cc) or cc == str(ticket.get("id_card") or "").strip():
+        ticket["complaint_content"] = ""
+    dm = str(ticket.get("complaint_demands") or "").strip()
+    if _looks_like_idcard(dm) or dm == str(ticket.get("id_card") or "").strip():
+        ticket["complaint_demands"] = ""
+    needs = (
+        not str(ticket.get("complaint_content") or "").strip()
+        or not str(ticket.get("complaint_demands") or "").strip()
+        or not str(ticket.get("handling_notes") or "").strip()
+    )
+    if not needs:
+        return ticket, {}
+    polished = ai_polish_registration(ticket)
+    if not polished:
+        return ticket, {}
+    updates = {}
+    if not str(ticket.get("complaint_content") or "").strip() and polished["complaint_content"]:
+        ticket["complaint_content"] = polished["complaint_content"]
+        updates["complaint_content"] = polished["complaint_content"]
+    if not str(ticket.get("complaint_demands") or "").strip() and polished["complaint_demands"]:
+        ticket["complaint_demands"] = polished["complaint_demands"]
+        updates["complaint_demands"] = polished["complaint_demands"]
+    if updates and ticket.get("id"):
+        try:
+            update_ticket(str(ticket["id"]), updates)
+        except Exception:
+            pass
+    return ticket, polished
+
+
+def _regen_registration_form(ticket: dict, output_dir: str = "") -> dict:
+    from services.visit_service import generate_registration_form
+    special_warnings = ticket.get("special_warnings") or []
+    if isinstance(special_warnings, str):
+        try:
+            special_warnings = json.loads(special_warnings) if special_warnings.strip() else []
+        except json.JSONDecodeError:
+            special_warnings = []
+    ticket, ai_sections = _polish_registration_ticket(ticket)
+    return generate_registration_form(
+        ticket,
+        handling_notes=str(ticket.get("handling_notes") or ""),
+        final_outcome=str(ticket.get("final_outcome") or ""),
+        negotiation_outcome=str(ticket.get("negotiation_outcome") or ""),
+        withdraw_status=str(ticket.get("withdraw_status") or ""),
+        branch_cooperation=str(ticket.get("branch_cooperation") or ""),
+        output_dir=output_dir,
+        total_fee=float(ticket.get("total_fee", 0) or 0),
+        refund=float(ticket.get("refund_fee", 0) or 0),
+        deductions=parse_deductions(ticket.get("deduction_detail")),
+        special_warnings=special_warnings,
+        exam_stage=str(ticket.get("exam_stage") or ""),
+        ai_sections=ai_sections,
+    )
+
+
+def _sync_withdraw_archive(ticket: dict) -> list:
+    """已归档工单撤诉后同步归档夹：重生成登记表覆盖副本 + 写撤诉说明。
+
+    返回失败描述列表（空列表=全部成功），任何失败不抛出。
+    """
+    errors = []
+    try:
+        case_dir, reg_target, _reply_target = build_archive_dir(ticket)
+        name = str(ticket.get("student_name") or "").strip() or "未知"
+        date = str(ticket.get("complaint_date") or "").strip()
+        os.makedirs(case_dir, exist_ok=True)
+        if str(ticket.get("registration_form_path") or "").strip():
+            try:
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    gen = _regen_registration_form(ticket, output_dir=tmp_dir)
+                    if gen.get("success"):
+                        shutil.copyfile(gen["filepath"], reg_target)
+                    else:
+                        errors.append(f"登记表重新生成失败: {gen.get('error')}")
+            except Exception as e:
+                errors.append(f"登记表重新生成失败: {e}")
+        note_path = os.path.join(case_dir, f"{date}_{name}_撤诉说明.txt")
+        content = (
+            f"学员姓名：{name}\n"
+            f"身份证号：{_mask_id_card(ticket.get('id_card'))}\n"
+            f"投诉日期：{date}\n"
+            f"撤诉时间：{ticket.get('withdrawn_at') or ''}\n"
+            f"撤诉原因：{ticket.get('withdraw_reason') or ''}\n"
+            f"经办说明：本撤诉申请由学员本人提出，经办人已核实学员身份与撤诉意愿，案件按撤诉终结处理。\n"
+        )
+        with open(note_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        errors.append(f"撤诉档案同步失败: {e}")
+    return errors
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -344,9 +491,6 @@ def background_login():
     system_logger.info("[预登录] 已启动后台登录线程")
 
 
-background_login()
-
-
 def _maintain_sessions():
     """按系统后台刷新登录态，避免首个业务查询承担验证码登录（含第三/东莞驾培）。"""
     refresh_plan = [
@@ -367,13 +511,18 @@ def _maintain_sessions():
                 system_logger.warning("[会话维护] %s: %s", system_type.value, exc)
 
 
-INTERNAL_SESSION_MAINTENANCE_THREAD = Thread(
-    target=_maintain_sessions,
-    name="session-maintenance",
-    daemon=True,
-)
-INTERNAL_SESSION_MAINTENANCE_THREAD.start()
-atexit.register(INTERNAL_SESSION_MAINTENANCE_STOP.set)
+def _start_background_services():
+    """应用真正对外服务前才启动后台线程与一次性迁移（模块导入保持无副作用）。"""
+    try:
+        migrate_communications_to_notes()
+    except Exception as e:
+        system_logger.error("[初始化] 沟通记录迁移失败: %s", e)
+
+    background_login()
+    Thread(target=warmup_ocr, name="ocr-warmup", daemon=True).start()
+    thread = Thread(target=_maintain_sessions, name="session-maintenance", daemon=True)
+    thread.start()
+    atexit.register(INTERNAL_SESSION_MAINTENANCE_STOP.set)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -391,8 +540,21 @@ def index():
 
 @app.route("/api/intake/parse", methods=["POST"])
 def api_intake_parse():
-    """上传投诉工单文件，LLM 提取关键信息"""
+    """提取投诉关键信息：支持 JSON {"text": "..."} 直接解析，或上传投诉工单文件"""
     try:
+        if request.is_json:
+            data = request.get_json(force=True, silent=True) or {}
+            text = str(data.get("text") or "")
+            if len(text.strip()) < 10:
+                return _err("投诉内容过短，请粘贴完整的投诉文本")
+
+            result = parse_complaint_text(text)
+            if result.get("error"):
+                return _err(result["error"])
+
+            add_log("intake_parse", f"受理解析(粘贴文本): 姓名={result.get('student_name') or '?'}")
+            return _ok(result)
+
         if "file" not in request.files:
             return _err("未选择文件")
 
@@ -424,9 +586,10 @@ def api_intake_parse():
         add_log("intake_parse", f"受理解析: {file.filename} -> {result.get('student_name', '?')}")
         return _ok(result)
 
+    except RequestEntityTooLarge:
+        return _err("上传文件超过大小限制（50MB）", 413)
     except Exception as e:
         traceback.print_exc()
-        add_log("intake_parse", f"受理失败: {e}", success=False)
         return _err(str(e), 500)
 
 
@@ -441,7 +604,8 @@ def api_intake_parse():
 def validate_id_card(id_card: str) -> tuple[bool, str]:
     """
     只验证18位大陆身份证（GB 11643-1999 校验码算法）
-    其他证件（居留证、港澳台等）不验证，直接放行
+    其他证件仅放行已知格式（居留证如 F1249468(8)、外国人永久居留证 3字母+12数字、纯数字证件号），
+    明显乱码直接拦截，避免无效请求直打生产三系统
     返回: (是否有效, 错误信息)
     """
     id_card = id_card.strip().upper()
@@ -452,10 +616,10 @@ def validate_id_card(id_card: str) -> tuple[bool, str]:
         if id_card[17] != check_codes[s % 11]:
             return False, "身份证号校验失败，请确认是否正确"
         return True, ""
-    # 其他证件不验证，直接放行
-    if len(id_card) >= 7:
+    # 非18位：格式白名单（前缀最多3位大写字母 + 6~17位数字 + 可选括号尾注，兼容居留证 F1249468(8)）
+    if re.fullmatch(r"[A-Z]{0,3}\d{6,17}(?:[（(]\d{1,4}[)）])?", id_card):
         return True, ""
-    return False, "证件号至少7位"
+    return False, "证件号格式不正确"
 
 
 def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) -> dict:
@@ -484,12 +648,26 @@ def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) ->
         "complaint_type": data.get("complaint_type", "") or "A",
         "complaint_date": data.get("complaint_date", datetime.now().strftime("%Y-%m-%d")),
         "handler_name": data.get("handler_name", ""),
-        "complaint_summary": data.get("complaint_summary", ""),
+        "complaint_content": str(data.get("complaint_desc", "") or ""),
+        "complaint_summary": str(data.get("complaint_summary", "") or ""),
+        "complaint_demands": str(data.get("complaint_demands", "") or ""),
         "attachments": data.get("attachments", []),
     }
+    # 受理端选择「另建新工单」(force_new=true) 时跳过同日同人去重；
+    # 否则按与 save_ticket 相同口径做预检：命中即显式并入既有工单，
+    # 并向受理端回传 merged_into_existing 事实，避免静默更新对用户不可见
+    force_new = bool(data.get("force_new"))
     if data.get("ticket_id"):
         ticket_data["id"] = data["ticket_id"]
-    saved_ticket_id = save_ticket(ticket_data)
+    elif not force_new:
+        same_day = find_same_day_ticket(
+            str(ticket_data.get("id_card") or ""),
+            str(ticket_data.get("complaint_date") or ""),
+        )
+        if same_day:
+            ticket_data["id"] = same_day["id"]
+            result["merged_into_existing"] = True
+    saved_ticket_id = save_ticket(ticket_data, force_new=force_new)
     result["ticket_id"] = saved_ticket_id
     add_log(
         "query",
@@ -503,7 +681,9 @@ def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) ->
 def api_query():
     """查询三系统学员信息（支持身份证/居留证优先，手机号备选）"""
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
         id_card = data.get("id_card", "").strip()
         phone = data.get("phone", "").strip()
 
@@ -512,6 +692,10 @@ def api_query():
             ok, err = validate_id_card(id_card)
             if not ok:
                 return _err(err)
+
+        # 手机号格式校验（1开头的11位数字）
+        if phone and not re.fullmatch(r"1[3-9]\d{9}", phone):
+            return _err("手机号格式不正确，应为1开头的11位数字")
 
         # 执行查询
         if id_card and len(id_card) >= 7:
@@ -605,6 +789,18 @@ def _query_job_worker(job_id: str, data: dict):
     id_card = data.get("id_card", "").strip()
     phone = data.get("phone", "").strip()
 
+    # 投诉摘要与爬虫并行生成：摘要仅供工单存档，与三系统查询无关联，
+    # 提前起线程跑，爬虫完成后再汇合（思考关闭后约 2~4s，远短于爬虫耗时）
+    summary_holder = {}
+    summary_thread = None
+    if not str(data.get("complaint_summary") or "").strip() and str(data.get("complaint_desc") or "").strip():
+        def _gen_summary():
+            out = ai_summarize_complaint(data.get("complaint_desc") or "")
+            summary_holder["summary"] = str(out.get("complaint_summary") or "").strip()
+            summary_holder["demands"] = str(out.get("complaint_demands") or "").strip()
+        summary_thread = Thread(target=_gen_summary, name="intake-summary", daemon=True)
+        summary_thread.start()
+
     def publish(partial):
         partial_result = dict(partial.__dict__)
         with QUERY_JOBS_LOCK:
@@ -630,6 +826,38 @@ def _query_job_worker(job_id: str, data: dict):
             result = dict(merged.__dict__)
         else:
             result = query_all_systems_by_phone(phone)
+
+        # 空壳拦截：姓名与证件号同时为空说明未命中学员档案，不建工单，
+        # job 置失败并把文案透传给前端轮询（前端 status.error 直接展示给操作员）。
+        # 同时附 no_match/manual_intake_eligible：三系统均「明确查无」（not_found/no_contract）
+        # 时前端展示「转人工建案」入口；存在超时/异常时不放行，避免把已录入学员误判为漏录。
+        sources = result.get("sources", {}) or {}
+        manual_eligible = bool(sources) and all(
+            s in {"not_found", "no_contract"} for s in sources.values()
+        )
+        if not str(result.get("name") or "").strip() and not str(result.get("id_card") or "").strip():
+            with QUERY_JOBS_LOCK:
+                QUERY_JOBS[job_id].update({
+                    "status": "failed",
+                    "error": "未匹配到学员档案，请核对手机号或改用身份证号查询",
+                    "no_match": True,
+                    "manual_intake_eligible": manual_eligible,
+                    "sources": sources,
+                    "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+            return
+
+        # 等待并行摘要完成（超时则放弃，摘要留空不阻塞建案）
+        if summary_thread is not None:
+            summary_thread.join(timeout=45)
+            s = str(summary_holder.get("summary") or "").strip()
+            d = str(summary_holder.get("demands") or "").strip()
+            if s:
+                data = {**data, "complaint_summary": s}
+                result["complaint_summary"] = s
+            if d:
+                data = {**data, "complaint_demands": d}
+                result["complaint_demands"] = d
 
         result = _persist_query_result(data, result, id_card, phone)
         total_ms = int((time.monotonic() - started) * 1000)
@@ -668,7 +896,9 @@ def _query_job_worker(job_id: str, data: dict):
 
 @app.route("/api/query/start", methods=["POST"])
 def api_query_start():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return _err("请求体不是合法JSON", 400)
     id_card = data.get("id_card", "").strip()
     phone = data.get("phone", "").strip()
 
@@ -676,8 +906,8 @@ def api_query_start():
         ok, err = validate_id_card(id_card)
         if not ok:
             return _err(err)
-    elif len(phone) != 11:
-        return _err("请输入有效的证件号（至少7位）或手机号(11位)")
+    elif not re.fullmatch(r"1[3-9]\d{9}", phone):
+        return _err("手机号格式不正确，应为1开头的11位数字")
 
     _prune_query_jobs()
     job_id = uuid.uuid4().hex
@@ -712,6 +942,52 @@ def api_query_status(job_id):
     return jsonify({"success": True, **public_job})
 
 
+@app.route("/api/students/search", methods=["POST"])
+def api_students_search():
+    """统一智能查询：按姓名(模糊) + 报名点 + 报名时间范围到内部系统检索候选学员。"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        name = (data.get("name") or "").strip()
+        school = (data.get("school_short") or "").strip()
+        start = (data.get("start_date") or "").strip()
+        end = (data.get("end_date") or "").strip()
+        try:
+            page = max(1, int(data.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+        if not name:
+            return _err("请提供学员姓名")
+        crawler = query_engine._crawlers.get(SystemType.INTERNAL)
+        if crawler is None:
+            return _err("内部系统爬虫未初始化", 500)
+        t0 = time.monotonic()
+        result = crawler.search_students(name, school, start, end, page=page, limit=10)
+        elapsed = int((time.monotonic() - t0) * 1000)
+        students = []
+        for info in result["students"]:
+            students.append({
+                "id_card": info.id_card,
+                "student_name": info.name,
+                "phone": info.phone,
+                "school_short": info.school_short,
+                "school_name": info.school_name,
+                "license_type": info.license_type,
+                "registration_date": info.registration_date,
+                "exam_stage": info.exam_stage,
+                "student_status": info.student_status,
+                "source": "内部系统",
+            })
+        return _ok({
+            "students": students,
+            "total": result["total"],
+            "org_fallback": result["org_fallback"],
+            "elapsed_ms": elapsed,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  API: 投诉工单 CRUD
 # ═══════════════════════════════════════════════════════════════
@@ -739,6 +1015,137 @@ def api_organization_units():
     """获取分校/分店标准字典，供未匹配时人工选择。"""
     return _ok(ORGANIZATION_UNITS)
 
+@app.route("/api/tickets/same-day-check", methods=["POST"])
+def api_tickets_same_day_check():
+    """受理预检：同日同身份证是否已有工单（与 save_ticket 去重口径一致）。"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        ticket = find_same_day_ticket(
+            str(data.get("id_card") or ""),
+            str(data.get("complaint_date") or ""),
+        )
+        if not ticket:
+            return _ok(None)
+        return _ok({
+            "id": ticket.get("id", ""),
+            "student_name": ticket.get("student_name", ""),
+            "handle_status": ticket.get("handle_status", ""),
+            "source_channel": ticket.get("source_channel", ""),
+            "complaint_date": ticket.get("complaint_date", ""),
+            "created_at": ticket.get("created_at", ""),
+        })
+    except Exception as e:
+        return _err(str(e))
+
+
+MANUAL_INTAKE_TYPE = "三系统无信息"
+
+
+@app.route("/api/tickets/manual-create", methods=["POST"])
+def api_tickets_manual_create():
+    """三系统无信息学员 · 人工建案。
+
+    学员已报名缴费但未录入三系统：受理时三系统均明确查无记录，由操作员
+    手工补齐身份与归属信息后直接建案；后续流程与普通工单一致
+    （登记表/回复函照常生成，费用走手工确认或零口径确认）。
+    """
+    try:
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
+        data = data or {}
+
+        student_name = str(data.get("student_name") or "").strip()
+        id_card = str(data.get("id_card") or "").strip()
+        registration_date = str(data.get("registration_date") or "").strip()
+        org_id = str(data.get("organization_unit_id") or "").strip()
+        phone = str(data.get("phone") or "").strip()
+
+        missing = []
+        if not student_name:
+            missing.append("学员姓名")
+        if not id_card:
+            missing.append("身份证号")
+        if not org_id:
+            missing.append("所属分校/分店")
+        if not registration_date:
+            missing.append("报名时间")
+        if missing:
+            return _err("缺少必填项：" + "、".join(missing), 400)
+
+        ok, err = validate_id_card(id_card)
+        if not ok:
+            return _err(err, 400)
+
+        unit = next((u for u in ORGANIZATION_UNITS if u.get("id") == org_id and u.get("active", True)), None)
+        if unit is None:
+            return _err("所属分校/分店不在机构字典中，请重新选择", 400)
+
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", registration_date):
+            return _err("报名时间格式应为 YYYY-MM-DD", 400)
+        if phone and not re.fullmatch(r"1[3-9]\d{9}", phone):
+            return _err("手机号格式不正确，应为1开头的11位数字", 400)
+
+        complaint_date = str(data.get("complaint_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+
+        # 同日同人预检（与 save_ticket 去重同口径）：命中即并入既有工单并回传事实
+        existing = find_same_day_ticket(id_card, complaint_date)
+
+        ticket_data = {
+            "student_name": student_name,
+            "id_card": id_card,
+            "phone": phone,
+            "license_type": str(data.get("license_type") or "").strip(),
+            "school_short": unit["code"],
+            "organization_unit_id": unit["id"],
+            "organization_unit_type": unit["type"],
+            "organization_unit_name": unit["name"],
+            "organization_unit_code": unit["code"],
+            "registration_date": registration_date,
+            "intake_type": MANUAL_INTAKE_TYPE,
+            "source_channel": str(data.get("source_channel") or "").strip() or "电话来访",
+            "complaint_type": str(data.get("complaint_type") or "").strip() or "A",
+            "complaint_date": complaint_date,
+            "handler_name": str(data.get("handler_name") or "").strip(),
+            "complaint_content": str(data.get("complaint_content") or "").strip(),
+            "complaint_summary": str(data.get("complaint_summary") or "").strip(),
+            "complaint_demands": str(data.get("complaint_demands") or "").strip(),
+        }
+        ticket_id = save_ticket(ticket_data)
+
+        # 受理建夹 + 投诉内容留档（口径与 PUT /api/tickets/<id> 一致）
+        complaint_content = ticket_data["complaint_content"]
+        if complaint_content:
+            try:
+                folder_path = get_archive_folder(student_name, id_card, unit["code"])
+                txt_path = os.path.join(folder_path, "投诉内容.txt")
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(f"投诉时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"投诉渠道: {ticket_data['source_channel']}\n")
+                    f.write(f"投诉类型: {ticket_data['complaint_type']}\n")
+                    f.write(f"数据来源: {MANUAL_INTAKE_TYPE}（人工录入）\n\n")
+                    f.write(complaint_content)
+            except OSError:
+                pass
+
+        add_log(
+            "manual_create",
+            f"人工建案（{MANUAL_INTAKE_TYPE}）: {student_name} ({id_card}) @ {unit['name']}",
+            ticket_id=ticket_id,
+        )
+        ticket = get_ticket(ticket_id) or {}
+        return _ok({
+            "ticket_id": ticket_id,
+            "ticket_no": ticket.get("ticket_no", ""),
+            "intake_type": MANUAL_INTAKE_TYPE,
+            "merged_into_existing": bool(existing),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        add_log("manual_create", f"人工建案失败: {e}", success=False)
+        return _err(str(e), 500)
+
+
 @app.route("/api/tickets", methods=["GET"])
 def api_tickets_list():
     """获取投诉工单列表"""
@@ -749,15 +1156,20 @@ def api_tickets_list():
         search = request.args.get("search", "")
         start_date = request.args.get("start_date", "")
         end_date = request.args.get("end_date", "")
-        limit = int(request.args.get("limit", 10))
-        offset = int(request.args.get("offset", 0))
+        repeat_only = request.args.get("repeat_only", "") in ("1", "true", "True")
+        try:
+            limit = int(request.args.get("limit", 10))
+            offset = int(request.args.get("offset", 0))
+        except ValueError:
+            limit, offset = 10, 0
         # 深分页保护：limit 上限 200，offset 上限 100000，防恶意深翻页拖垮查询
         limit = min(max(limit, 1), 200)
         offset = min(max(offset, 0), 100000)
 
         records, total = list_tickets(
             status=status, source=source, school=school, search=search,
-            start_date=start_date, end_date=end_date, limit=limit, offset=offset
+            start_date=start_date, end_date=end_date, repeat_only=repeat_only,
+            limit=limit, offset=offset
         )
         return _ok({"records": records, "total": total})
     except Exception as e:
@@ -780,18 +1192,23 @@ def api_tickets_get(ticket_id):
 def api_tickets_update(ticket_id):
     """更新工单（支持文件归档）"""
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
         ticket = get_ticket(ticket_id)
         if not ticket:
             return _err("工单不存在", 404)
         if ticket.get("fee_plan_status") == "confirmed" and FEE_PLAN_FIELDS.intersection(data):
-            return _err("正式费用方案已锁定；请通过重新确认费用方案并填写修改原因来调整")
+            return _err("费用明细已确认锁定；请先调用费用解锁（fee-unlock）再调整")
 
-        if ticket.get("archive_status") == "已归档" and (
-            data.get("handle_status") in {"待处理", "处理中"}
-            or data.get("archive_status") in {"未归档", "归档失败"}
-        ):
-            return _err("已归档案件只能通过重新打开费用方案并填写修改原因恢复处理")
+        if data.get("handle_status") is not None and data["handle_status"] not in {"待处理", "处理中", "已完结"}:
+            return _err("处理状态非法", 400)
+
+        if ticket.get("archive_status") == "已归档":
+            if data.get("handle_status") is not None:
+                return _err("已归档案件请先通过费用解锁（fee-unlock）恢复处理", 400)
+            if data.get("archive_status") == "":
+                return _err("已归档案件不允许清空归档状态", 400)
 
         gate_error = _completion_gate_error(ticket, data)
         if gate_error:
@@ -828,6 +1245,20 @@ def api_tickets_update(ticket_id):
         return _err(str(e), 500)
 
 
+@app.route("/api/tickets/<ticket_id>", methods=["DELETE"])
+def api_tickets_delete(ticket_id):
+    """删除工单（硬删除数据库记录，不清理磁盘归档文件）"""
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+        delete_ticket(ticket_id)
+        add_log("ticket_delete", f"删除工单: {ticket_id}（{ticket.get('student_name', '')}）", ticket_id=ticket_id)
+        return _ok({"id": ticket_id}, "已删除")
+    except Exception as e:
+        return _err(str(e), 500)
+
+
 _GRADUATED_STATUSES = {"科四通过", "已结业", "已领证"}
 _GRADUATION_WARNING = {
     "type": "no_refund_target_completed",
@@ -848,124 +1279,47 @@ def _merge_graduation_warning(existing, student_status) -> list:
 
 @app.route("/api/tickets/<ticket_id>/fee-confirm", methods=["POST"])
 def api_ticket_fee_confirm(ticket_id):
-    """人工确认费用方案：AI 结果只有确认后才作为正式沟通/文档依据。"""
+    """确认费用方案（v2 简化）：直接保存扣费行集与实缴金额并标记已确认。"""
     try:
         ticket = get_ticket(ticket_id)
         if not ticket:
             return _err("工单不存在", 404)
 
-        data = request.get_json(force=True)
-        plan_status = str(data.get("plan_status") or "confirmed").strip()
-        if plan_status not in {"provisional", "confirmed"}:
-            return _err("费用方案状态只能是 provisional 或 confirmed")
-        candidate_contract_set = data.get("contract_set")
-        reviewed_fields = data.get("contract_fields") or {}
-        if reviewed_fields and (
-            not ticket.get("contract_set")
-            or ticket.get("fee_plan_status") == "needs_review"
-        ):
-            manifest = ticket.get("contract_manifest") or {}
-            if isinstance(manifest, str):
-                try:
-                    manifest = json.loads(manifest)
-                except json.JSONDecodeError:
-                    manifest = {}
-            page_evidence = [
-                item.get("filepath")
-                for item in (manifest.get("source_files") or [])
-                if isinstance(item, dict) and item.get("filepath")
-            ]
-            reviewed_contract_set = contract_set_from_reviewed_fields(
-                reviewed_fields,
-                ticket.get("contract_path", ""),
-                contract_code=str(data.get("contract_code") or "").strip(),
-                evidence={"source": "human_review", "pages": page_evidence},
-            )
-            ticket = {**ticket, "contract_set": reviewed_contract_set}
-        elif not ticket.get("contract_set") and candidate_contract_set:
-            ticket = {**ticket, "contract_set": candidate_contract_set}
-
-        if ticket.get("fee_plan_status") == "needs_review":
-            fields = data.get("contract_fields", {})
-
-            def field_value(name):
-                value = fields.get(name, "")
-                return value.get("value", "") if isinstance(value, dict) else value
-
-            missing = []
-            if float(field_value("total_fee") or 0) <= 0:
-                missing.append("合同总培训费")
-            if not str(field_value("refund_clause") or "").strip():
-                missing.append("退费条款")
-            if missing:
-                return _err(f"合同关键字段人工补录仍缺少：{'、'.join(missing)}")
-
-        if ticket.get("contract_set"):
-            overrides = {}
-            if "actual_paid" in data:
-                overrides["actual_paid"] = data["actual_paid"]
-            fee_plan = calculate_saved_fee_plan(ticket, overrides)
-            if not fee_plan["can_confirm"]:
-                return _err("费用方案缺少确认条件：" + "、".join(
-                    item["message"] for item in fee_plan["blockers"]
-                ))
-            deductions = fee_plan["deductions"]
-            total_fee = float(fee_plan["total_fee"] or 0)
-            actual_paid = float(fee_plan["actual_paid"] or 0)
-            total_deduction = float(fee_plan["total_deduction"])
-            refund = float(fee_plan["refund"] or 0)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
+        data = data or {}
+        no_fee_basis = bool(data.get("no_fee_basis"))
+        if no_fee_basis:
+            # 三系统查无记录案件的闸门豁免：零口径确认，留痕于 fee_confirm_note
+            deductions = []
+            total_fee = actual_paid = total_deduction = refund = 0
         else:
-            deductions = data.get("deductions", [])
-            if not isinstance(deductions, list) or not deductions:
+            deductions = parse_deductions(data.get("deductions")) or parse_deductions(ticket.get("deduction_detail"))
+            if not deductions:
                 return _err("请提供扣费明细")
-            total_fee = float(data.get("total_fee", 0) or 0)
-            actual_paid = float(data.get("actual_paid", 0) or total_fee or 0)
+
+            total_fee = float(data.get("total_fee", ticket.get("total_fee", 0)) or 0)
+            actual_paid = float(
+                data.get("actual_paid", data.get("paid_amount", ticket.get("actual_paid", 0))) or 0
+            )
             if actual_paid <= 0:
                 return _err("请填写学员实际已交金额")
+
+            for _d in deductions:
+                if not isinstance(_d, dict):
+                    return _err("扣费金额必须为不小于0的数值", 400)
+                try:
+                    _amt = float(_d.get("amount", 0))
+                except (TypeError, ValueError):
+                    return _err("扣费金额必须为不小于0的数值", 400)
+                if _amt < 0:
+                    return _err("扣费金额必须为不小于0的数值", 400)
             raw_deduction = round(sum(float(d.get("amount", 0) or 0) for d in deductions), 2)
             total_deduction = min(raw_deduction, total_fee) if total_fee > 0 else raw_deduction
             refund = max(0, round(actual_paid - total_deduction, 2))
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        current_status = ticket.get("fee_plan_status") or ""
-        replacing_confirmed_plan = current_status in {"provisional", "confirmed"}
-        reopen_reason = str(data.get("reopen_reason") or "").strip()
-        if replacing_confirmed_plan and not reopen_reason:
-            return _err("已确认过费用方案，重新确认必须填写修改原因")
 
-        history = ticket.get("fee_plan_history") or []
-        if isinstance(history, str):
-            try:
-                history = json.loads(history) if history else []
-            except json.JSONDecodeError:
-                history = []
-        current_version = int(ticket.get("fee_plan_version") or 0)
-        if replacing_confirmed_plan:
-            history.append({
-                "version": current_version or 1,
-                "fee_plan_status": current_status,
-                "total_fee": float(ticket.get("total_fee", 0) or 0),
-                "actual_paid": float(ticket.get("actual_paid", 0) or 0),
-                "deduction_fee": float(ticket.get("deduction_fee", 0) or 0),
-                "refund_fee": float(ticket.get("refund_fee", 0) or 0),
-                "deduction_detail": ticket.get("deduction_detail", []),
-                "fee_confirmed_by": ticket.get("fee_confirmed_by", ""),
-                "fee_confirmed_at": ticket.get("fee_confirmed_at", ""),
-                "fee_confirm_note": ticket.get("fee_confirm_note", ""),
-                "reopen_reason": reopen_reason,
-                "replaced_at": now,
-            })
-        next_version = (current_version or 0) + 1
-        snapshot = {
-            "version": next_version,
-            "fee_plan_status": plan_status,
-            "total_fee": total_fee,
-            "actual_paid": actual_paid,
-            "deductions": deductions,
-            "total_deduction": total_deduction,
-            "refund": refund,
-            "confirmed_at": now,
-            "warnings": [w for w in (fee_plan.get("warnings") or [])] if ticket.get("contract_set") else [],
-        }
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         case_fields = {}
         if ticket.get("archive_status") == "已归档" or ticket.get("handle_status") == "已完结":
@@ -981,35 +1335,32 @@ def api_ticket_fee_confirm(ticket_id):
                 special_warnings = []
         special_warnings = _merge_graduation_warning(special_warnings, ticket.get("student_status"))
 
+        default_note = "三系统查无记录，无费用明细" if no_fee_basis else ""
         update_ticket(ticket_id, {
             "total_fee": total_fee,
             "actual_paid": actual_paid,
             "deduction_fee": total_deduction,
             "refund_fee": refund,
             "deduction_detail": deductions,
-            "fee_plan_status": plan_status,
-            "fee_plan_version": next_version,
-            "fee_plan_history": history,
-            "fee_plan_snapshot": snapshot if plan_status == "confirmed" else ticket.get("fee_plan_snapshot", {}),
-            "contract_set": ticket.get("contract_set", {}),
-            "reply_outdated": ticket.get("reply_outdated", False),
-            "contract_code": (data.get("contract_code") or ticket.get("contract_code") or "").strip(),
-            "fee_confirmed_by": data.get("confirmed_by", "").strip(),
+            "fee_plan_status": "confirmed",
+            "fee_confirmed_by": (str(ticket.get("fee_confirmed_by") or "")
+                                 if not data.get("confirmed_by") else str(data.get("confirmed_by")).strip()),
             "fee_confirmed_at": now,
-            "fee_confirm_note": data.get("confirm_note", "").strip(),
+            "fee_confirm_note": str(data.get("confirm_note") or default_note).strip(),
             "special_warnings": special_warnings,
             **case_fields,
         })
-        status_label = "阶段费用方案" if plan_status == "provisional" else "正式费用方案"
-        add_log("fee_confirm", f"确认{status_label}: 扣费{total_deduction}元，应退{refund}元", ticket_id=ticket_id)
+        if no_fee_basis:
+            add_log("fee_confirm", "查无记录确认：无费用明细（0元口径）", ticket_id=ticket_id)
+        else:
+            add_log("fee_confirm", f"确认费用明细: 扣费{total_deduction}元，应退{refund}元", ticket_id=ticket_id)
         return _ok({
             "ticket_id": ticket_id,
             "total_fee": total_fee,
             "actual_paid": actual_paid,
             "total_deduction": total_deduction,
             "refund": refund,
-            "fee_plan_status": plan_status,
-            "fee_plan_version": next_version,
+            "fee_plan_status": "confirmed",
         })
     except ValueError as e:
         add_log("fee_confirm", f"校验失败: {str(e)}", success=False, ticket_id=ticket_id)
@@ -1020,85 +1371,62 @@ def api_ticket_fee_confirm(ticket_id):
         return _err(str(e), 500)
 
 
-@app.route("/api/tickets/<ticket_id>/fee-reopen", methods=["POST"])
-def api_ticket_fee_reopen(ticket_id):
-    """Reopen a confirmed plan without destroying the last external-facing snapshot."""
+@app.route("/api/tickets/<ticket_id>/fee-unlock", methods=["POST"])
+def api_ticket_fee_unlock(ticket_id):
+    """解锁已确认的费用明细：confirmed 置回未确认；若案件已归档/已完结则同步重新打开。"""
     ticket = get_ticket(ticket_id)
     if not ticket:
         return _err("工单不存在", 404)
     if ticket.get("fee_plan_status") != "confirmed":
-        return _err("只有正式费用方案可以重新打开")
-    data = request.get_json(force=True) or {}
-    reason = str(data.get("reason") or "").strip()
-    if not reason:
-        return _err("重新打开费用方案必须填写修改原因")
-    history = ticket.get("fee_plan_history") or []
-    if isinstance(history, str):
-        history = json.loads(history) if history else []
-    history.append({
-        **(ticket.get("fee_plan_snapshot") or {}),
-        "reopen_reason": reason,
-        "reopened_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    })
-    update_ticket(ticket_id, {
+        return _err("只有已确认的费用明细可以解锁")
+    reopened = ticket.get("archive_status") == "已归档" or ticket.get("handle_status") == "已完结"
+    payload = {
         "fee_plan_status": "draft",
-        "fee_plan_history": history,
-        "fee_confirm_note": reason,
         "reply_outdated": bool(ticket.get("reply_path")),
-        **_reopen_case_fields(),
+    }
+    if reopened:
+        payload.update(_reopen_case_fields())
+    update_ticket(ticket_id, payload)
+    add_log(
+        "fee_unlock",
+        "解锁费用明细，允许重新编辑确认" + ("，已同步重新打开案件" if reopened else ""),
+        ticket_id=ticket_id,
+    )
+    return _ok({
+        "ticket_id": ticket_id,
+        "fee_plan_status": "draft",
+        "case_reopened": bool(reopened),
     })
-    add_log("fee_reopen", f"重新打开费用方案: {reason}", ticket_id=ticket_id)
-    return _ok({"ticket_id": ticket_id, "fee_plan_status": "draft"})
 
 
-@app.route("/api/tickets/<ticket_id>/communications", methods=["GET"])
-def api_ticket_communications(ticket_id):
-    """列出投诉案件的多轮沟通记录。"""
-    try:
-        if not get_ticket(ticket_id):
-            return _err("工单不存在", 404)
-        return _ok(get_communication_records(ticket_id))
-    except Exception as e:
-        return _err(str(e), 500)
-
-
-@app.route("/api/tickets/<ticket_id>/communications", methods=["POST"])
-def api_ticket_communication_add(ticket_id):
-    """新增一次学员沟通记录。"""
+@app.route("/api/tickets/<ticket_id>/withdraw", methods=["PUT"])
+def api_ticket_withdraw(ticket_id):
+    """撤诉标记（v2）：任意状态可用（含已归档），写入撤诉时间与原因。"""
     try:
         ticket = get_ticket(ticket_id)
         if not ticket:
             return _err("工单不存在", 404)
-        data = request.get_json(force=True)
-        summary = data.get("summary", "").strip()
-        if not summary:
-            return _err("请填写沟通摘要")
-
-        record_id = save_communication_record(
-            ticket_id=ticket_id,
-            fee_plan_version=int(ticket.get("fee_plan_version") or 0),
-            contact_time=data.get("contact_time", "").strip(),
-            contact_method=data.get("contact_method", "").strip(),
-            summary=summary,
-            student_intention=data.get("student_intention", "").strip(),
-            next_follow_up=data.get("next_follow_up", "").strip(),
-        )
-        add_log("communication_add", f"新增沟通记录: {summary[:40]}", ticket_id=ticket_id)
-        return _ok({"id": record_id})
-    except Exception as e:
-        traceback.print_exc()
-        add_log("communication_add", f"异常: {str(e)}", success=False, ticket_id=ticket_id)
-        return _err(str(e), 500)
-
-
-@app.route("/api/tickets/<ticket_id>/communications/<int:record_id>", methods=["DELETE"])
-def api_ticket_communication_delete(ticket_id, record_id):
-    """删除沟通记录。"""
-    try:
-        if delete_communication_record(record_id, ticket_id=ticket_id):
-            add_log("communication_delete", f"删除沟通记录: {record_id}", ticket_id=ticket_id)
-            return _ok()
-        return _err("记录不存在", 404)
+        data = request.get_json(silent=True) or {}
+        reason = str(data.get("reason") or "").strip()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        update_ticket(ticket_id, {
+            "withdraw_status": "已撤诉",
+            "withdraw_updated_at": now,
+            "withdrawn_at": now,
+            "withdraw_reason": reason,
+        })
+        add_log("ticket_withdraw", f"学员撤诉: {reason[:40]}" if reason else "学员撤诉", ticket_id=ticket_id)
+        warnings = []
+        fresh = get_ticket(ticket_id) or {}
+        if str(fresh.get("archive_status") or "") == "已归档":
+            warnings = _sync_withdraw_archive(fresh)
+        return _ok({
+            "ticket_id": ticket_id,
+            "withdraw_status": "已撤诉",
+            "withdrawn_at": now,
+            "withdraw_reason": reason,
+            "warnings": warnings,
+        })
     except Exception as e:
         return _err(str(e), 500)
 
@@ -1108,22 +1436,33 @@ def api_ticket_withdraw_status(ticket_id):
     """更新撤诉状态（归档后仍可单独修改，不影响费用方案与协商结论）。
 
     撤诉是动态过程：学员今天没撤、明天撤了，不应强制重新打开整个案件。
+    withdrawn_at 与 withdraw_status 同步维护，保证统计口径一致。
     """
     try:
         ticket = get_ticket(ticket_id)
         if not ticket:
             return _err("工单不存在", 404)
-        data = request.get_json(force=True) or {}
+        data = request.get_json(force=True, silent=True) or {}
         status = str(data.get("withdraw_status") or "").strip()
         if status not in {"已撤诉", "未撤诉"}:
             return _err("撤诉状态只能是 已撤诉 或 未撤诉")
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prev_status = str(ticket.get("withdraw_status") or "").strip()
         update_ticket(ticket_id, {
             "withdraw_status": status,
             "withdraw_updated_at": now,
+            "withdrawn_at": now if status == "已撤诉" else "",
         })
+        warnings = []
+        if (
+            prev_status == "已撤诉"
+            and status == "未撤诉"
+            and str(ticket.get("archive_status") or "").strip() == "已归档"
+        ):
+            fresh = get_ticket(ticket_id)
+            warnings = _cleanup_withdraw_archive(fresh or ticket)
         add_log("withdraw_status_update", f"撤诉状态更新为: {status}", ticket_id=ticket_id)
-        return _ok({"withdraw_status": status, "withdraw_updated_at": now})
+        return _ok({"withdraw_status": status, "withdraw_updated_at": now, "warnings": warnings})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -1141,16 +1480,31 @@ def api_tickets_export():
         school = request.args.get("school", "")
         date_start = request.args.get("date_start", "")
         date_end = request.args.get("date_end", "")
-        
-        # 查询工单列表（不分页，获取全部）
-        tickets, _ = list_tickets(
-            limit=10000,  # 最多导出1万条
-            offset=0,
-            status=status,
-            school=school,
-            start_date=date_start,
-            end_date=date_end,
-        )
+        # 网点类型范围（与 /api/ticket-statistics 同语义）：branch=仅分校 / store=仅分店
+        scope = request.args.get("scope", "")
+        if scope and scope not in {"all", "branch", "store"}:
+            return _err("scope 只能是 all/branch/store")
+        # 批量导出：可选 ids 参数（逗号分隔工单 id），指定时按 id 直查，不受 limit 与其他筛选影响
+        ids_raw = request.args.get("ids", "").strip()
+        selected_ids = [s.strip() for s in ids_raw.split(",") if s.strip()] if ids_raw else None
+
+        if selected_ids is not None:
+            tickets = [get_ticket(tid) for tid in selected_ids]
+            tickets = [t for t in tickets if t]
+        else:
+            # 查询工单列表（不分页，获取全部）
+            tickets, _ = list_tickets(
+                limit=10000,  # 最多导出1万条
+                offset=0,
+                status=status,
+                school=school,
+                start_date=date_start,
+                end_date=date_end,
+            )
+            if scope == "branch":
+                tickets = [t for t in tickets if t.get("organization_unit_type") == "分校"]
+            elif scope == "store":
+                tickets = [t for t in tickets if t.get("organization_unit_type") == "分店"]
         
         # 创建工作簿
         wb = Workbook()
@@ -1162,7 +1516,7 @@ def api_tickets_export():
             "工单编号", "创建日期", "学员姓名", "身份证", "手机号",
             "驾校", "驾照类型", "当前阶段", "合同金额", "实际已交",
             "违约金比例", "总扣费", "应退金额", "处理状态", "投诉渠道",
-            "投诉类型", "扣费明细"
+            "投诉类型", "扣费明细", "撤诉状态", "归档状态"
         ]
         
         # 写入表头
@@ -1176,14 +1530,9 @@ def api_tickets_export():
         # 写入数据
         for row_idx, ticket in enumerate(tickets, 2):
             # 解析扣费明细
-            deductions = ticket.get("deduction_detail", "[]")
-            try:
-                if isinstance(deductions, str):
-                    deductions = json.loads(deductions)
-                deductions_str = "; ".join([f"{d.get('item', '')}:{d.get('amount', 0)}元" for d in deductions]) if deductions else ""
-            except:
-                deductions_str = str(deductions)[:100]
-            
+            deductions = parse_deductions(ticket.get("deduction_detail", "[]"))
+            deductions_str = "; ".join([f"{d.get('item', '')}:{d.get('amount', 0)}元" for d in deductions]) if deductions else ""
+
             penalty_rate = 0.2
             for deduction in deductions if isinstance(deductions, list) else []:
                 if deduction.get("item") == "违约金" and deduction.get("penalty_rate") is not None:
@@ -1208,13 +1557,15 @@ def api_tickets_export():
                 ticket.get("source_channel", ""),
                 ticket.get("complaint_type", ""),
                 deductions_str,
+                ticket.get("withdraw_status", "") or "",
+                ticket.get("archive_status", "") or "",
             ]
             
             for col, value in enumerate(row_data, 1):
-                ws.cell(row=row_idx, column=col, value=value)
+                ws.cell(row=row_idx, column=col, value=_excel_safe_value(value))
         
         # 调整列宽
-        column_widths = [15, 12, 10, 20, 12, 10, 8, 10, 10, 10, 10, 10, 10, 10, 10, 10, 30]
+        column_widths = [15, 12, 10, 20, 12, 10, 8, 10, 10, 10, 10, 10, 10, 10, 10, 10, 30, 10, 10]
         for i, width in enumerate(column_widths, 1):
             ws.column_dimensions[chr(64 + i) if i <= 26 else 'A' + chr(64 + i - 26)].width = width
         
@@ -1254,7 +1605,9 @@ def api_auth_status():
 @app.route("/api/auth/login", methods=["POST"])
 def api_auth_login():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
         background = data.get("background", True)
 
         results = query_engine.login_all(background=background)
@@ -1288,7 +1641,9 @@ def api_auth_clear():
 @app.route("/api/contract/download", methods=["POST"])
 def api_contract_download():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
         id_card = data.get("id_card", "").strip()
         student_name = data.get("name", "")
         school_short = data.get("school_short", "未知")
@@ -1350,7 +1705,7 @@ def api_contract_download():
                 _save_contract_to_ticket(ticket_id, filepath, filename)
             return _ok({"filepath": filepath, "filename": filename, "cached": False})
         else:
-            return _err("未找到电子合同（可能是2024年3月15日前报名的学员，或该学员确实无电子合同）")
+            return _err("东莞驾培未找到该学员的电子合同。请改用「上传合同分析」导入纸质合同，或点「手动录入费用」录入")
 
     except Exception as e:
         traceback.print_exc()
@@ -1542,6 +1897,8 @@ def api_contract_upload():
             "manifest": manifest,
         })
 
+    except RequestEntityTooLarge:
+        return _err("上传文件超过大小限制（50MB）", 413)
     except Exception as e:
         traceback.print_exc()
         return _err(str(e), 500)
@@ -1550,7 +1907,9 @@ def api_contract_upload():
 @app.route("/api/contract/analyze", methods=["POST"])
 def api_contract_analyze():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
         _filepath, validation_error = _validate_contract_analysis_request(data)
         if validation_error:
             return _err(validation_error, _contract_validation_status(validation_error))
@@ -1849,7 +2208,9 @@ def _contract_analysis_fingerprint(data: dict, filepath: str) -> str:
 
 @app.route("/api/contract/analyze/start", methods=["POST"])
 def api_contract_analyze_start():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return _err("请求体不是合法JSON", 400)
     filepath, err = _validate_contract_analysis_request(data)
     if err:
         return _err(err, _contract_validation_status(err))
@@ -1921,19 +2282,29 @@ def api_contract_analyze_status(job_id):
 @app.route("/api/reply/generate", methods=["POST"])
 def api_reply_generate():
     try:
-        data = request.get_json(force=True)
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
         ticket_id = data.get("ticket_id", "")
-        document_type = str(data.get("document_type") or "formal").strip()
-        if document_type == "progress":
-            ticket, err = _fee_plan_ticket_or_error(ticket_id, {"provisional", "confirmed"}, "进展回复")
-        else:
-            ticket, err = _confirmed_ticket_or_error(ticket_id)
+        ticket, err, status = _confirmed_ticket_or_error(ticket_id)
         if err:
             add_log("reply_generate", err, success=False, ticket_id=ticket_id)
-            return _err(err)
+            return _err(err, status)
         official = _official_case_payload(ticket, data)
 
-        # 确定回复函保存路径
+        with _reply_generate_lock(str(ticket_id)):
+            return _do_generate_reply(ticket, official, data)
+    except Exception as e:
+        traceback.print_exc()
+        add_log("reply_generate", f"异常: {str(e)}", success=False)
+        return _err(str(e), 500)
+
+
+def _do_generate_reply(ticket: dict, official: dict, data: dict):
+    try:
+        ticket_id = str(official.get("ticket_id") or "")
+
+        # 确定回复函保存路径（文件命名规则保持旧版不变）
         reply_name = official.get("name", "")
         reply_id_card = official.get("id_card", "")
         reply_school = official.get("school_short", "")
@@ -1942,34 +2313,35 @@ def api_reply_generate():
         else:
             reply_dir = REPLY_DIR
 
-        result = generate_reply(
-            name=reply_name,
-            id_card=reply_id_card,
-            school_short=official.get("school_short", ""),
-            registration_date=official.get("registration_date", ""),
-            license_type=official.get("license_type", ""),
-            school_name=official.get("school_name", ""),
-            exam_stage=official.get("exam_stage", ""),
-            total_fee=float(official.get("total_fee", 0) or 0),
-            actual_paid=float(official.get("actual_paid", 0) or 0),
-            deductions=official.get("deductions", []),
-            total_deduction=float(official.get("total_deduction", 0) or 0),
-            refund=float(official.get("refund", 0) or 0),
-            contract_code=official.get("contract_code", ""),
-            training_hours=official.get("training_hours", {}),
-            complaint_summary=ticket.get("complaint_summary", ""),
-            final_outcome=ticket.get("final_outcome", ""),
-            communications=get_communication_records(ticket_id),
-            special_warnings=ticket.get("special_warnings", []),
-            output_dir=reply_dir,
-            template_id=data.get("template_id", ""),
-        )
+        # 金额一律取数据库已确认快照，不信任请求体
+        deductions = official.get("deductions", []) or []
 
+        mismatch = False
+        req_rows = data.get("deductions")
+        if isinstance(req_rows, list) and req_rows:
+            req_sum = round(sum(_deduction_row_amount(d) for d in req_rows), 2)
+            snap_sum = round(sum(_deduction_row_amount(d) for d in deductions), 2)
+            if abs(req_sum - snap_sum) > 0.009:
+                mismatch = True
+        for req_key, snap_key in (("refund", "refund"), ("total", "total_fee"), ("total_fee", "total_fee")):
+            if data.get(req_key) is not None:
+                try:
+                    if abs(float(data[req_key]) - float(official.get(snap_key, 0) or 0)) > 0.009:
+                        mismatch = True
+                except (TypeError, ValueError):
+                    pass
+
+        today_str = datetime.now().strftime("%Y%m%d")
+        base_filename = f"{today_str}{reply_name}{reply_id_card}投诉回复函{reply_school}"
+        output_path = unique_path(os.path.join(reply_dir, base_filename + ".docx"))
+
+        result = generate_reply_docx(ticket=ticket, deductions=deductions, output_path=output_path)
         if result.get("success"):
-            add_log("reply_generate", f"生成回复函: {result['filename']}", ticket_id=ticket_id)
+            filepath = result["path"]
+            add_log("reply_generate", f"生成回复函(v2): {filepath}", ticket_id=ticket_id)
             if ticket_id:
                 update_ticket(ticket_id, {
-                    "reply_path": result["filepath"],
+                    "reply_path": filepath,
                     "reply_outdated": False,
                 })
             elif data.get("id_card"):
@@ -1977,12 +2349,19 @@ def api_reply_generate():
                 if existing:
                     save_complaint({
                         "id": existing["id"],
-                        "reply_path": result["filepath"],
+                        "reply_path": filepath,
                     })
+            resp = {
+                "success": True,
+                "filename": os.path.basename(filepath),
+                "filepath": filepath,
+            }
+            if mismatch:
+                resp["warning"] = "以系统确认的费用明细为准"
+            return jsonify(resp)
         else:
             add_log("reply_generate", f"生成失败: {result.get('error')}", success=False, ticket_id=ticket_id)
-
-        return jsonify(result)
+            return jsonify(result)
 
     except Exception as e:
         traceback.print_exc()
@@ -2008,6 +2387,127 @@ def api_reply_download():
         return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
     except Exception as e:
         return _err(str(e))
+
+
+@app.route("/api/fs/browse")
+def api_fs_browse():
+    """目录浏览（归档路径选择弹框用）：列出指定目录下的子文件夹。
+
+    path 为空时返回用户主目录；仅返回文件夹，跳过 . 开头的隐藏目录。
+    本系统为本机内部工具，归档本身即允许用户指定任意根路径，此处仅提供同等的只读浏览能力。
+    """
+    try:
+        raw = (request.args.get("path") or "").strip()
+        path = os.path.abspath(os.path.expanduser(raw)) if raw else os.path.expanduser("~")
+        if not os.path.exists(path):
+            return _err("目录不存在", 404)
+        if not os.path.isdir(path):
+            return _err("该路径不是文件夹", 400)
+        dirs = []
+        warning = ""
+        try:
+            entries = sorted(os.listdir(path), key=str.lower)
+        except PermissionError:
+            entries = []
+            warning = "无权限读取该目录内容"
+        for name in entries:
+            if name.startswith("."):
+                continue
+            if os.path.isdir(os.path.join(path, name)):
+                dirs.append(name)
+        parent = os.path.dirname(path)
+        return jsonify({
+            "success": True,
+            "data": {"path": path, "parent": parent if parent != path else "", "dirs": dirs, "warning": warning},
+        })
+    except Exception as e:
+        return _err(str(e))
+
+
+@app.route("/api/tickets/<ticket_id>/archive", methods=["POST"])
+def api_tickets_archive(ticket_id):
+    """D10 最终归档（权威实现）：三闸门校验 → 建夹 → 复制两件套 → 更新状态。
+
+    与 get_archive_folder（受理建夹，沿用 {日期}_{姓名}_{身份证}_{校区} 规则）分工不同：
+    本路由按 archive_service.build_archive_dir 的
+    {root}/{单位类型}/{代号-单位名}/{日期}_{姓名}_{身份证}_{代号}/ 规则拼路径，
+    仅作为结案归档入口，不负责受理阶段建夹。两者路径规则差异保留，不顺手统一。
+    """
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+
+        # 归档三闸门：处理情况 + 配合度 + 费用明细确认
+        errors = archive_gate_errors(ticket)
+        if errors:
+            return jsonify({"success": False, "errors": errors}), 400
+
+        # 归档根目录：优先取请求体（用户在界面填写/修改），并持久化为上次使用路径
+        body = request.get_json(force=True, silent=True) or {}
+        cfg = load_config()
+        root = str(body.get("archive_root") or "").strip()
+        if root:
+            if root != cfg.get("archive_root", ""):
+                cfg["archive_root"] = root
+                save_config(cfg)
+        else:
+            root = cfg.get("archive_root", "案件归档")
+        case_dir, reg_target, reply_target = build_archive_dir(ticket, root=root)
+
+        warnings = []
+        reg_src = ticket.get("registration_form_path") or ""
+        updated_at_raw = str(ticket.get("updated_at") or "").strip()
+        try:
+            updated_ts = datetime.strptime(updated_at_raw, "%Y-%m-%d %H:%M:%S").timestamp() if updated_at_raw else 0
+        except ValueError:
+            updated_ts = 0
+        src_missing = not reg_src or not os.path.isfile(reg_src)
+        stale = src_missing or (updated_ts > 0 and os.path.getmtime(reg_src) < updated_ts)
+        if stale and str(ticket.get("handling_notes") or "").strip():
+            gen = _regen_registration_form(ticket)
+            if gen.get("success"):
+                reg_src = gen["filepath"]
+                update_ticket(ticket_id, {"registration_form_path": reg_src})
+            else:
+                warnings.append(f"登记表重新生成失败，沿用旧文件: {gen.get('error')}")
+
+        # 收集已生成的源文件：登记表（受理流程写盘 registration_form_path）、
+        # 回复函（/api/reply/generate 写盘 reply_path），存在才复制
+        files = {}
+        if reg_src and os.path.isfile(reg_src):
+            files["register_form"] = reg_src
+        reply_src = ticket.get("reply_path") or ""
+        if reply_src and os.path.isfile(reply_src):
+            files["reply"] = reply_src
+
+        if not files:
+            return jsonify({"success": False, "errors": ["无可归档文件：请先生成登记表或回复函"]}), 400
+
+        result = archive_case(ticket, files, open_folder=False)
+        if not result.get("success"):
+            return jsonify(result), 400
+
+        update_ticket(ticket_id, {
+            "archive_status": "已归档",
+            "handle_status": "已完结",
+            "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "archived_dir": result["dir"],
+        })
+
+        add_log("archive", f"归档案件: {case_dir}", ticket_id=ticket_id)
+        resp = {
+            "success": True,
+            "dir": result["dir"],
+            "files": result["files"],
+            "opened": bool(result.get("opened")),
+        }
+        if warnings:
+            resp["warning"] = "；".join(warnings)
+        return jsonify(resp)
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
 
 
 @app.route("/api/templates", methods=["GET"])
@@ -2040,11 +2540,17 @@ def api_templates_upload():
 
         template_dir = os.path.join(PROJECT_DIR, "回复模板")
         os.makedirs(template_dir, exist_ok=True)
-        safe_name = secure_filename(file.filename)
-        filepath = os.path.join(template_dir, safe_name)
-        file.save(filepath)
-
-        result = upload_template(filepath, name, description)
+        # 使用稳定的 uuid 文件名保存上传流，避免 secure_filename 剥离中文名，且不留孤儿文件
+        tmp_path = os.path.join(template_dir, f"{uuid.uuid4().hex}{ext}")
+        file.save(tmp_path)
+        try:
+            result = upload_template(tmp_path, name, description)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
         add_log("template_upload", f"上传模板: {name}")
         return _ok(result)
 
@@ -2059,60 +2565,37 @@ def api_templates_set_default(template_id):
     if set_default_template(template_id):
         add_log("template_default", f"设置默认模板: {template_id}")
         return _ok(None, "已设置为默认模板")
-    return _err("设置失败")
+    return _err("模板不存在", 404)
 
 
 @app.route("/api/templates/<template_id>", methods=["DELETE"])
 def api_templates_delete(template_id):
-    """删除模板"""
+    """删除模板（同时清理磁盘文件；删除最后一个默认模板时给出警告）"""
+    from database import get_db, get_default_template
+    tmpl_path = None
+    was_default = False
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT template_path, is_default FROM reply_templates WHERE id=?",
+            (template_id,),
+        ).fetchone()
+        if row:
+            tmpl_path = row["template_path"]
+            was_default = bool(row["is_default"])
     if delete_template(template_id):
+        if tmpl_path and os.path.exists(tmpl_path):
+            try:
+                os.remove(tmpl_path)
+            except OSError:
+                pass
         add_log("template_delete", f"删除模板: {template_id}")
+        if was_default and not get_default_template():
+            return _ok(
+                {"warning": "已删除最后一个默认模板，当前无默认模板，生成回复函时请先指定默认模板"},
+                "已删除",
+            )
         return _ok(None, "已删除")
-    return _err("删除失败")
-
-
-# ═══════════════════════════════════════════════════════════════
-#  API: 飞书登记
-# ═══════════════════════════════════════════════════════════════
-
-@app.route("/api/feishu/submit", methods=["POST"])
-def api_feishu_submit():
-    try:
-        data = request.get_json(force=True)
-        ticket_id = data.get("ticket_id", "")
-        ticket, err = _confirmed_ticket_or_error(ticket_id)
-        if err:
-            add_log("feishu_submit", err, success=False, ticket_id=ticket_id)
-            return _err(err)
-        official = _official_case_payload(ticket, data)
-        svc = FeishuService()
-        result = svc.add_record(official)
-
-        if result.get("success"):
-            add_log("feishu_submit", f"提交飞书: {result.get('handle_no', '')}", ticket_id=ticket_id)
-            if ticket_id:
-                update_ticket(ticket_id, {
-                    "feishu_record_id": result.get("record_id", ""),
-                    "feishu_handle_no": result.get("handle_no", ""),
-                })
-        else:
-            add_log("feishu_submit", f"提交失败: {result.get('error')}", success=False, ticket_id=ticket_id)
-
-        return jsonify(result)
-
-    except Exception as e:
-        traceback.print_exc()
-        add_log("feishu_submit", f"异常: {str(e)}", success=False)
-        return _err(str(e), 500)
-
-
-@app.route("/api/feishu/test")
-def api_feishu_test():
-    try:
-        svc = FeishuService()
-        return jsonify(svc.test_connection())
-    except Exception as e:
-        return _err(str(e))
+    return _err("模板不存在", 404)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2127,21 +2610,36 @@ def api_tickets_register_form(ticket_id):
         if not ticket:
             return _err("工单不存在", 404)
 
+        # 页面未保存的编辑（处理情况/姓名补录）优先于库内值，保证生成即预览所见；覆盖值落库保持 DB=docx 一致
+        body = request.get_json(force=True, silent=True) or {}
+        ticket = dict(ticket)
+        updates = {}
+        notes = str(body.get("handling_notes", "")).strip()
+        if notes:
+            ticket["handling_notes"] = notes
+            updates["handling_notes"] = notes
+        name = str(body.get("student_name", "")).strip()
+        if name:
+            ticket["student_name"] = name
+            updates["student_name"] = name
+        if updates:
+            update_ticket(ticket_id, updates)
+
         from services.visit_service import generate_registration_form
-        from database import get_communication_records
-        communications = get_communication_records(ticket_id)
+        ticket, ai_sections = _polish_registration_ticket(ticket)
         result = generate_registration_form(
             ticket,
-            communications=communications,
+            handling_notes=ticket.get("handling_notes", "") or "",
             final_outcome=ticket.get("final_outcome", ""),
             negotiation_outcome=ticket.get("negotiation_outcome", ""),
             withdraw_status=ticket.get("withdraw_status", ""),
             branch_cooperation=ticket.get("branch_cooperation", ""),
             total_fee=float(ticket.get("total_fee", 0) or 0),
             refund=float(ticket.get("refund_fee", 0) or 0),
-            deductions=ticket.get("deduction_detail", []) if isinstance(ticket.get("deduction_detail"), list) else json.loads(ticket.get("deduction_detail", "[]")),
+            deductions=parse_deductions(ticket.get("deduction_detail")),
             special_warnings=json.loads(ticket.get("special_warnings", "[]")) if isinstance(ticket.get("special_warnings"), str) else ticket.get("special_warnings", []),
             exam_stage=ticket.get("exam_stage", ""),
+            ai_sections=ai_sections,
         )
 
         if result.get("success"):
@@ -2158,22 +2656,53 @@ def api_tickets_register_form(ticket_id):
         return _err(str(e), 500)
 
 
+@app.route("/api/tickets/<ticket_id>/register-form/preview", methods=["POST"])
+def api_tickets_register_form_preview(ticket_id):
+    """预览投诉登记表内容（不落盘、不调用 AI，与归档时生成的 docx 共用同一数据构建逻辑）"""
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+
+        # 页面未保存的编辑（处理情况/姓名补录）优先于库内值，保证预览即所得
+        body = request.get_json(force=True, silent=True) or {}
+        ticket = dict(ticket)
+        notes = str(body.get("handling_notes", "")).strip()
+        if notes:
+            ticket["handling_notes"] = notes
+        name = str(body.get("student_name", "")).strip()
+        if name:
+            ticket["student_name"] = name
+
+        from services.visit_service import build_registration_form_data
+        data = build_registration_form_data(
+            ticket,
+            handling_notes=ticket.get("handling_notes", "") or "",
+            final_outcome=ticket.get("final_outcome", ""),
+            negotiation_outcome=ticket.get("negotiation_outcome", ""),
+            total_fee=float(ticket.get("total_fee", 0) or 0),
+            refund=float(ticket.get("refund_fee", 0) or 0),
+            deductions=parse_deductions(ticket.get("deduction_detail")),
+            ai_sections={},
+        )
+        return _ok(data)
+
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
 @app.route("/api/tickets/<ticket_id>/detail")
 def api_ticket_detail(ticket_id):
-    from database import get_ticket, get_communication_records
+    from database import get_ticket
     ticket = get_ticket(ticket_id)
     if not ticket:
-        return jsonify({"success": False, "error": "工单不存在"})
+        return _err("工单不存在", 404)
 
     # Parse deductions from JSON string
-    deductions = []
-    if ticket.get("deduction_detail"):
-        try:
-            deductions = json.loads(ticket["deduction_detail"]) if isinstance(ticket["deduction_detail"], str) else ticket["deduction_detail"]
-        except:
-            pass
+    deductions = parse_deductions(ticket.get("deduction_detail"))
 
-    communication_records = get_communication_records(ticket_id)
+    communication_records = []
 
     # Build document list
     documents = []
@@ -2198,7 +2727,7 @@ def api_get_analysis(ticket_id):
     from database import get_ticket
     ticket = get_ticket(ticket_id)
     if not ticket:
-        return jsonify({"success": True, "cached": False})
+        return _err("工单不存在", 404)
 
     # Check current ticket
     if ticket.get("deduction_detail") and ticket["deduction_detail"] != "[]":
@@ -2239,19 +2768,327 @@ def api_get_analysis(ticket_id):
     return jsonify({"success": True, "cached": False})
 
 
+_COMPARISON_ITEM_LABELS = [
+    ("total_fee", "合同总额"),
+    ("service_fee", "综合服务费"),
+    ("theory_fee", "理论培训费"),
+    ("subject2_fee", "科目二实操培训费"),
+    ("subject2_unit", "科目二学时单价(元/学时)"),
+    ("subject3_fee", "科目三实操培训费"),
+    ("subject3_unit", "科目三学时单价(元/学时)"),
+]
+
+_BREAKDOWN_KEYS = (
+    "service_fee", "theory_fee", "subject2_fee", "subject2_unit",
+    "subject3_fee", "subject3_unit", "subject2_retrain", "subject3_retrain", "pickup_fee",
+)
+
+
+def _round2(val):
+    try:
+        return round(float(val), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _find_deduction_item(deductions, keywords):
+    for d in deductions:
+        name = str(d.get("item", ""))
+        if any(k in name for k in keywords):
+            return d
+    return None
+
+
+def _parse_unit_price(raw):
+    m = re.search(r"(\d+(?:\.\d+)?)", str(raw or ""))
+    return round(float(m.group(1)), 2) if m else None
+
+
+def _empty_platform() -> dict:
+    return {
+        "contract_fee": 0, "pay_fee": 0, "supervise_fee": 0,
+        "residue_supervise_amt": 0, "supervise_date": "",
+        "breakdown": {k: 0 for k in _BREAKDOWN_KEYS},
+        "orders": [],
+    }
+
+
+def _build_contract_comparison(ticket: dict, ticket_id: str) -> dict:
+    query_result = ticket.get("query_result") if isinstance(ticket.get("query_result"), dict) else {}
+    driving_fee = query_result.get("driving_fee")
+    platform_available = isinstance(driving_fee, dict) and bool(driving_fee)
+    if not platform_available:
+        platform = _empty_platform()
+    else:
+        raw_breakdown = driving_fee.get("breakdown") if isinstance(driving_fee.get("breakdown"), dict) else {}
+        platform = {
+            "contract_fee": _round2(driving_fee.get("contract_fee")),
+            "pay_fee": _round2(driving_fee.get("pay_fee")),
+            "supervise_fee": _round2(driving_fee.get("supervise_fee")),
+            "residue_supervise_amt": _round2(driving_fee.get("residue_supervise_amt")),
+            "supervise_date": driving_fee.get("supervise_date") or "",
+            "breakdown": {k: _round2(raw_breakdown.get(k)) for k in _BREAKDOWN_KEYS},
+            "orders": driving_fee.get("orders") if isinstance(driving_fee.get("orders"), list) else [],
+        }
+
+    deductions = ticket.get("deduction_detail") if isinstance(ticket.get("deduction_detail"), list) else []
+
+    def contract_value(key):
+        if key == "total_fee":
+            return _round2(ticket.get("total_fee")) if ticket.get("total_fee") else None
+        if key == "service_fee":
+            d = _find_deduction_item(deductions, ("综合服务费", "服务费"))
+        elif key == "theory_fee":
+            d = _find_deduction_item(deductions, ("理论培训费", "理论费"))
+        elif key.startswith("subject2"):
+            d = _find_deduction_item(deductions, ("科目二",))
+        else:
+            d = _find_deduction_item(deductions, ("科目三",))
+        if not d:
+            return None
+        if key.endswith("_unit"):
+            return _parse_unit_price(d.get("unit_price"))
+        val = d.get("max_amount") or d.get("amount")
+        return _round2(val) if val else None
+
+    items = []
+    for key, label in _COMPARISON_ITEM_LABELS:
+        p_val = platform["contract_fee"] if key == "total_fee" else platform["breakdown"].get(key)
+        c_val = contract_value(key)
+        if c_val is None:
+            status = "platform_only"
+        elif not p_val:
+            status = "contract_only"
+        elif abs(p_val - c_val) < 0.01:
+            status = "match"
+        else:
+            status = "diff"
+        items.append({
+            "key": key, "label": label,
+            "platform": _round2(p_val), "contract": _round2(c_val),
+            "status": status,
+        })
+
+    platform_extra = []
+    for key, label in (("subject2_retrain", "科目二补训费"), ("subject3_retrain", "科目三补训费"), ("pickup_fee", "接送费")):
+        amount = platform["breakdown"].get(key, 0)
+        if amount > 0:
+            platform_extra.append({"key": key, "label": label, "amount": amount})
+
+    contract_text = ticket.get("contract_text")
+    if isinstance(contract_text, str):
+        try:
+            contract_text = json.loads(contract_text)
+        except json.JSONDecodeError:
+            contract_text = {}
+    if not isinstance(contract_text, dict):
+        contract_text = {}
+    clauses = contract_text.get("clauses") or []
+    text_error = contract_text.get("error", "")
+    if not contract_text and ticket.get("contract_path"):
+        result = build_contract_clauses(ticket["contract_path"])
+        clauses = result.get("clauses") or []
+        text_error = result.get("error", "")
+        update_ticket(ticket_id, {"contract_text": json.dumps({"clauses": clauses, "error": text_error}, ensure_ascii=False)})
+
+    return {
+        "ticket_id": ticket_id,
+        "contract_code": ticket.get("contract_code") or "",
+        "platform_available": platform_available,
+        "platform": platform,
+        "items": items,
+        "platform_extra": platform_extra,
+        "deductions": deductions,
+        "clauses": clauses,
+        "text_available": bool(clauses),
+        "text_error": text_error,
+        "profile": _build_contract_profile(ticket, clauses),
+    }
+
+
+def _extract_signing_date(text: str) -> str:
+    """从合同文本中提取签订日期，支持多种格式（包括PDF提取时带空格的格式）。"""
+    # 先尝试匹配标准格式：日期：2026年07月07日 或 日期：2 0 2 5 年05月 03日（PDF空格）
+    # 匹配 digit(带可选空格)年 digit(带可选空格)月 digit(带可选空格)日
+    m = re.search(r"(?:签订|合同)?(?:日期|时间)[:：]?\s*((?:\d\s*){4}年\s*(?:\d\s*){1,2}月\s*(?:\d\s*){1,2}日)", text)
+    if m:
+        raw = m.group(1).strip()
+        # 清理多余空格并规范化
+        date_str = re.sub(r"\s+", "", raw)  # 移除所有空格: "2 0 2 5 年05月 03日" -> "2025年05月03日"
+        # 尝试解析并格式化
+        dm = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_str)
+        if dm:
+            y, mo, d = int(dm.group(1)), int(dm.group(2)), int(dm.group(3))
+            return f"{y}年{mo:02d}月{d:02d}日"
+        return date_str
+    # 再尝试匹配带横杠的格式：2026-07-07
+    m2 = re.search(r"(?:签订|合同)?(?:日期|时间)[:：]?\s*(\d{4}[-/]\d{1,2}[-/]\d{1,2})", text)
+    if m2:
+        return m2.group(1).strip()
+    # 最后尝试匹配纯数字格式：20260707
+    m3 = re.search(r"(?:签订|合同)?(?:日期|时间)[:：]?\s*(\d{8})", text)
+    if m3:
+        raw = m3.group(1)
+        return f"{raw[:4]}年{raw[4:6]}月{raw[6:8]}日"
+    return ""
+
+
+def _extract_contract_term(text: str, signing_date: str) -> str:
+    """提取合同期限整句：跨行合并 PDF 换行断句；若原文只写到“至 YYYY 年”（月日被换行截断），
+    结合签订日期 + 有效期年数推导精确到期日；中文日期统一零填充显示。"""
+    m = re.search(r"(本培训服务合同有效期[\s\S]{2,60}?)(?:止|。)", text) or \
+        re.search(r"(?:合同期限|有效期)[:：]?\s*([\s\S]{4,80}?)(?:止|。)", text)
+    if not m:
+        m2 = re.search(r"(?:合同期限|有效期)[:：]?\s*([^\n]{4,40})", text)
+        return re.sub(r"\s+", "", m2.group(1)) if m2 else ""
+    # 合并跨行并压缩 PDF/换行产生的空白
+    term = re.sub(r"\s+", "", m.group(1))
+    # 原文只写到年份（如“…有效期为3年，自签订之日起至2029年”）：推导精确到期日
+    year_only = re.search(r"至(\d{4})年$", term)
+    years_m = re.search(r"有效期[为是]?(\d+)年", term)
+    sign_m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", signing_date or "")
+    if year_only and years_m and sign_m:
+        y, mo, d = int(sign_m.group(1)), int(sign_m.group(2)), int(sign_m.group(3))
+        try:
+            end = date(y + int(years_m.group(1)), mo, d)
+            term = term[:year_only.start()] + f"至{end.year}年{end.month:02d}月{end.day:02d}日"
+        except ValueError:
+            pass  # 2月29日等边界日期推导失败时保留原文
+    # 中文日期统一零填充（2029年5月3日 → 2029年05月03日）
+    term = re.sub(
+        r"(\d{4})年(\d{1,2})月(\d{1,2})日",
+        lambda mm: f"{mm.group(1)}年{int(mm.group(2)):02d}月{int(mm.group(3)):02d}日",
+        term,
+    )
+    return term
+
+
+def _build_contract_profile(ticket: dict, clauses: list) -> dict:
+    """合同关键信息（从合同原文提取）。提取不到的留空。"""
+    preamble = next((c.get("body", "") for c in clauses if not c.get("no")), "")
+    full_text = preamble + "\n" + "\n".join(
+        (c.get("title", "") + "\n" + c.get("body", "")) for c in clauses
+    )
+
+    def _rx(pattern):
+        m = re.search(pattern, full_text)
+        return m.group(1).strip() if m else ""
+
+    signing = _extract_signing_date(full_text)
+    if not signing and ticket.get("registration_date"):
+        # 合同原文无签署日期时，回退用报名日期（东莞驾培电子合同通常同日签署）
+        dm = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", str(ticket["registration_date"]).strip())
+        if dm:
+            signing = f"{dm.group(1)}年{int(dm.group(2)):02d}月{int(dm.group(3)):02d}日"
+
+    return {
+        "contract": [
+            {"label": "合同编号", "value": ticket.get("contract_code") or _rx(r"合同(?:编号|编码)[:：]?\s*([A-Z0-9]+)")},
+            {"label": "甲方（学驾人）", "value": ticket.get("student_name") or _rx(r"甲\s*方[^名\n]*姓\s*名[:：]\s*(\S+)")},
+            {"label": "乙方（驾培机构）", "value": _rx(r"驾培机构[:：]\s*(\S+)")},
+            {"label": "培训车型", "value": _rx(r"培训车型[:：]?\s*([A-Z][12])") or str(ticket.get("license_type") or "")},
+            {"label": "合同期限", "value": _extract_contract_term(full_text, signing)},
+            {"label": "签订日期", "value": signing},
+        ],
+    }
+
+
+@app.route("/api/contract/comparison/<ticket_id>")
+def api_contract_comparison(ticket_id):
+    from database import get_ticket
+    ticket = get_ticket(ticket_id)
+    if not ticket:
+        return _err("工单不存在", 404)
+    return _ok(_build_contract_comparison(ticket, ticket_id))
+
+
+@app.route("/api/contract/comparison/<ticket_id>/refresh", methods=["POST"])
+def api_contract_comparison_refresh(ticket_id):
+    from database import get_ticket
+    ticket = get_ticket(ticket_id)
+    if not ticket:
+        return _err("工单不存在", 404)
+    id_card = (ticket.get("id_card") or "").strip()
+    if not id_card:
+        return jsonify({"success": False, "error": "工单缺少身份证号，无法查询驾培平台"})
+
+    from crawlers.driving import DrivingCrawler
+    try:
+        info = DrivingCrawler().query_student(id_card, include_contract_check=False)
+    except Exception as e:
+        system_logger.warning("[合同对照] 驾培平台查询失败 %s: %s", ticket_id, e)
+        return jsonify({"success": False, "error": str(e)})
+    if not info:
+        return jsonify({"success": False, "error": "驾培平台未查到该学员"})
+
+    driving_fee = {
+        "contract_fee": float(info.contract_fee or 0),
+        "pay_fee": float(info.pay_fee or 0),
+        "supervise_fee": float(info.supervise_fee or 0),
+        "residue_supervise_amt": float(info.residue_supervise_amt or 0),
+        "supervise_date": info.supervise_date or "",
+        "breakdown": info.fee_breakdown or {},
+        "orders": info.pay_orders or [],
+    }
+    query_result = dict(ticket.get("query_result")) if isinstance(ticket.get("query_result"), dict) else {}
+    query_result["driving_fee"] = driving_fee
+    update_ticket(ticket_id, {"query_result": query_result})
+    ticket["query_result"] = query_result
+
+    return _ok(_build_contract_comparison(ticket, ticket_id))
+
+
 @app.route("/api/contract/save_analysis", methods=["POST"])
 def api_save_analysis():
-    data = request.get_json(force=True)
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return _err("请求体不是合法JSON", 400)
     ticket_id = data.get("ticket_id")
     analysis_data = data.get("analysis_data", {})
     if not ticket_id:
-        return jsonify({"success": False, "error": "缺少工单ID"})
+        return _err("缺少工单ID", 400)
+
+    if not isinstance(analysis_data, dict) or not analysis_data:
+        return _err("缺少有效的分析结果数据", 400)
 
     ticket = get_ticket(ticket_id)
     if not ticket:
         return _err("工单不存在", 404)
     if ticket.get("fee_plan_status") == "confirmed" or ticket.get("archive_status") == "已归档":
-        return _err("正式费用方案已锁定；请通过重新打开费用方案并填写修改原因来调整")
+        return _err("费用明细已确认锁定；请先调用费用解锁（fee-unlock）再调整")
+
+    def _positive_number(val, name):
+        try:
+            num = float(val)
+        except (TypeError, ValueError):
+            return None, f"{name}必须是数值"
+        if num < 0:
+            return None, f"{name}不能为负数"
+        return num, None
+
+    for field, label in (("total_fee", "total_fee"), ("actual_paid", "actual_paid"),
+                         ("total_deduction", "total_deduction"), ("refund", "refund")):
+        val, err = _positive_number(analysis_data.get(field, 0), label)
+        if err:
+            return _err(err, 400)
+
+    deduction_detail = analysis_data.get("deduction_detail")
+    if deduction_detail is not None:
+        details = deduction_detail if isinstance(deduction_detail, list) else []
+        if isinstance(deduction_detail, str):
+            try:
+                details = json.loads(deduction_detail)
+            except json.JSONDecodeError:
+                details = []
+        if isinstance(details, list):
+            for _d in details:
+                if isinstance(_d, dict):
+                    try:
+                        _amt = float(_d.get("amount", 0))
+                    except (TypeError, ValueError):
+                        return _err("扣费明细金额必须为数值", 400)
+                    if _amt < 0:
+                        return _err("扣费明细金额不能为负数", 400)
 
     from database import update_ticket
     update_ticket(ticket_id, {
@@ -2280,13 +3117,6 @@ def api_config_get():
         pwd = safe.get(section, {}).get("password", "")
         if pwd:
             safe[section]["password"] = pwd[:3] + "••••"
-    for section in ("llm", "llm_intake", "llm_contract_vision", "llm_contract_text"):
-        if safe.get(section, {}).get("api_key"):
-            key = safe[section]["api_key"]
-            safe[section]["api_key"] = key[:8] + "••••" + key[-4:]
-    if safe.get("feishu", {}).get("app_secret"):
-        s = safe["feishu"]["app_secret"]
-        safe["feishu"]["app_secret"] = s[:8] + "••••"
 
     return jsonify(safe)
 
@@ -2294,7 +3124,9 @@ def api_config_get():
 @app.route("/api/config", methods=["PUT", "POST"])
 def api_config_put():
     try:
-        new_config = request.get_json(force=True)
+        new_config = request.get_json(force=True, silent=True)
+        if new_config is None:
+            return _err("请求体不是合法JSON", 400)
         current = load_config()
 
         for section in ("internal_system", "third_system", "driving_system"):
@@ -2307,16 +3139,7 @@ def api_config_put():
             if not isinstance(llm_cfg, dict):
                 continue
             llm_cfg["api_url"] = normalize_llm_api_url(llm_cfg.get("api_url", ""))
-            key = llm_cfg.get("api_key", "")
-            current_key = current.get(section, {}).get("api_key", "")
-            if key and ("•" in key or (current_key and key[:8] == current_key[:8])):
-                llm_cfg["api_key"] = current_key
             new_config[section] = llm_cfg
-
-        if new_config.get("feishu", {}).get("app_secret", ""):
-            secret = new_config["feishu"]["app_secret"]
-            if "•" in secret:
-                new_config["feishu"]["app_secret"] = current.get("feishu", {}).get("app_secret", "")
 
         save_config(new_config)
 
@@ -2334,6 +3157,98 @@ def api_config_put():
         return _err(str(e), 500)
 
 
+@app.route("/api/config/llm/test", methods=["POST"])
+def api_config_llm_test():
+    """测试大模型连通性：用当前表单参数发一次最小 chat 请求。"""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        import requests as _requests
+        api_url = normalize_llm_api_url((body.get("api_url") or "").strip())
+        api_key = (body.get("api_key") or "").strip()
+        model = (body.get("model") or "").strip()
+        if not api_url or not api_key or not model:
+            return _err("请先填写 API 地址、模型和 API Key", 400)
+
+        started = time.time()
+        resp = _requests.post(
+            api_url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": "你好，请回复：连接成功"}],
+                "max_tokens": 32,
+                "temperature": 0,
+            },
+            timeout=30,
+        )
+        latency_ms = int((time.time() - started) * 1000)
+        if resp.status_code != 200:
+            detail = ""
+            try:
+                err = resp.json().get("error", {})
+                detail = err.get("message", "") if isinstance(err, dict) else str(err)
+            except Exception:
+                detail = resp.text[:200]
+            return _err(f"HTTP {resp.status_code}：{detail or '请求失败'}", 400)
+        reply = ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        return _ok({"latency_ms": latency_ms, "reply": (reply or "").strip()[:100]}, "连接成功")
+    except Exception as e:
+        return _err(f"连接失败：{e}", 400)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API: 处理情况 AI 优化
+# ═══════════════════════════════════════════════════════════════
+
+NOTES_POLISH_PROMPT = """你是驾校投诉处理专员。工作人员用随手关键词记录了与学员的沟通处理情况，请将其整理成通顺、有条理的正式表述。
+要求：
+1. 只能使用原文提供的信息，严禁编造或补充原文没有的姓名、金额、日期、承诺等事实
+2. 保留全部关键信息：联系对象、沟通内容、协商结果、后续安排
+3. 按逻辑分条陈述（如「1）……；2）……」），语言正式、规范、简洁
+4. 只输出整理后的文字，不要任何解释、前缀或后缀
+
+处理情况原文：
+"""
+
+
+@app.route("/api/notes/polish", methods=["POST"])
+def api_notes_polish():
+    """处理情况 AI 优化：把输入框中用户记录的内容整理为正式表述（忠实原文，不编造）。"""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        text = (body.get("text") or "").strip()
+        if not text:
+            return _err("请先在处理情况输入框记录沟通内容", 400)
+
+        import requests as _requests
+        llm = _llm_config("llm")
+        if not llm.get("api_url") or not llm.get("api_key") or not llm.get("model"):
+            return _err("未配置大模型接口，请在系统设置中填写后重试", 400)
+        resp = _requests.post(
+            llm["api_url"],
+            headers={"Authorization": f"Bearer {llm['api_key']}", "Content-Type": "application/json"},
+            json={
+                "model": llm["model"],
+                "messages": [{"role": "user", "content": NOTES_POLISH_PROMPT + text}],
+                "max_tokens": 1024,
+                "temperature": 0.3,
+                # qwen3 系列文字润色场景需要先"想清楚"才能识别错别字（如"鞋套"→"协调"）、补全上下文；
+                # 关闭思考会让模型走短路径直接复述，无法处理拼音错别字与口语化输入
+                "enable_thinking": True,
+            },
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return _err(_format_llm_error(resp), 400)
+        polished = ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        polished = (polished or "").strip()
+        if not polished:
+            return _err("AI 未返回有效内容，请重试", 400)
+        return _ok({"polished": polished})
+    except Exception as e:
+        return _err(f"AI 优化失败：{e}", 500)
+
+
 # ═══════════════════════════════════════════════════════════════
 #  API: 历史记录 + 统计
 # ═══════════════════════════════════════════════════════════════
@@ -2343,8 +3258,14 @@ def api_complaints_list():
     """获取投诉记录列表（兼容旧接口）"""
     status = request.args.get("status", "")
     search = request.args.get("search", "")
-    limit = int(request.args.get("limit", 50))
-    offset = int(request.args.get("offset", 0))
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        offset = int(request.args.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
     # 深分页保护：与 /api/tickets 一致
     limit = min(max(limit, 1), 200)
     offset = min(max(offset, 0), 100000)
@@ -2384,11 +3305,34 @@ def api_org_vehicle_counts():
 @app.route("/api/org-vehicle-counts", methods=["PUT"])
 def api_org_vehicle_counts_save():
     """批量保存网点车辆数配置"""
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return _err("请求体不是合法JSON", 400)
     items = data.get("items", [])
     if not isinstance(items, list):
-        return _err("items 必须是数组")
-    saved = save_org_vehicle_counts(items)
+        return _err("items 必须是数组", 400)
+    if not items:
+        return _err("items 不能为空：本接口为全量替换，空提交会清空全部网点车辆数配置", 400)
+    validated = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            return _err(f"第 {idx + 1} 条车辆数配置格式错误", 400)
+        code = str(item.get("unit_code") or "").strip()
+        if not code:
+            return _err(f"第 {idx + 1} 条车辆数配置缺少 unit_code", 400)
+        raw_count = item.get("vehicle_count")
+        if isinstance(raw_count, bool) or not isinstance(raw_count, int):
+            return _err(f"第 {idx + 1} 条车辆数（{raw_count}）必须是非负整数", 400)
+        count = raw_count
+        if count < 0:
+            return _err(f"第 {idx + 1} 条车辆数不能为负数", 400)
+        validated.append({
+            "unit_code": code,
+            "unit_name": item.get("unit_name", ""),
+            "unit_type": item.get("unit_type", ""),
+            "vehicle_count": count,
+        })
+    saved = save_org_vehicle_counts(validated)
     return _ok({"saved": saved})
 
 
@@ -2403,13 +3347,6 @@ def api_duration_stats():
         return jsonify({"success": True, "data": stats})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
-
-
-@app.route("/api/logs/recent")
-def api_recent_logs():
-    limit = int(request.args.get("limit", 20))
-    logs = get_recent_logs(limit=limit)
-    return jsonify({"success": True, "logs": logs})
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2433,7 +3370,7 @@ def api_contract_download_file():
 def api_contract_preview():
     filepath = request.args.get("path", "")
     if not filepath:
-        return jsonify({"success": False, "error": "缺少文件路径"})
+        return _err("缺少文件路径", 400)
 
     from config import load_config
     cfg = load_config()
@@ -2475,6 +3412,7 @@ except Exception as e:
 # ═══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    _start_background_services()
     print("=" * 50)
     print("  驾校投诉处理系统")
     print(f"  访问地址: http://127.0.0.1:5003")

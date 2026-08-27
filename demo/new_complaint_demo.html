@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>原型 Demo · 新增投诉重设计</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<style>
+:root{
+  --color-primary:#2563EB;--color-primary-dark:#1D4ED8;--color-primary-50:#EFF6FF;
+  --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
+  --color-brand-accent:#4F46E5;
+  --color-success:#16A34A;--color-success-50:#F0FDF4;
+  --color-warning:#D97706;--color-warning-50:#FFFBEB;
+  --color-danger:#DC2626;--color-danger-50:#FEF2F2;
+  --color-text:#0F172A;--color-text-secondary:#64748B;
+  --color-border:#E2E8F0;--color-surface-50:#F8FAFC;--color-bg:#EEF3F8;--color-surface:#FFFFFF;
+  --font-sans:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.06),0 1px 3px rgba(15,23,42,.04);
+  --shadow-md:0 4px 12px rgba(15,23,42,.08);
+  --radius:8px;--radius-lg:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{min-height:100vh;background:var(--color-bg);color:var(--color-text);font:400 13px/1.6 var(--font-sans)}
+.mono{font-family:var(--font-mono)}
+.app-shell{display:flex;min-height:100vh}
+.sidebar{width:240px;flex:none;background:var(--brand-gradient);color:#fff;display:flex;flex-direction:column;padding:20px 12px;position:sticky;top:0;height:100vh}
+.sidebar .brand{font:700 15px/1.3 var(--font-sans);padding:0 8px 20px;white-space:nowrap}
+.sidebar .brand small{display:block;font-weight:400;font-size:11px;color:rgba(255,255,255,.62)}
+.nav-link{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.78);padding:10px 16px;border-radius:8px;cursor:pointer;font-weight:600;margin-bottom:2px;border:none;background:none;width:100%;text-align:left;font-size:13px;font-family:var(--font-sans)}
+.nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
+.nav-link.active{background:rgba(255,255,255,.16);color:#fff;box-shadow:inset 3px 0 0 var(--color-brand-accent)}
+.sidebar .footer{margin-top:auto;padding:0 8px;font-size:11px;color:rgba(255,255,255,.62)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.content{flex:1;padding:24px 32px 96px}
+
+.page-head{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.page-title{font-size:20px;font-weight:700}
+.proto-tag{font-size:11px;font-weight:600;color:var(--color-warning);background:var(--color-warning-50);border:1px dashed var(--color-warning);border-radius:99px;padding:2px 10px}
+
+/* 竖排：材料在上，表单在下 */
+.intake-grid{display:grid;grid-template-columns:1fr;gap:14px;align-items:start}
+
+.panel{background:var(--color-surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm)}
+.panel-head{padding:12px 16px;border-bottom:1px solid var(--color-border);display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px}
+.step-no{flex:none;width:20px;height:20px;border-radius:50%;background:var(--color-primary);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center}
+.step-no.done{background:var(--color-success)}
+.panel-body{padding:16px}
+
+/* 投料区 */
+.dropzone{border:1.5px dashed var(--color-border);border-radius:var(--radius);background:var(--color-surface-50);transition:border-color .15s,background .15s;padding:12px;display:flex;flex-direction:column;gap:10px}
+.dropzone.drag{border-color:var(--color-primary);background:var(--color-primary-50)}
+.dropzone textarea{width:100%;min-height:120px;resize:vertical;border:1px solid var(--color-border);border-radius:var(--radius);padding:10px;font:400 13px/1.6 var(--font-sans);outline:none;background:#fff}
+.dropzone textarea:focus{border-color:var(--color-primary)}
+.dz-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dz-hint{font-size:11px;color:var(--color-text-secondary)}
+
+.btn{display:inline-flex;align-items:center;gap:6px;border:none;border-radius:var(--radius);padding:9px 18px;font:600 13px var(--font-sans);cursor:pointer;transition:filter .15s}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn-primary{background:var(--color-primary);color:#fff}
+.btn-primary:not(:disabled):hover{filter:brightness(1.08)}
+.btn-secondary{background:#fff;color:var(--color-text);border:1px solid var(--color-border)}
+.btn-secondary:hover{border-color:var(--color-primary);color:var(--color-primary)}
+.btn-lg{padding:11px 24px;font-size:14px}
+
+/* 提取结果线索卡 */
+.clues{margin-top:14px;border-radius:var(--radius);border:1px solid #BBF7D0;background:var(--color-success-50);padding:12px 14px;display:none}
+.clues.show{display:block;animation:fadeUp .25s ease}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.clues-head{display:flex;align-items:center;gap:6px;font-weight:700;color:var(--color-success);font-size:12px;margin-bottom:8px}
+.clue-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.clue-chip{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #BBF7D0;border-radius:99px;padding:4px 12px;font-size:12px}
+.clue-chip b{font-family:var(--font-mono);font-weight:600}
+.clue-fill{margin-left:auto}
+
+/* 表单分组 */
+.fgroup+.fgroup{margin-top:18px;padding-top:16px;border-top:1px dashed var(--color-border)}
+.fgroup-title{font-size:12px;font-weight:700;color:var(--color-text-secondary);letter-spacing:.05em;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.fgroup-title i{color:var(--color-primary)}
+.fgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.field label{display:block;font-size:12px;font-weight:600;margin-bottom:4px}
+.field label .req{color:var(--color-danger);margin-left:2px}
+.field input,.field select{width:100%;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius);font:400 13px var(--font-sans);outline:none;background:#fff}
+.field input:focus,.field select:focus{border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+.field input.pulse{animation:pulse 1s ease 2}
+@keyframes pulse{0%,100%{box-shadow:none}50%{box-shadow:0 0 0 4px #93C5FD}}
+.span-all{grid-column:1/-1}
+.field textarea{width:100%;resize:vertical;min-height:64px;padding:8px 10px;border:1px solid var(--color-border);border-radius:var(--radius);font:400 13px/1.6 var(--font-sans);outline:none;background:#fff}
+.field textarea:focus{border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+
+/* 底部操作条 */
+.action-bar{position:sticky;bottom:0;z-index:10;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);border-top:1px solid var(--color-border);padding:14px 32px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.action-bar .hint{font-size:12px;color:var(--color-text-secondary)}
+.action-bar .btns{display:flex;gap:10px}
+
+/* 查询进度 */
+.progress-card{margin-top:14px;border:1px solid var(--color-border);border-radius:var(--radius);padding:12px 14px;display:none;background:var(--color-surface-50)}
+.progress-card.show{display:block;animation:fadeUp .25s ease}
+.bar-bg{height:6px;border-radius:99px;background:var(--color-border);overflow:hidden;margin-bottom:10px}
+.bar-fill{height:100%;width:0;border-radius:99px;background:linear-gradient(90deg,var(--color-brand-accent),var(--color-primary));transition:width .4s ease}
+.sys-badges{display:flex;gap:8px;flex-wrap:wrap}
+.badge{display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:3px 12px;font-size:12px;font-weight:600;background:#fff;border:1px solid var(--color-border);color:var(--color-text-secondary)}
+.badge.running{border-color:#FCD34D;background:var(--color-warning-50);color:var(--color-warning)}
+.badge.ok{border-color:#BBF7D0;background:var(--color-success-50);color:var(--color-success)}
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">投诉系统<small>v2 智能工作台</small></div>
+    <button class="nav-link active"><i class="bi bi-plus-circle"></i> 新增投诉</button>
+    <button class="nav-link"><i class="bi bi-person-vcard"></i> 学员信息</button>
+    <button class="nav-link"><i class="bi bi-list-ul"></i> 投诉列表</button>
+    <button class="nav-link"><i class="bi bi-bar-chart"></i> 投诉统计</button>
+    <div class="footer">2026-08-23</div>
+  </aside>
+
+  <div class="main">
+    <div class="content">
+      <div class="page-head">
+        <span class="page-title">新增投诉</span>
+        <span class="proto-tag">原型 Demo · 数据为模拟数据</span>
+      </div>
+
+      <div class="intake-grid">
+        <!-- 左栏：材料投递 + 提取线索 -->
+        <section class="panel">
+          <div class="panel-head"><span class="step-no" id="step1No">1</span> 投诉材料</div>
+          <div class="panel-body">
+            <div class="dropzone" id="dropzone">
+              <textarea id="materialText" placeholder="粘贴投诉内容、截图，或拖拽文件至此…"></textarea>
+              <div class="dz-foot">
+                <span class="dz-hint">支持 PDF / 图片 / Word / Excel / 文本，Ctrl+V 可直接粘贴图片</span>
+                <button class="btn btn-primary" id="btnExtract" disabled><i class="bi bi-magic"></i> 提取线索</button>
+              </div>
+            </div>
+
+            <div class="clues" id="clueCard">
+              <div class="clues-head"><i class="bi bi-check-circle-fill"></i> 已识别查询线索</div>
+              <div class="clue-row">
+                <span class="clue-chip">身份证 <b>110101199003070011</b></span>
+                <span class="clue-chip">手机号 <b>13800000000</b></span>
+                <button class="btn btn-secondary clue-fill" id="btnFill"><i class="bi bi-arrow-down-right-square"></i> 一键填入右侧表单</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 右栏：分组表单 -->
+        <section class="panel">
+          <div class="panel-head"><span class="step-no">2</span> 登记投诉信息</div>
+          <div class="panel-body">
+
+            <div class="fgroup">
+              <div class="fgroup-title"><i class="bi bi-person-badge"></i> 学员身份</div>
+              <div class="fgrid">
+                <div class="field span-all"><label>身份证号<span class="req">*</span></label><input id="f_id_card" placeholder="大陆身份证 / 港澳 / 台湾 / 居留证"></div>
+                <div class="field span-all" style="max-width:calc(33.33% - 8px)"><label>手机号<span class="req">*</span></label><input id="f_phone" maxlength="11" placeholder="11 位"></div>
+              </div>
+            </div>
+
+            <div class="fgroup">
+              <div class="fgroup-title"><i class="bi bi-journal-bookmark"></i> 工单属性</div>
+              <div class="fgrid">
+                <div class="field"><label>来源渠道</label>
+                  <select id="f_source" onchange="document.getElementById('otherWrap').style.display=this.value==='其他途径'?'':'none'">
+                    <option>交通部门</option><option>12345</option><option>电话来访</option><option>信访</option>
+                    <option>邮件投诉</option><option>驾培协会</option><option>其他途径</option>
+                  </select>
+                </div>
+                <div class="field" id="otherWrap" style="display:none"><label>具体途径</label><input placeholder="请填写具体渠道"></div>
+                <div class="field"><label>投诉日期</label><input type="date" value="2026-08-23"></div>
+                <div class="field"><label>投诉类型</label>
+                  <select><option>A - 退费纠纷</option><option>B - 教学服务</option><option>C - 考试安排</option><option>D - 合同争议</option><option>E - 其他</option></select>
+                </div>
+                <div class="field"><label>处理人</label><input placeholder="请输入处理人"></div>
+              </div>
+            </div>
+
+            <div class="progress-card" id="progressCard">
+              <div class="bar-bg"><div class="bar-fill" id="barFill"></div></div>
+              <div class="sys-badges">
+                <span class="badge" id="bgInternal"><i class="bi bi-hdd-network"></i> 内部系统</span>
+                <span class="badge" id="bgTiming"><i class="bi bi-stopwatch"></i> 计时平台</span>
+                <span class="badge" id="bgDrive"><i class="bi bi-car-front"></i> 驾培平台</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="action-bar">
+      <span class="hint"><i class="bi bi-info-circle"></i> 建案后立即计入统计，并自动进入工作台</span>
+      <div class="btns">
+        <button class="btn btn-secondary btn-lg" id="btnReset"><i class="bi bi-eraser"></i> 清空重填</button>
+        <button class="btn btn-primary btn-lg" id="btnSubmit"><i class="bi bi-search"></i> 查询三系统并建案</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const materialText = $('#materialText');
+
+materialText.addEventListener('input', () => { $('#btnExtract').disabled = !materialText.value.trim(); });
+['dragover','dragenter'].forEach(e => $('#dropzone').addEventListener(e, ev => { ev.preventDefault(); $('#dropzone').classList.add('drag'); }));
+['dragleave','drop'].forEach(e => $('#dropzone').addEventListener(e, () => $('#dropzone').classList.remove('drag')));
+$('#dropzone').addEventListener('drop', ev => {
+  ev.preventDefault();
+  materialText.value = '【模拟】学员张三来电投诉：报名时承诺 3 个月拿证，现已超期半年要求退费。身份证号 110101199003070011，联系电话 13800000000。';
+  materialText.dispatchEvent(new Event('input'));
+});
+
+$('#btnExtract').addEventListener('click', () => {
+  const btn = $('#btnExtract');
+  btn.disabled = true; btn.innerHTML = '<i class="bi bi-arrow-repeat spin"></i> 提取中…';
+  setTimeout(() => {
+    $('#step1No').classList.add('done'); $('#step1No').innerHTML = '<i class="bi bi-check"></i>';
+    btn.innerHTML = '<i class="bi bi-check-circle"></i> 重新提取'; btn.disabled = false;
+    $('#clueCard').classList.add('show');
+  }, 700);
+});
+
+$('#btnFill').addEventListener('click', () => {
+  const id = $('#f_id_card'), ph = $('#f_phone');
+  id.value = '110101199003070011'; ph.value = '13800000000';
+  [id, ph].forEach(el => { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); });
+});
+
+$('#btnSubmit').addEventListener('click', () => {
+  if (!$('#f_id_card').value || !$('#f_phone').value) { alert('请先填写身份证号与手机号（Demo 中可点击左侧「一键填入」）'); return; }
+  const steps = [['#bgInternal', 33], ['#bgTiming', 66], ['#bgDrive', 100]];
+  $('#progressCard').classList.add('show');
+  steps.forEach(([sel, pct], i) => setTimeout(() => {
+    document.querySelectorAll('.badge').forEach(b => b.classList.remove('running'));
+    $(sel).classList.add(i < 2 ? 'running' : 'ok'); $(sel === '#bgDrive' ? '#bgTiming' : sel === '#bgTiming' ? '#bgInternal' : sel).className = 'badge ok';
+    $('#barFill').style.width = pct + '%';
+    if (i === 2) $(sel).className = 'badge ok';
+  }, i * 800));
+});
+
+$('#btnReset').addEventListener('click', () => location.reload());
+</script>
+</body>
+</html>

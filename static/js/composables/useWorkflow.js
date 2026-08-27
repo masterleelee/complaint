@@ -1,4 +1,4 @@
-// 工作流程组合式函数：合同 → 退费分析 → 沟通记录 → 结果归档/文档 → 飞书可选归档
+// 工作流程组合式函数：合同 → 退费分析 → 沟通记录 → 结果归档/文档
 import { getJ, postJ } from "api";
 
 /** 计算考试费
@@ -56,11 +56,12 @@ function calcExamFees(examCounts, includesExam, includesMakeup = true) {
   return { total, fees: feeItems };
 }
 
-export function useWorkflow(toast, getQr, getTicketId) {
-  // 工作流步骤：1=合同获取，2=退费分析，3=沟通记录，4=结果归档/文档，5=飞书可选归档
+export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
+  // hooks.afterFeeConfirm(confirmed, ticketId)：费用确认成功后通知外部同步工作台/列表状态
+  // 工作流步骤：1=合同获取，2=退费分析，3=沟通记录，4=结果归档/文档
   const workflowStep = Vue.ref(1);
   const workflowStatusText = Vue.computed(() => {
-    const m = { 1: "待合同获取", 2: "待退费分析", 3: "待沟通记录", 4: "待结果归档", 5: "待飞书归档" };
+    const m = { 1: "待合同获取", 2: "待退费分析", 3: "待沟通记录", 4: "待结果归档" };
     return m[workflowStep.value] || "已完成";
   });
 
@@ -177,10 +178,6 @@ export function useWorkflow(toast, getQr, getTicketId) {
   const rpLoading = Vue.ref(false);
   const rpResult = Vue.ref(null);
   const rpErr = Vue.ref("");
-
-  // 飞书
-  const fsLoading = Vue.ref(false);
-  const fsResult = Vue.ref(null);
 
   // Load saved analysis (check cache + history inheritance)
   async function loadSavedAnalysis(ticketId) {
@@ -337,7 +334,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
 
     // 非手动模式必须等三系统数据就绪，否则退费计算会用陈旧/缺失数据
     if (!threeSystemReady.value) {
-      toast("三系统数据未就绪", "请先在受理页完成「查询三系统」（身份证/手机号），再进入退费分析", "warning");
+      toast("三系统数据未就绪", "请先在新增投诉页完成「查询三系统」（身份证/手机号），再进入退费分析", "warning");
       return;
     }
 
@@ -469,7 +466,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
         }
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
-      if (!d) throw new Error("分析任务超时，请稍后在当前案件重试");
+      if (!d) throw new Error("分析任务超时，可在当前案件重试，或改用「手动录入费用」直接建表");
 
       if (aTimerId) { clearInterval(aTimerId); aTimerId = null; }
 
@@ -519,7 +516,8 @@ export function useWorkflow(toast, getQr, getTicketId) {
           });
         }
         
-	        ar.value = d;
+        	        d.deductions = penaltyLast(d.deductions || []);
+        	        ar.value = d;
 	        if (!ar.value.actual_paid && ar.value.paid_amount) ar.value.actual_paid = ar.value.paid_amount;
 	        if (!ar.value.actual_paid && manualContract.paid_amount) ar.value.actual_paid = manualContract.paid_amount;
 	        // 注意：不再用三系统 contract_fee 静默兜底 actual_paid —— 学员未必 100% 已缴，
@@ -653,7 +651,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
 
 	  async function handleSaveAndConfirm(ticketId, planStatus = "confirmed") {
     if (!ar.value) {
-      toast("请先进行AI分析", "", "warning");
+      toast("请先进行AI分析或手动录入费用", "", "warning");
       return;
     }
     if (ar.value.can_confirm_fee_plan === false) {
@@ -661,7 +659,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
       return;
     }
 	    if (!ticketId) {
-	      toast("缺少案件ID", "请先完成工单受理和学员查询", "warning");
+	      toast("缺少案件ID", "请先完成工单登记和学员查询", "warning");
 	      return;
 	    }
 	    recalc();
@@ -676,6 +674,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
 	        plan_status: planStatus,
 	        total_fee: Number(ar.value.total_fee) || 0,
 	        actual_paid: actualPaid,
+	        deductions: ar.value.deductions || [],
 	        contract_fields: ar.value.contract_fields || {},
 	        clauses: ar.value.clauses || [],
 	        contract_code: ar.value.contract_code || manualContract.contract_code || "",
@@ -693,6 +692,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
 	      await loadCommunications(ticketId);
 	      workflowStep.value = 3;
 	      toast(planStatus === "provisional" ? "阶段费用方案已确认" : "正式费用方案已确认", "已进入沟通记录", "success");
+	      if (hooks.afterFeeConfirm) await hooks.afterFeeConfirm(confirmed, ticketId);
 	    } catch (e) {
 	      toast("保存失败", e.message, "danger");
 	    } finally {
@@ -700,7 +700,57 @@ export function useWorkflow(toast, getQr, getTicketId) {
 	    }
 	  }
 
-  // ── 扣费明细编辑 ──
+	  // ── 扣费明细编辑 ──
+
+  // 查无记录·无费用明细：三系统未命中案件的费用闸门豁免（零口径确认，留痕 fee_confirm_note）
+  async function confirmNoFeeBasis(ticketId) {
+    if (!ticketId) {
+      toast("缺少案件ID", "请先完成工单登记和学员查询", "warning");
+      return;
+    }
+    feeConfirming.value = true;
+    try {
+      const d = await postJ(`/api/tickets/${ticketId}/fee-confirm`, {
+        no_fee_basis: true,
+        confirm_note: "三系统查无记录，无费用明细",
+      });
+      if (!d.success) throw new Error(d.error || "确认失败");
+      const confirmed = d.data || {};
+      feeConfirmed.value = (confirmed.fee_plan_status || "confirmed") === "confirmed";
+      feeConfirmedAt.value = new Date().toLocaleString();
+      toast("已按查无记录确认", "无费用明细（0元口径），可继续归档", "success");
+      if (hooks.afterFeeConfirm) await hooks.afterFeeConfirm(confirmed, ticketId);
+    } catch (e) {
+      toast("确认失败", e.message, "danger");
+    } finally {
+      feeConfirming.value = false;
+    }
+  }
+
+  // ISS-UJ-02：AI 分析失败/无结果时，初始化空表骨架供手动录入，保证流程可走通
+  function startManualFeeEntry() {
+    if (ar.value) return;
+    ar.value = {
+      deductions: [],
+      total_fee: 0,
+      actual_paid: 0,
+      total_deduction: 0,
+      refund: 0,
+      contract_fields: {},
+      clauses: [],
+      contract_code: "",
+      source: "manual",
+    };
+    toast("已切换手动录入", "请填写合同总额、实缴金额与扣费行后确认明细", "info");
+  }
+
+  // 违约金固定排在扣费项最后（展示顺序）
+  function penaltyLast(deductions) {
+    const list = Array.isArray(deductions) ? [...deductions] : [];
+    const rest = list.filter(d => !/违约金/.test(d.item || ""));
+    const penalty = list.filter(d => /违约金/.test(d.item || ""));
+    return [...rest, ...penalty];
+  }
 
   function recalc() {
     if (!ar.value) return;
@@ -750,7 +800,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
 	    const sum = ar.value.deductions.reduce((a, d) => a + (Number(d.amount) || 0), 0);
 	    const totalFee = Number(ar.value.total_fee) || 0;
 	    const actualPaid = Number(ar.value.actual_paid || ar.value.paid_amount || manualContract.paid_amount || 0) || 0;
-	    ar.value.total_deduction = totalFee > 0 ? Math.min(Math.round(sum * 100) / 100, totalFee) : Math.round(sum * 100) / 100;
+	    ar.value.total_deduction = Math.round(sum * 100) / 100;
 	    ar.value.actual_paid = actualPaid;
 	    const refund = actualPaid - ar.value.total_deduction;
 	    ar.value.refund = refund > 0 ? Math.round(refund * 100) / 100 : 0;
@@ -766,6 +816,38 @@ export function useWorkflow(toast, getQr, getTicketId) {
     if (!ar.value || !ar.value.deductions) return;
     ar.value.deductions.splice(i, 1);
     recalc();
+  }
+
+  // 导出扣费明细为 Excel（前端生成 .xls，Excel/WPS 可直接打开）
+  function xesc(s) {
+    return String(s ?? "").replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  function exportDeductions() {
+    if (!ar.value || !Array.isArray(ar.value.deductions)) {
+      toast("暂无可导出的明细", "请先完成费用分析", "warning");
+      return;
+    }
+    const rows = ar.value.deductions.map((d, i) =>
+      `<tr><td>${i + 1}</td><td>${xesc(d.item)}</td><td>${Number(d.amount) || 0}</td><td>${xesc(d.reason)}</td></tr>`).join("");
+    const actualPaid = Number(ar.value.actual_paid || ar.value.paid_amount || 0);
+    const totalDeduction = Number(ar.value.total_deduction || 0);
+    const refund = Math.max(actualPaid - totalDeduction, 0);
+    const html = `<html xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="UTF-8"></head><body>`
+      + `<table border="1"><thead><tr><th>序号</th><th>扣费项目</th><th>金额（元）</th><th>扣费依据</th></tr></thead>`
+      + `<tbody>${rows}</tbody>`
+      + `<tfoot><tr><td colspan="2">实缴总额</td><td>${actualPaid}</td><td></td></tr>`
+      + `<tr><td colspan="2">扣费合计</td><td>${totalDeduction}</td><td></td></tr>`
+      + `<tr><td colspan="2">应退</td><td>${refund}</td><td></td></tr></tfoot></table></body></html>`;
+    const blob = new Blob(["\ufeff" + html], { type: "application/vnd.ms-excel;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.download = `投诉扣费明细_${getQr?.()?.name || "学员"}_${new Date().toISOString().slice(0, 10)}.xls`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast("已导出扣费明细", a.download, "success");
   }
 
   function upsertDeductionFromField(itemName, amount, reason) {
@@ -1144,34 +1226,16 @@ export function useWorkflow(toast, getQr, getTicketId) {
     }
   }
 
-  // ── 飞书 ──
-
-  async function submitFeishu(data) {
-    fsLoading.value = true;
-    fsResult.value = null;
-
-    try {
-      const d = await postJ("/api/feishu/submit", data);
-      if (d.success) {
-        fsResult.value = d;
-        toast("飞书提交成功", "编号: " + (d.handle_no || ""), "success");
-      } else {
-        toast("提交失败", d.error, "danger");
-      }
-    } catch (e) {
-      toast("提交失败", e.message, "danger");
-    } finally {
-      fsLoading.value = false;
-    }
-  }
-
   // ── 投诉登记表 ──
 
-  async function genRegistrationForm(ticketId) {
+  async function genRegistrationForm(ticketId, overrides = {}) {
     formLoading.value = true;
     formResult.value = null;
     try {
-      const d = await postJ(`/api/tickets/${ticketId}/register-form`, {});
+      const body = {};
+      if (overrides.handling_notes) body.handling_notes = overrides.handling_notes;
+      if (overrides.student_name) body.student_name = overrides.student_name;
+      const d = await postJ(`/api/tickets/${ticketId}/register-form`, body);
       if (d.success) {
         formResult.value = d.data;
         toast("登记表已生成", d.data.filename || "", "success");
@@ -1199,7 +1263,6 @@ export function useWorkflow(toast, getQr, getTicketId) {
     if (aTimerId) { clearInterval(aTimerId); aTimerId = null; }
     rpResult.value = null;
     rpErr.value = "";
-	    fsResult.value = null;
 	    feeConfirmed.value = false;
 	    feeConfirmedAt.value = "";
 	    communications.value = [];
@@ -1237,7 +1300,6 @@ export function useWorkflow(toast, getQr, getTicketId) {
 	    feeReopenReason.value = "";
 	    rpLoading.value = false;
     rpErr.value = "";
-    fsLoading.value = false;
   }
 
   function restore(detail) {
@@ -1257,7 +1319,7 @@ export function useWorkflow(toast, getQr, getTicketId) {
       actual_paid: Number(ticket.actual_paid) || 0,
       total_deduction: Number(ticket.deduction_fee) || 0,
       refund: Number(ticket.refund_fee) || 0,
-      deductions,
+      deductions: penaltyLast(deductions),
       contract_code: ticket.contract_code || "",
       fee_plan_status: ticket.fee_plan_status || "draft",
     } : null;
@@ -1310,8 +1372,6 @@ export function useWorkflow(toast, getQr, getTicketId) {
     rpLoading,
     rpResult,
     rpErr,
-    fsLoading,
-    fsResult,
     contractInput,
     uploadedFiles,
     contractManifest,
@@ -1324,13 +1384,15 @@ export function useWorkflow(toast, getQr, getTicketId) {
     previewVisible, previewUrl, previewFilename, previewIsPdf,
     openPreview, closePreview,
     handleSaveAndConfirm,
+    confirmNoFeeBasis,
     recalc,
+    startManualFeeEntry,
     applyContractFields,
     addDeduction,
     removeDeduction,
+    exportDeductions,
     updatePenaltyRate,  // 导出违约金比例修正方法
     genReply,
-    submitFeishu,
 	    // 沟通/归档
 	    fromHistoryLabel,
 	    OUTCOME_OPTIONS, COOPERATION_OPTIONS, NEGOTIATION_OPTIONS,

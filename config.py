@@ -76,17 +76,12 @@ DEFAULT_CONFIG = {
         "model": os.getenv("LLM_CONTRACT_TEXT_MODEL", ""),
         "max_tokens": int(os.getenv("LLM_CONTRACT_TEXT_MAX_TOKENS", "2048")),
     },
-    "feishu": {
-        "app_id": os.getenv("FEISHU_APP_ID", ""),
-        "app_secret": os.getenv("FEISHU_APP_SECRET", ""),
-        "bitable_app_token": os.getenv("FEISHU_BITABLE_TOKEN", ""),
-        "bitable_table_id": os.getenv("FEISHU_TABLE_ID", ""),
-    },
     "paths": {
         "reply_dir": os.getenv("REPLY_DIR", str(BASE_DIR / "回复函")),
         "contract_dir": os.getenv("CONTRACT_DIR", str(BASE_DIR / "合同文件")),
         "upload_dir": os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads")),
     },
+    "archive_root": os.getenv("ARCHIVE_ROOT", "案件归档"),
 }
 
 
