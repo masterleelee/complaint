@@ -116,12 +116,38 @@ export function useComplaint(onAutoQueryDone = null) {
   const phoneMismatch = Vue.ref("");
   const residencyTip = Vue.ref("");
   const successBar = Vue.ref(false);
+  // 步骤 2b 命中但姓名不一致时由后端打上 name_mismatch=true；
+  // 前端以红字提示「姓名不一致，请人工核验」
+  const nameMismatch = Vue.ref("");
+  const phoneCandidates = Vue.ref([]);
+  // queryAll 轮询竞态护栏：每次 queryAll 入口 ++queryToken，
+  // 旧轮询回调检测到 token 不一致则 return，避免覆盖用户后续 queryAll/searchStudents 的结果
+  const queryToken = Vue.ref(0);
+  let pulseTimer = null;
+  function flashPulseFields() {
+    if (pulseTimer) clearTimeout(pulseTimer);
+    pulseIdCard.value = true;
+    pulsePhone.value = true;
+    pulseTimer = setTimeout(() => {
+      pulseIdCard.value = false;
+      pulsePhone.value = false;
+      pulseTimer = null;
+    }, 2200);
+  }
 
   function clearTransient() {
     qErr.value = "";
     phoneMismatch.value = "";
     residencyTip.value = "";
+    nameMismatch.value = "";
+    phoneCandidates.value = [];
     successBar.value = false;
+    noMatchInfo.value = null;
+    candidates.value = [];
+    candEmpty.value = false;
+    searchSource.value = "";
+    searchElapsed.value = 0;
+    sameDayTicket.value = null;
   }
 
   function maskLocalPhone(p) {
@@ -168,6 +194,8 @@ export function useComplaint(onAutoQueryDone = null) {
   });
 
   async function searchStudents(page = 1) {
+    queryToken.value++;
+    if (page === 1) clearTransient();
     searching.value = true;
     candEmpty.value = false;
     candidates.value = [];
@@ -205,6 +233,10 @@ export function useComplaint(onAutoQueryDone = null) {
       }
     } catch (e) {
       qErr.value = e.message;
+      candTotal.value = 0;
+      candPage.value = 1;
+      searchSource.value = "";
+      orgFallback.value = false;
     } finally {
       searching.value = false;
     }
@@ -225,7 +257,7 @@ export function useComplaint(onAutoQueryDone = null) {
     runExactQuery();
   }
 
-  async function runExactQuery(forceNew = false) {
+  async function runExactQuery(forceNew = false, skipSameDayCheck = false) {
     clearTransient();
     // 居留证自动补 F 前缀（如 1249468(8) -> F1249468(8)）
     const rawId = (form.id_card || "").trim();
@@ -235,7 +267,7 @@ export function useComplaint(onAutoQueryDone = null) {
     }
     const mode = routeMode();
     candEmpty.value = false;
-    await queryAll(forceNew);
+    await queryAll(forceNew, skipSameDayCheck);
     if (qr.value && qr.value.name) {
       successBar.value = true;
       if (mode === "phone" && qr.value.phone) {
@@ -266,7 +298,8 @@ export function useComplaint(onAutoQueryDone = null) {
 
   async function chooseMergeExisting() {
     sameDayTicket.value = null;
-    await runExactQuery();
+    // 跳过客户端同日预检：服务端保存时按同日口径并入既有工单（merged_into_existing）
+    await runExactQuery(false, true);
   }
   async function createNewAnyway() {
     sameDayTicket.value = null;
@@ -281,7 +314,7 @@ export function useComplaint(onAutoQueryDone = null) {
     const m = routeMode();
     if (m === "id" || m === "phone") {
       await runExactQuery();
-    } else if (m === "name") {
+    } else if (m === "name") { resetQueryProgress();
       await searchStudents();
     } else {
       qErr.value = "请填写查询条件";
@@ -516,10 +549,10 @@ export function useComplaint(onAutoQueryDone = null) {
     orgFallback.value = false;
     sameDayTicket.value = null;
     clearTransient();
-    if (data.id_card) { form.id_card = data.id_card; pulseIdCard.value = true; }
-    if (data.phone) { form.phone = data.phone; pulsePhone.value = true; }
+    if (data.id_card) { form.id_card = data.id_card; }
+    if (data.phone) { form.phone = data.phone; }
+    if (data.id_card || data.phone) flashPulseFields();
     if (data.student_name) studentName.value = data.student_name;
-    setTimeout(() => { pulseIdCard.value = false; pulsePhone.value = false; }, 2200);
 
     const phoneDigits = (data.phone || "").replace(/\D/g, "");
     if ((data.id_card && data.id_card.length >= 7) || phoneDigits.length >= 7) {
@@ -527,9 +560,7 @@ export function useComplaint(onAutoQueryDone = null) {
         await queryAll();
         if (onAutoQueryDone) onAutoQueryDone();
       }, 500);
-    } else if (data.student_name) {
-      searchStudents();
-    } else {
+    } else if (data.student_name) { resetQueryProgress(); searchStudents(); } else {
       intakeErr.value = data.ai_error
         ? `AI 提取失败：${data.ai_error}，请手动填写姓名或证件号`
         : "未能自动识别证件号和手机号，请手动填写后再查询";
@@ -635,12 +666,14 @@ export function useComplaint(onAutoQueryDone = null) {
     return { valid: false, msg: "证件号格式不正确" };
   }
 
-  async function queryAll(forceNew = false) {
+  async function queryAll(forceNew = false, skipSameDayCheck = false) {
     const rawId = (form.id_card || "").trim();
     const rawPhone = (form.phone || "").trim().replace(/\D/g, "");
     const concreteChannel = form.source_channel === "其他途径"
       ? form.other_channel.trim()
       : form.source_channel;
+
+    const myToken = ++queryToken.value;
 
     if (!concreteChannel) {
       qErr.value = "请填写具体投诉渠道";
@@ -672,9 +705,10 @@ export function useComplaint(onAutoQueryDone = null) {
       return;
     }
 
-    // 同日同人预检：已绑定工单（restore 场景，走显式更新）或用户选择另建时跳过；
-    // 命中则暂停受理并展示选择横幅，由用户决定「并入」或「另建新工单」
-    if (!forceNew && !currentTicketId.value && form.id_card.trim()) {
+    // 同日同人预检：已绑定工单（restore 场景，走显式更新）、用户选择另建或确认并入时跳过
+    // （并入由服务端 save_ticket 按同日口径合并）；命中则暂停受理并展示选择横幅，
+    // 由用户决定「并入」或「另建新工单」
+    if (!skipSameDayCheck && !forceNew && !currentTicketId.value && form.id_card.trim()) {
       const hit = await checkSameDayTicket();
       if (hit) {
         sameDayTicket.value = hit;
@@ -718,6 +752,10 @@ export function useComplaint(onAutoQueryDone = null) {
           _filename: intakeResult.value._filename || "",
         }] : [],
       };
+      // 仅在有姓名时透传给后端，后端用其做 2a 步骤的姓名一致性校验
+      // （姓名不匹配仍返回结果但打 name_mismatch 标记，前端红字提示人工核验）
+      const expectedName = (studentName.value || "").trim();
+      if (expectedName) payload.student_name = expectedName;
       if (methodLabel === "身份证号") { payload.id_card = idToQuery; payload.phone = rawPhone; }
       else payload.phone = idToQuery;
 
@@ -726,6 +764,7 @@ export function useComplaint(onAutoQueryDone = null) {
 
       let d = null;
       for (let i = 0; i < 120; i++) {
+        if (queryToken.value !== myToken) return;
         const status = await getJ(`/api/query/status/${started.job_id}`);
         if (!status.success) throw new Error(status.error || "读取查询进度失败");
         if (status.sources) {
@@ -739,12 +778,28 @@ export function useComplaint(onAutoQueryDone = null) {
           // 三系统均查无：置引导状态供受理页展示「转人工建案」入口
           //（eligible=false 表示存在超时/异常，前端只提示重新查询，不给入口）
           if (status.no_match) {
+            const cleanedSources = Object.fromEntries(
+              Object.entries(status.sources || {}).filter(([, v]) => v && v !== "pending")
+            );
             noMatchInfo.value = {
               eligible: !!status.manual_intake_eligible,
-              sources: status.sources || {},
+              sources: cleanedSources,
             };
             qErr.value = status.error || "未匹配到学员档案";
             queryProgress.message = "未匹配到学员档案";
+            // 自动降级到姓名模糊搜索：
+            // 条件：1) 本轮走的是手机号精确查询  2) 三系统都明确查无（无超时/异常）
+            //       3) 已有 studentName（来自粘贴文本/AI 提取/手动填写）
+            // 避免：本单「蔡振华+手机号无记录」这种 case 直接卡死转人工
+            const hasName = (studentName.value || "").trim();
+            const isPhonePath = (form.phone || "").replace(/\D/g, "").length >= 11;
+            if (hasName && isPhonePath && status.manual_intake_eligible) {
+              qErr.value = "";
+              queryProgress.message = "";
+              noMatchInfo.value = null;
+              queryProgress.show = false;
+              searchStudents();
+            }
             return;
           }
           throw new Error(status.error || "三系统查询失败");
@@ -754,6 +809,7 @@ export function useComplaint(onAutoQueryDone = null) {
           break;
         }
         await new Promise(resolve => setTimeout(resolve, 500));
+        if (queryToken.value !== myToken) return;
       }
       if (!d) throw new Error("三系统查询超时，请稍后重试");
 
@@ -772,6 +828,17 @@ export function useComplaint(onAutoQueryDone = null) {
         queryProgress.done = true;
         if (queryProgress._timer) clearInterval(queryProgress._timer);
         queryProgress.percent = 100;
+        // 步骤 2b 后端标记的姓名不一致 → 前端红字提示人工核验
+        if (d.name_mismatch) {
+          nameMismatch.value = d.name_mismatch_reason || "姓名不一致，请人工核验";
+        }
+        // 步骤 2b 返回多个候选 → 走前端候选列表
+        if (Array.isArray(d.candidates) && d.candidates.length) {
+          phoneCandidates.value = d.candidates;
+          qErr.value = d.error || "手机号匹配到多个学员，请人工选择";
+          queryProgress.message = "已匹配多个学员，请选择";
+          return;
+        }
         // 检查是否查到学员
         const hasName = d.name && d.name.trim();
         if (!hasName) {
@@ -785,6 +852,8 @@ export function useComplaint(onAutoQueryDone = null) {
       qErr.value = "查询失败: " + e.message;
       queryProgress.message = "查询失败: " + e.message;
       queryProgress.hasError = true;
+      noMatchInfo.value = null;
+      if (queryProgress._timer) { clearInterval(queryProgress._timer); queryProgress._timer = null; }
     } finally {
       querying.value = false;
       setTimeout(() => {
@@ -852,6 +921,9 @@ export function useComplaint(onAutoQueryDone = null) {
   }
 
   function restore(ticket) {
+    clearTransient();
+    if (queryProgress._timer) { clearInterval(queryProgress._timer); queryProgress._timer = null; }
+    if (pulseTimer) { clearTimeout(pulseTimer); pulseTimer = null; pulseIdCard.value = false; pulsePhone.value = false; }
     const knownChannels = ["12345", "交通部门", "电话来访", "信访", "邮件投诉", "驾培协会"];
     const savedChannel = ticket.source_channel || "交通部门";
     form.id_card = ticket.id_card || "";
@@ -898,6 +970,9 @@ export function useComplaint(onAutoQueryDone = null) {
   }
 
   function reset() {
+    clearTransient();
+    if (queryProgress._timer) { clearInterval(queryProgress._timer); queryProgress._timer = null; }
+    if (pulseTimer) { clearTimeout(pulseTimer); pulseTimer = null; pulseIdCard.value = false; pulsePhone.value = false; }
     form.id_card = "";
     form.phone = "";
     form.source_channel = "交通部门";
@@ -991,6 +1066,8 @@ export function useComplaint(onAutoQueryDone = null) {
     orgOptions,
     phoneMismatch,
     residencyTip,
+    nameMismatch,
+    phoneCandidates,
     successBar,
     clearTransient,
     maskLocalPhone,
