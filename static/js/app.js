@@ -2,7 +2,7 @@
 import { useToast } from "useToast";
 import { useComplaint } from "useComplaint";
 import { useWorkflow } from "useWorkflow";
-import { useSettings } from "useSettings";
+import { useSettings, useUsers, USER_ROLES, roleLabel } from "useSettings";
 import { useHistory } from "useHistory";
 import { useWorkbench } from "useWorkbench";
 import { stBadge, getTrainingTime, getEventType, getDrivingFeeBreakdown, todayStr } from "helpers";
@@ -25,11 +25,30 @@ function esc(s) {
 
 const { createApp, ref, computed, watch, nextTick } = Vue;
 
-try { createApp({
-  delimiters: ["[[", "]]"],
-  setup() {
+// Vue 3 mount("#app") 不会把 #app 内的 HTML 当作 template（与 Vue 2 不同），
+// 必须显式把模板字符串传入。模板已在 #app 节点中，直接读取其 innerHTML 即可。
+const __appRoot = document.getElementById("app");
+const __template = __appRoot ? __appRoot.innerHTML : "";
+
+try {
+  // Vue 3 的自定义定界符必须配置在 app.config.compilerOptions 上，
+  // 直接挂在根配置里被忽略，会让 [[ ]] 被当作文本输出，遇到 .length 时报错。
+  const __app = createApp({
+    template: __template,
+    setup() {
     const { toasts, toast } = useToast();
     const currentDate = Vue.computed(() => todayStr());
+
+    // ── 当前账号（后端注入 window.__CURRENT_USER__）──
+    const currentUser = Vue.ref(window.__CURRENT_USER__ || null);
+    const isAdmin = Vue.computed(() => currentUser.value?.role === 'admin');
+    const isViewer = Vue.computed(() => currentUser.value?.role === 'viewer');
+
+    async function logout() {
+      if (!confirm('确定要退出登录吗？')) return;
+      await postJ('/api/session/logout', {});
+      window.location.href = '/';
+    }
 
     // ── 四视图路由（列表 / 受理 / 工作台 / 看板） ──
     const view = ref("intake");
@@ -68,10 +87,11 @@ try { createApp({
       currentTicketId, triggerFileInput,
       onDragOver, onDragEnter, onDragLeave, onDrop, onFileSelected,
       queryAll, restore: restoreComplaint, reset: resetComplaint,
+      assignableUsers, loadAssignableUsers,
       studentName, schoolShort, regStart, regEnd,
       candidates, candWrapRef, searching, candEmpty, searchSource, selectedCand,
       candTotal, candPage, candTotalPages, gotoCandPage, orgFallback, orgOptions,
-      phoneMismatch, residencyTip, successBar,
+      phoneMismatch, residencyTip, nameMismatch, phoneCandidates, successBar,
       clearTransient, examStageClass,
       routeMode, queryPrimary, qFieldClass, mainBtnText,
       searchStudents, chooseCandidate, onMainClick, runExactQuery,
@@ -88,8 +108,12 @@ try { createApp({
     function resetIntake() {
       focusZone.value = null;
       flashTarget.value = "";
-      resetComplaint();
+      resetComplaint(currentUser.value);
     }
+
+    // 启动时拉一次可指派人列表（同时把处理人下拉填好默认值）
+    loadAssignableUsers();
+    resetComplaint(currentUser.value);
 
     // ── 新增投诉页：聚焦式交互（非焦点区变暗 + 焦点卡光晕 + 滚动校正） ──
     const focusZone = ref(null);   // null | 'register' | 'candidates' | 'query'
@@ -200,6 +224,20 @@ try { createApp({
             LLM_PROVIDERS, providerSel, applyProvider, presetModels, modelSel, modelCustom,
             testing, testResult, testLlm } = useSettings(toast);
 
+    // ── 账号管理（admin 增删改查；所有人改自己资料/密码）──
+    const users = useUsers({ toast, currentUser });
+    // 切到系统设置时拉一次账号列表
+    watch(view, (v) => {
+      if (v === 'settings' && users.isAdmin.value) {
+        users.loadList();
+        users.loadAliases();
+      }
+      // 切到投诉列表时刷新（确保别名映射后的回写能立即看到）
+      if (v === 'list' && typeof loadTickets === 'function') {
+        loadTickets();
+      }
+    });
+
     // ── 历史 / 看板统计 ──
     const {
       hList, hTotal, hSearch, hLimit, hPage, hTotalPages, hLoading,
@@ -234,16 +272,17 @@ try { createApp({
       openFolderPicker, fbLoad, fbEnter, fbUp, fbConfirm,
       // 投诉列表页重设计
       OVERDUE_DAYS, TYPE_LABELS, FEE_LABELS,
-      clKw, clType, clChannel, clHandler, clFee, clDays, clDateFrom, clDateTo,
+      clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
       clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
-      handlerOptions, channelOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
+      handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
       clPageSize, pagedGroups, clSetPage,
       daysOpen, isOverdue, feeState, maskPhone,
       clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
       batchExportSelected,
       transferModalOpen, transferTarget, transferSaving, askBatchTransfer, confirmBatchTransfer,
-      deleteModalOpen, deleteSaving, askDeleteSelected, confirmDeleteSelected,
-    } = useWorkbench(toast, restoreComplaint, restoreWorkflow, () => qr.value, loadStats);
+      deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
+      handlerLabel,
+    } = useWorkbench(toast, restoreComplaint, restoreWorkflow, () => qr.value, loadStats, assignableUsers);
 
     // ── 学员信息标签页（左栏三系统查询） ──
     const tab = ref("basic");
@@ -431,17 +470,43 @@ try { createApp({
       if (el) el.innerHTML = replyHtml.value;
       replyEdited.value = false;
     }
-    function aiPolishReply(btn) {
-      const letterEl = document.getElementById("re-letter");
-      const replyText = ((letterEl ? letterEl.innerText : (replyHtml.value || "")) || "").trim();
-      if (!ar.value && !replyText) {
+    const replyPolishing = ref(false);
+    async function aiPolishReply() {
+      if (replyPolishing.value) return;
+      const el = document.getElementById("re-letter");
+      const paras = el
+        ? Array.from(el.querySelectorAll("p")).map(p => ({
+            cls: p.className || "",
+            text: (p.innerText || "").trim(),
+          }))
+        : [];
+      if (!ar.value && !paras.some(p => p.text)) {
         toast("请先完成费用分析或填写回复内容再润色", "", "warning");
         return;
       }
-      replyPolished.value = true;
-      replyEdited.value = false;
-      syncLetter();
-      toast("AI 润色完成", "已优化表述，统一标点排版", "success");
+      replyPolishing.value = true;
+      try {
+        const d = await postJ("/api/reply/polish", { paragraphs: paras.map(p => p.text) });
+        if (!d.success) throw new Error(d.error || "AI 润色失败");
+        const raw = String(d.data?.polished || "");
+        let parts = raw.split(/<PARA>/i).map(s => s.trim()).filter(Boolean);
+        if (parts.length !== paras.length) {
+          // 兜底：模型未按 <PARA> 分段时按行尝试；仍不吻合则缺失段回填原文，绝不破坏已有内容
+          const byLine = raw.split("\n").map(s => s.trim()).filter(Boolean);
+          parts = paras.map((p, i) => (parts[i] ?? byLine[i] ?? p.text).replace(/\s*\n+\s*/g, " "));
+        }
+        el.innerHTML = paras.map((p, i) => {
+          const html = esc(parts[i] ?? p.text).replace(/\n/g, "<br>");
+          return `<p${p.cls ? ` class="${p.cls}"` : ""}>${html}</p>`;
+        }).join("");
+        replyHtml.value = el.innerHTML;
+        replyEdited.value = false;
+        toast("AI 润色完成", "已基于内置大模型通读全文后优化表述", "success");
+      } catch (e) {
+        toast("AI 润色失败", e.message, "danger");
+      } finally {
+        replyPolishing.value = false;
+      }
     }
     async function generateReply() {
       const id = selectedTicketId.value;
@@ -455,6 +520,7 @@ try { createApp({
         const el = document.getElementById("re-letter");
         replyHtml.value = el ? el.innerHTML : buildLetter(replyPolished.value);
         replySaved.value = true;
+        if (selectedTicket.value) selectedTicket.value.reply_path = d.data?.filepath || "generated";
         toast("回复函已生成（v2）", d.data?.filename || "", "success");
       } catch (e) {
         toast("生成失败", e.message, "danger");
@@ -678,18 +744,23 @@ try { createApp({
 
     return {
       toasts, toast, currentDate, view, viewTitle, sidebarCollapsed, goView, doArchiveAndGoList, toggleSidebar, isDark, toggleTheme,
+      // 当前账号
+      currentUser, isAdmin, isViewer, logout,
+      // 处理人字段（assignableUsers / handlerLabel）
+      assignableUsers, loadAssignableUsers, handlerLabel,
       // 受理
       form, fileInputRef, isDragOver, intakeLoading, intakeResult, intakeErr, pulseIdCard, pulsePhone,
       intakeText, handleIntakeText, intakeTextareaRef, autoResizeTextarea, onSourceChange, onIntakePaste,
       querying, qErr, qr, queryProgress, sourceStatusText, sourceStatusColor, sourceStatusIcon, sourcePillClass, phaseDetail, noEContractReason, drivingContractTag,
       currentTicketId, triggerFileInput,       onDragOver, onDragEnter, onDragLeave, onDrop, onFileSelected,
       queryAll, queryAllAndGo, resetIntake,
+      assignableUsers, loadAssignableUsers,
       focusZone, flashTarget, leftDim, registerDim, filledCount, undoDim, stpDone, stpState, jumpTo,
       // 统一智能查询
       studentName, schoolShort, regStart, regEnd,
       candidates, candWrapRef, searching, candEmpty, searchSource, selectedCand,
       candTotal, candPage, candTotalPages, gotoCandPage, orgFallback, orgOptions,
-      phoneMismatch, residencyTip, successBar,
+      phoneMismatch, residencyTip, nameMismatch, phoneCandidates, successBar,
       clearTransient, examStageClass,
       routeMode, queryPrimary, qFieldClass, mainBtnText,
       searchStudents, chooseCandidate, onMainClick, runExactQuery,
@@ -712,6 +783,8 @@ try { createApp({
       cfg, cfgSaving, cfgMsg, cfgOk, loadCfg, saveCfg,
       LLM_PROVIDERS, providerSel, applyProvider, presetModels, modelSel, modelCustom,
       testing, testResult, testLlm,
+      // 账号管理
+      users, USER_ROLES, roleLabel,
       // 历史 / 看板
       hList, hTotal, hSearch, hLimit, hPage, hTotalPages, hLoading,
       statusFilter, schoolOptions, stats, chartDateStart, chartDateEnd, setChartPeriod, periodStat,
@@ -734,17 +807,17 @@ try { createApp({
       folderModalOpen, fbPath, fbParent, fbDirs, fbLoading, fbErr, openFolderPicker, fbLoad, fbEnter, fbUp, fbConfirm,
       // 投诉列表页重设计
       OVERDUE_DAYS, TYPE_LABELS, FEE_LABELS,
-      clKw, clType, clChannel, clHandler, clFee, clDays, clDateFrom, clDateTo,
+      clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
       clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
-      handlerOptions, channelOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
+      handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
       clPageSize, pagedGroups, clSetPage,
       daysOpen, isOverdue, feeState, maskPhone,
       clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
       batchExportSelected,
       transferModalOpen, transferTarget, transferSaving, askBatchTransfer, confirmBatchTransfer,
-      deleteModalOpen, deleteSaving, askDeleteSelected, confirmDeleteSelected,
+      deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
       // 回复函
-      replyPolished, replyEdited, replySaved, replyHtml, replyCollapsed, fmt, buildLetter, syncLetter, aiPolishReply, generateReply,
+      replyPolished, replyEdited, replySaved, replyHtml, replyCollapsed, replyPolishing, fmt, buildLetter, syncLetter, aiPolishReply, generateReply,
       // 合同预览（双栏对照）
       contractPreviewUrl, contractIsImage, cmpData, cmpLoading, cmpRefreshing,
       openContract, closeContract, refreshPlatform, relevantClauses,
@@ -757,10 +830,12 @@ try { createApp({
       stBadge, getTrainingTime, getEventType, getDrivingFeeBreakdown, extractFormula, money, esc,
     };
   },
-}).mount("#app");
+});
+  __app.config.compilerOptions.delimiters = ["[[", "]]"];
+  __app.mount("#app");
 } catch (e) {
   console.error("Vue mount failed:", e);
   const appEl = document.getElementById("app");
   appEl.removeAttribute("v-cloak");
-  appEl.innerHTML = '<div style="padding:20px;color:red">系统加载失败: ' + e.message + "</div>";
+  appEl.innerHTML = '<div style="padding:20px;color:red;font-family:monospace;white-space:pre-wrap">系统加载失败: ' + (e.stack || e.message) + "</div>";
 }

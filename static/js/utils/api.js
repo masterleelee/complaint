@@ -2,6 +2,13 @@
 async function _fetch(url, options = {}) {
   try {
     const resp = await fetch(url, options);
+    // 未登录 / 被踢 → 跳登录页（但放过登录接口本身的 401 提示）
+    if (resp.status === 401 && !url.includes("/api/session/login")) {
+      if (window.location.pathname !== "/login") {
+        window.location.href = "/";
+      }
+      return { success: false, error: "登录已失效，请重新登录", code: "unauthorized" };
+    }
     const text = await resp.text();
     if (!text) return { error: "服务器返回空响应" };
     try {

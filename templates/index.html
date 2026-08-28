@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <link rel="stylesheet" href="/static/css/style.css?v=14">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4/dist/echarts.min.js"></script>
+  <script>window.__CURRENT_USER__ = {{ current_user | tojson }};</script>
   <style>
   /* ===== Token（DESIGN.md：政务信赖蓝） ===== */
   :root{
@@ -68,6 +69,33 @@
   .sidebar .sidebar-toggle.theme-toggle{margin-top:12px}
   .sidebar .sidebar-toggle + .sidebar-toggle{margin-top:6px}
   .sidebar .footer{margin-top:10px;padding:0 6px;font-size:11.5px;letter-spacing:.3px;color:var(--color-text-secondary);position:relative;z-index:1}
+  /* 当前账号胶囊（侧边栏底部） */
+  .account-card{display:flex;align-items:center;gap:10px;padding:9px 10px;margin-top:8px;border:1px solid var(--color-border);border-radius:9px;background:var(--color-surface)}
+  .account-avatar{width:32px;height:32px;border-radius:50%;background:var(--brand-gradient);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:14px;flex:none}
+  .account-info{flex:1;min-width:0;line-height:1.2}
+  .account-name{font-size:13px;font-weight:600;color:var(--color-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .account-role{margin-top:3px}
+  .role-badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:10.5px;font-weight:500;letter-spacing:.3px}
+  .role-admin{background:#FEF3C7;color:#92400E}
+  .role-handler{background:#DBEAFE;color:#1E40AF}
+  .role-viewer{background:#E2E8F0;color:#475569}
+  /* 用户管理表格 */
+  .user-table{width:100%;border-collapse:collapse;font-size:13px}
+  .user-table th{background:var(--color-surface-50);color:var(--color-text-secondary);font-weight:600;text-align:left;padding:10px 12px;border-bottom:1px solid var(--color-border);white-space:nowrap}
+  .user-table td{padding:10px 12px;border-bottom:1px solid var(--color-border);vertical-align:middle}
+  .user-table tr:last-child td{border-bottom:none}
+  .user-table .muted{color:var(--color-text-disabled);font-size:12px}
+  .user-table .user-actions{display:flex;gap:6px;flex-wrap:wrap}
+  .user-table .btn-sm{padding:4px 10px;font-size:12px}
+  .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+  .status-dot.on{background:var(--color-success);box-shadow:0 0 0 3px rgba(22,163,74,.15)}
+  .status-dot.off{background:var(--color-text-disabled)}
+  .btn.danger{color:#fff;background:var(--color-danger);border-color:var(--color-danger)}
+  .btn.danger:hover{background:#B91C1C;border-color:#B91C1C}
+  .unmapped-handler{color:var(--color-text-disabled);font-style:italic}
+  .unmapped-handler::after{content:"（未关联账号）";margin-left:4px;font-size:11px}
+  .sidebar-toggle.logout-toggle{color:var(--color-text-secondary)}
+  .sidebar-toggle.logout-toggle:hover{background:#FEF2F2;color:var(--color-danger);border-color:transparent}
 
   /* 桌面端可收起：仅 >900px 生效（≤900px 本就自动收为图标栏，故收起按钮在那区间隐藏） */
   @media(min-width:901px){
@@ -79,6 +107,8 @@
     .sidebar.collapsed .nav-link{justify-content:center;padding:10px 0;gap:0}
     .sidebar.collapsed .sidebar-toggle{justify-content:center;padding:9px 0;gap:0}
     .sidebar.collapsed .sidebar-toggle .lbl{display:none}
+    .sidebar.collapsed .account-card{justify-content:center;padding:9px 0}
+    .sidebar.collapsed .account-info{display:none}
   }
   @media(max-width:900px){.sidebar .sidebar-toggle{display:none}}
 
@@ -107,6 +137,7 @@
   .panel + .panel{margin-top:16px}
 
   /* 新增投诉 · 悬浮操作栏（重置 / 查询三系统并建案） */
+  .intake-wrap{max-width:1560px;width:100%;margin:0 auto}
   .intake-action-bar{
     position: sticky;
     bottom: 0;
@@ -138,10 +169,10 @@
   .stepbar .stp.done .d{background:var(--color-success-50);border-color:var(--color-success);color:var(--color-success)}
   .stepbar .ln{width:28px;height:1.5px;background:var(--color-border);margin:0 8px;transition:background .25s}
   .stepbar .ln.done{background:var(--color-success)}
-  .intake-grid{display:grid;grid-template-columns:minmax(380px,5fr) minmax(0,7fr);gap:16px;align-items:start;max-width:1560px}
+  .intake-grid{display:grid;grid-template-columns:minmax(380px,5fr) minmax(0,7fr);gap:16px;align-items:start}
   .ig-left{display:flex;flex-direction:column;gap:16px;position:sticky;top:24px}
   .ig-right{display:flex;flex-direction:column;gap:16px;min-width:0}
-  .below-grid{max-width:1560px;margin-top:16px;display:flex;flex-direction:column;gap:16px}
+  .below-grid{margin-top:16px;display:flex;flex-direction:column;gap:16px}
   .card-header .ch-extra{margin-left:auto;display:flex;align-items:center;gap:8px}
   .step-card{scroll-margin-top:16px;transition:opacity .3s,filter .3s,box-shadow .3s}
   .dimmed{opacity:.42;filter:grayscale(.5)}
@@ -265,11 +296,23 @@
 
   /* ===== 工作台两栏（主列 + 右侧档案栏，对齐原型布局C）===== */
   .wb{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:stretch}
-  .case-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+  /* 头部也用同样的两栏网格：左列=学员信息+归档路径，右列=学员撤诉(右对齐)
+     这样头部右边界天然与下方 wb 右栏"学员档案"卡片右边界对齐，无需 magic number。 */
+  .case-head{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:end;margin-bottom:16px}
+  .case-head .ch-main{display:flex;align-items:flex-end;gap:12px;min-width:0}
+  .case-head .ch-main .who-block{flex:0 0 auto;min-width:0}
   .case-head .who{font-size:17px;font-weight:700}
   .case-head .who .code{color:var(--color-primary)}
   .case-head .meta{color:var(--color-text-secondary);font-size:12px;margin-top:2px;display:flex;gap:12px;flex-wrap:wrap}
-  .case-head .actions{margin-left:auto;display:flex;gap:8px}
+  .case-head .actions{display:flex;gap:8px;flex-shrink:0;justify-content:flex-end}
+  /* 学员归档路径（页面顶部）
+     margin-left:auto 让「选择」按钮右边缘 ≡ 三系统查询卡片右边缘（同一 1fr 列）。
+     input 用 flex:1 在 label 和「选择」之间撑开，但被 max-width:300px 封顶。 */
+  .arc-path{display:flex;align-items:center;gap:8px;margin-left:auto;min-width:0;max-width:600px}
+  .arc-path .ap-label{font-size:13px;font-weight:700;color:var(--color-text);white-space:nowrap;display:inline-flex;align-items:center;gap:6px;flex-shrink:0}
+  .arc-path .ap-label i{color:var(--color-primary);font-size:15px}
+  .arc-path .form-control{flex:1 1 0%;min-width:0;max-width:300px;font-family:var(--font-mono);overflow:hidden;text-overflow:ellipsis}
+  .arc-path .btn{white-space:nowrap;flex-shrink:0}
   .info-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 36px}
   .info-grid .ig{display:flex;align-items:center;padding:9px 2px;border-bottom:1px solid var(--color-surface-50);font-size:13px}
   .info-grid .ig .k{width:88px;flex:none;color:var(--color-text-secondary)}
@@ -281,6 +324,7 @@
   .sys-pill.warn{color:var(--color-warning);background:var(--color-warning-50);border-color:#FDE68A}
   .sys-pill.na{color:var(--color-text-secondary);background:var(--color-surface-50);border-color:var(--color-border)}
   .sys-pill.err{color:var(--color-danger);background:var(--color-danger-50);border-color:#FECACA}
+  .sys-pill.na-err{color:var(--color-danger);background:var(--color-danger-50);border-color:#FECACA}
 
   /* 扣费明细 */
   .fee-total{display:flex;gap:20px;align-items:baseline;flex-wrap:wrap;padding:12px 16px;background:var(--color-surface-50);border-radius:var(--radius);margin-top:12px}
@@ -365,12 +409,19 @@
 
   /* 归档闸门 */
   .gate-item{display:flex;align-items:center;gap:8px;padding:8px 0;font-size:13px}
+  /* ⑤ 归档：闸门横排 + 操作行 */
+  .arch-row{display:flex;align-items:center;gap:22px;flex-wrap:wrap}
+  .arch-row .gate-item{padding:4px 0}
+  .arch-foot{margin-top:12px;padding-top:12px;border-top:1px dashed var(--color-border)}
+  .arch-foot .hint{margin:0}
   .gate-ok{color:var(--color-success)} .gate-no{color:var(--color-danger)}
-  .path-tree{background:#0F172A;color:#E2E8F0;border-radius:var(--radius);padding:14px 16px;font-family:var(--font-mono);font-size:12px;line-height:1.7;overflow-x:auto}
-  .path-tree .ok{color:#4ADE80}.path-tree .dim{color:#64748B}.path-tree .warn{color:#FBBF24}
+  /* 合同状态：有合同=绿、无合同=红、延后检查=橙（沿用 DESIGN.md 语义色） */
+  .contract-ok{color:var(--color-success)}
+  .contract-no{color:var(--color-danger)}
+  .contract-deferred{color:var(--color-warning)}
 
   /* 右栏（桌面端吸顶悬浮：整栏限高视口，展开的在途案件仅在卡片内滚动） */
-  .rail{display:flex;flex-direction:column;gap:16px;min-height:0;
+  .rail{display:flex;flex-direction:column;gap:10px;min-height:0;
     position:sticky;top:24px;align-self:start;max-height:calc(100vh - 48px)}
   .rail > .card{flex:0 0 auto}
   .rail > .card.acc-card{display:flex;flex-direction:column;flex:0 1 auto;min-height:46px;overflow:hidden}
@@ -380,10 +431,19 @@
   .student-card .row:last-child{border:none}
   .student-card .k{color:var(--color-text-secondary);flex:none}
   .student-card .v{text-align:right;word-break:break-all}
-  .tl-item{position:relative;padding:0 0 10px 18px;font-size:12px;line-height:1.65}
-  .tl-item:before{content:'';position:absolute;left:4px;top:6px;width:7px;height:7px;border-radius:50%;background:var(--color-primary)}
+  .tl-item{position:relative;padding:0 0 10px 20px;font-size:12px;line-height:1.65;display:flex;align-items:center;gap:6px}
+  .tl-item:before{content:'';position:absolute;left:4px;top:9px;width:8px;height:8px;border-radius:50%;background:#D1D5DB;transition:background .15s}
   .tl-item:last-child{padding-bottom:0}
-  .tl-item .d{color:var(--color-text-secondary);font-family:var(--font-mono);font-size:11px;margin-right:6px}
+  .tl-item .d{color:var(--color-text-secondary);font-family:var(--font-mono);font-size:11px;margin-right:2px;min-width:60px;flex:none}
+  .tl-item .bi{font-size:13px;flex:none}
+  .tl-item.done:before{background:var(--color-success)}
+  .tl-item.doing:before{background:var(--color-primary);box-shadow:0 0 0 3px rgba(37,99,235,.18)}
+  .tl-item.done .bi-check-circle-fill{color:var(--color-success)}
+  .tl-item.doing .bi-circle-fill{color:var(--color-primary)}
+  .tl-item.todo .bi-circle{color:#D1D5DB}
+  .tl-item.todo{color:var(--color-text-secondary)}
+  .tl-item.done,.tl-item.doing{color:var(--color-text-primary)}
+  .tl-item.doing{font-weight:500}
   .mini-case{padding:10px 14px;border-bottom:1px solid var(--color-border);cursor:pointer}
   .mini-case:last-child{border-bottom:none}
   .mini-case:hover{background:var(--color-surface-50)}
@@ -401,7 +461,13 @@
   .toast-success{background:var(--color-success)} .toast-danger{background:var(--color-danger)} .toast-info{background:var(--color-primary)}
   .toast-title{font-weight:700;margin-bottom:2px}
 
-  @media(max-width:1100px){.wb{grid-template-columns:minmax(0,1fr)}.rail{position:static;max-height:none}}
+  @media(max-width:1100px){
+    .wb{grid-template-columns:minmax(0,1fr)}
+    .rail{position:static;max-height:none}
+    /* 右栏折叠后，头部把 学员撤诉 放回主列右下，与归档路径同行 */
+    .case-head{grid-template-columns:minmax(0,1fr) auto}
+    .case-head .actions{justify-content:flex-end}
+  }
   @media(max-width:900px){.sidebar{width:64px;padding:12px 4px}.sidebar .brand small,.nav-link span.txt,.sidebar .footer,.sidebar .nav-section{display:none}
     .query-form{grid-template-columns:1fr 1fr}.grid-2,.grid-3{grid-template-columns:1fr}}
   /* ≤640px：侧栏转为顶部横向导航；表格横向滚动避免整页溢出 */
@@ -513,6 +579,8 @@
   .go{float:right;color:var(--color-text-secondary)}
   .chk{width:15px;height:15px;cursor:pointer;accent-color:var(--color-primary)}
   .col-chk{width:34px}
+  .row-del{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
+  .row-del:hover{color:var(--color-danger);background:var(--color-danger-bg)}
   .empty-hint{padding:24px;text-align:center;color:var(--color-text-secondary);font-size:12.5px}
   .cl-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px 16px;border-top:1px solid var(--color-border);background:var(--color-surface-50)}
   .cl-pager .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -615,6 +683,11 @@
   html.dark .fee-table .tr-capped{background:rgba(245,158,11,.10)}
   html.dark .analysis-card-deduction{background:rgba(249,115,22,.10)}
   html.dark .sidebar{background:var(--color-surface-50)}
+  html.dark .account-card{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08)}
+  html.dark .role-admin{background:rgba(245,158,11,.18);color:#FCD34D}
+  html.dark .role-handler{background:rgba(59,130,246,.18);color:#93C5FD}
+  html.dark .role-viewer{background:rgba(148,163,184,.18);color:#CBD5E1}
+  html.dark .sidebar-toggle.logout-toggle:hover{background:rgba(220,38,38,.12);color:#FCA5A5}
   </style>
 </head>
 <body>
@@ -631,6 +704,20 @@
         <button class="nav-link" :class="{active: view==='kanban'}" @click="goView('kanban')" :title="sidebarCollapsed ? '投诉统计' : ''"><i class="bi bi-bar-chart"></i> <span class="txt">投诉统计</span></button>
         <div class="nav-section">系统</div>
         <button class="nav-link" :class="{active: view==='settings'}" @click="goView('settings')" :title="sidebarCollapsed ? '系统设置' : ''"><i class="bi bi-gear"></i> <span class="txt">系统设置</span></button>
+        <!-- 当前账号胶囊 + 退出按钮（紧贴系统设置下面） -->
+        <div v-if="currentUser" class="account-card" :title="sidebarCollapsed ? (currentUser.real_name + ' · ' + (currentUser.role_label || '')) : ''">
+          <div class="account-avatar">[[ (currentUser.real_name || currentUser.username || '?').slice(0,1) ]]</div>
+          <div class="account-info" v-show="!sidebarCollapsed">
+            <div class="account-name">[[ currentUser.real_name || currentUser.username ]]</div>
+            <div class="account-role">
+              <span class="role-badge" :class="'role-' + currentUser.role">[[ currentUser.role_label || currentUser.role ]]</span>
+            </div>
+          </div>
+        </div>
+        <button v-if="currentUser" class="sidebar-toggle logout-toggle" @click="logout" :title="sidebarCollapsed ? '退出登录' : ''">
+          <i class="bi bi-box-arrow-right"></i>
+          <span class="lbl">退出登录</span>
+        </button>
         <button class="sidebar-toggle theme-toggle" @click="toggleTheme" :title="sidebarCollapsed ? (isDark ? '切换浅色' : '切换深色') : ''">
           <i class="bi" :class="isDark ? 'bi-sun' : 'bi-moon-stars'"></i>
           <span class="lbl">[[ isDark ? '浅色模式' : '深色模式' ]]</span>
@@ -688,13 +775,17 @@
             <select class="cl-sel" v-model="clHandler">
               <option value="">处理人：全部</option>
               <option value="__unassigned">未分配</option>
-              <option v-for="h in handlerOptions" :key="h" :value="h">[[ h ]]</option>
+              <option v-for="h in handlerOptions" :key="h.value" :value="h.value">[[ h.label ]]</option>
             </select>
             <select class="cl-sel" v-model="clFee">
               <option value="">费用状态：全部</option>
               <option value="pending">费用待确认</option>
               <option value="confirmed">费用已确认</option>
               <option value="none">未核算</option>
+            </select>
+            <select class="cl-sel" v-model="clSchool">
+              <option value="">代号：全部</option>
+              <option v-for="s in clSchoolOptions" :key="s" :value="s">[[ s ]]</option>
             </select>
             <span style="flex:1"></span>
             <button class="btn btn-secondary btn-sm" @click="clClearFilters()"><i class="bi bi-x-circle"></i> 清空筛选</button>
@@ -743,6 +834,7 @@
                     <i class="bi sort-icon" :class="clSort.key==='days' ? (clSort.dir===1?'bi-sort-up-alt':'bi-sort-down') : 'bi-arrow-down-up'"></i></th>
                   <th>处理人</th>
                   <th>状态</th>
+                  <th style="width:44px"></th>
                 </tr></thead>
                 <tbody>
                   <tr v-for="t in g.items" :key="t.id" class="rowlink" :id="'cl-row-' + t.id"
@@ -768,11 +860,16 @@
                       <span v-else-if="g.key==='archived'" class="outcome-txt">[[ t.final_outcome || '已归档' ]]</span>
                       <span v-else class="outcome-txt">撤诉[[ t.withdraw_reason ? ' · '+t.withdraw_reason : '' ]]</span>
                     </td>
-                    <td>[[ t.handler_name || '未分配' ]]</td>
+                    <td>
+                      <span :class="{ 'unmapped-handler': !handlerLabel(t).mapped && handlerLabel(t).text !== '未分配' }">[[ handlerLabel(t).text ]]</span>
+                    </td>
                     <td>
                       <span v-if="g.key==='open'" class="badge" :class="t.handle_status==='处理中' ? 'badge-processing' : 'badge-muted'">[[ t.handle_status || '待处理' ]]</span>
                       <span v-else-if="g.key==='archived'" class="badge badge-completed">已归档</span>
                       <span v-else class="badge badge-muted">已撤诉</span>
+                    </td>
+                    <td class="col-act" @click.stop>
+                      <button class="row-del" title="删除该案件" @click="askDeleteRow(t)"><i class="bi bi-trash"></i></button>
                     </td>
                   </tr>
                 </tbody>
@@ -828,6 +925,7 @@
           </div>
           <button class="btn btn-secondary btn-sm" @click="resetIntake()"><i class="bi bi-file-earmark-plus"></i> 新建空白投诉</button>
         </div>
+        <div class="intake-wrap">
         <div class="intake-grid">
           <div class="ig-left">
             <div class="card step-card material" id="secMaterial" :class="[{'drop-over':isDragOver}, leftDim]" @click.capture="undoDim"
@@ -910,7 +1008,10 @@
             </div>
             <div>
               <label class="form-label" for="f_handler">处理人</label>
-              <input id="f_handler" class="form-control" v-model="form.handler_name" placeholder="请输入处理人">
+              <select id="f_handler" class="form-control" v-model="form.handler_user_id" @change="form.handler_name = (assignableUsers.find(u => u.id === form.handler_user_id)?.real_name || '')">
+                <option :value="null" disabled>请选择处理人</option>
+                <option v-for="u in assignableUsers" :key="u.id" :value="u.id">[[ u.real_name ]] ([[ u.role_label ]])</option>
+              </select>
             </div>
           </div>
 
@@ -949,6 +1050,7 @@
 
           <div v-if="residencyTip" class="uc-bar uc-warn"><i class="bi bi-exclamation-triangle"></i> [[ residencyTip ]]</div>
           <div v-if="phoneMismatch" class="uc-bar uc-warn"><i class="bi bi-exclamation-triangle"></i> [[ phoneMismatch ]]</div>
+          <div v-if="nameMismatch" class="uc-bar uc-danger" style="color:#dc2626"><i class="bi bi-exclamation-octagon-fill"></i> [[ nameMismatch ]]</div>
           <div v-if="sameDayTicket" class="uc-bar uc-warn" style="flex-wrap:wrap">
             <i class="bi bi-exclamation-triangle"></i>
             <span style="min-width:0">「[[ sameDayTicket.student_name || '该学员' ]]」在 [[ (sameDayTicket.complaint_date || '').slice(0,10) ]] 已有投诉工单（工单 …[[ sameDayTicket.id.slice(-6) ]] · [[ sameDayTicket.handle_status || '待处理' ]]）。本次查询将<b>并入</b>该工单，不会在列表新增记录。</span>
@@ -987,9 +1089,9 @@
           <div v-if="successBar" class="uc-bar uc-ok" id="secDone"><i class="bi bi-check-circle-fill"></i> [[ (qr && qr.merged_into_existing) ? '已并入今日既有工单（列表不新增记录），正在进入工作台…' : '建案成功，正在进入工作台…' ]]</div>
 
           <!-- 候选学员列表 -->
-          <div class="card step-card enter" id="secCand" v-if="candidates.length || candEmpty || searching || candTotalPages > 1 || orgFallback" :class="{'flash-focus':flashTarget==='secCand'}">
+          <div class="card step-card enter" id="secCand" v-if="candidates.length || candEmpty || searching || candTotalPages > 1 || orgFallback || phoneCandidates.length" :class="{'flash-focus':flashTarget==='secCand'}">
             <div class="card-header">
-              <i class="bi bi-people text-primary"></i> 候选学员 <b style="color:var(--color-primary)">[[ candTotal || candidates.length ]]</b> 条
+              <i class="bi bi-people text-primary"></i> [[ phoneCandidates.length ? '手机号匹配候选' : '候选学员' ]] <b style="color:var(--color-primary)">[[ phoneCandidates.length || candTotal || candidates.length ]]</b> 条
               <span class="hint">点击行或「投诉处理」直接查询三系统并建案</span>
               <span class="ch-extra"><span v-if="searchSource" class="src-badge"><i class="bi bi-hdd-network"></i> 来源：[[ searchSource ]]</span></span>
             </div>
@@ -1000,7 +1102,8 @@
             <button class="btn btn-secondary btn-sm" :disabled="candPage >= candTotalPages || searching" @click="gotoCandPage(candPage + 1)">下一页 <i class="bi bi-chevron-right"></i></button>
           </div>
           <div v-if="orgFallback" class="uc-bar uc-warn"><i class="bi bi-exclamation-triangle"></i> 所选报名点下未找到，已显示其他报名点的同名学员（学员可能已转校）</div>
-          <div v-if="candidates.length" class="cand-wrap" ref="candWrapRef">
+          <div v-if="phoneCandidates.length" class="uc-bar uc-warn"><i class="bi bi-phone"></i> 该手机号在内部系统匹配到多条记录，请选择与投诉学员一致的记录</div>
+          <div v-if="candidates.length || phoneCandidates.length" class="cand-wrap" ref="candWrapRef">
             <div class="cand-scroll">
               <table class="table cand-table">
                 <thead>
@@ -1017,9 +1120,9 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(c, i) in candidates" :key="c.id_card" :class="{ 'row-sel': selectedCand===i }">
+                  <tr v-for="(c, i) in (phoneCandidates.length ? phoneCandidates : candidates)" :key="c.id_card" :class="{ 'row-sel': selectedCand===i }">
                     <td><input type="radio" name="cand" :value="i" :checked="selectedCand===i" @change="chooseCandidate(i)"></td>
-                    <td><b>[[ c.student_name ]]</b></td>
+                    <td><b>[[ c.student_name || c.name ]]</b></td>
                     <td class="mono">[[ c.id_card ]]</td>
                     <td class="mono">[[ c.phone ]]</td>
                     <td>[[ c.school_short || '—' ]]</td>
@@ -1069,6 +1172,7 @@
             </button>
           </div>
         </div>
+        </div><!-- /.intake-wrap -->
 
         <!-- 人工建案弹窗：三系统无信息学员 -->
         <div class="modal-overlay" v-cloak v-if="manualOpen" @click.self="closeManualIntake()">
@@ -1175,18 +1279,25 @@
 
         <div v-else>
           <div class="case-head">
-            <div>
-              <div class="who">[[ selectedTicket.student_name || qr.name || '—' ]] <span class="code">（[[ (selectedTicket.school_short) || (qr.school_short) || '未归属' ]]）</span></div>
-              <div class="meta">
-                <span>🗓 [[ selectedTicket.complaint_date || form.complaint_date ]]</span>
-                <span>🚗 [[ qr.license_type || 'C1' ]] · [[ qr.exam_stage || selectedTicket.exam_stage || '—' ]]</span>
-                <span class="badge badge-processing">[[ TYPE_LABELS[selectedTicket.complaint_type || form.complaint_type] || selectedTicket.complaint_type || form.complaint_type ]]</span>
-                <span class="badge" :class="selectedTicket.withdraw_status==='已撤诉' ? 'badge-muted' : (selectedTicket.archive_status==='已归档' ? 'badge-completed' : 'badge-processing')">[[ selectedTicket.archive_status==='已归档' ? '已归档' : (selectedTicket.withdraw_status==='已撤诉' ? '已撤诉' : (selectedTicket.handle_status || '在途')) ]]</span>
+            <div class="ch-main">
+              <div class="who-block">
+                <div class="who">[[ selectedTicket.student_name || qr.name || '—' ]] <span class="code">（[[ (selectedTicket.school_short) || (qr.school_short) || '未归属' ]]）</span></div>
+                <div class="meta">
+                  <span>🗓 [[ selectedTicket.complaint_date || form.complaint_date ]]</span>
+                  <span>🚗 [[ qr.license_type || 'C1' ]] · [[ qr.exam_stage || selectedTicket.exam_stage || '—' ]]</span>
+                  <span class="badge badge-processing">[[ TYPE_LABELS[selectedTicket.complaint_type || form.complaint_type] || selectedTicket.complaint_type || form.complaint_type ]]</span>
+                  <span class="badge" :class="selectedTicket.withdraw_status==='已撤诉' ? 'badge-muted' : (selectedTicket.archive_status==='已归档' ? 'badge-completed' : 'badge-processing')">[[ selectedTicket.archive_status==='已归档' ? '已归档' : (selectedTicket.withdraw_status==='已撤诉' ? '已撤诉' : (selectedTicket.handle_status || '在途')) ]]</span>
+                </div>
+              </div>
+              <div class="arc-path" title="登记表、回复函等归档文件将写入该路径">
+                <label class="ap-label" for="f_archive_root"><i class="bi bi-folder2-open"></i> 归档路径</label>
+                <input id="f_archive_root" class="form-control" v-model.trim="archiveRoot" placeholder="点「选择」指定学员档案归档目录">
+                <button type="button" class="btn btn-secondary" @click="openFolderPicker()" title="浏览并选择文件夹"><i class="bi bi-folder-symlink"></i> 选择</button>
               </div>
             </div>
             <div class="actions">
               <button v-if="selectedTicket.withdraw_status==='已撤诉'" class="btn btn-ghost btn-sm" @click="askCancelWithdraw()"><i class="bi bi-flag-fill"></i> 取消撤诉</button>
-              <button v-else class="btn btn-ghost btn-sm" @click="askWithdraw()"><i class="bi bi-flag"></i> 标记撤诉</button>
+              <button v-else class="btn btn-ghost btn-sm" @click="askWithdraw()"><i class="bi bi-flag"></i> 学员撤诉</button>
             </div>
           </div>
 
@@ -1341,8 +1452,8 @@
                 <span class="badge" :class="replySaved ? 'badge-completed':'badge-processing'">[[ replySaved ? '已生成落盘' : '草稿编辑中' ]]</span>
                 <span class="hint" style="font-weight:400">与写不写都计入统计</span>
                 <span style="flex:1"></span>
-                <button class="btn btn-secondary btn-sm" @click="aiPolishReply()" v-if="!replySaved"><i class="bi bi-stars"></i> 一键AI修改</button>
-                <button class="btn btn-primary btn-sm" @click="generateReply()" v-if="!replySaved"><i class="bi bi-file-earmark-word"></i> 审阅无误，生成回复函</button>
+                <button class="btn btn-secondary btn-sm" @click="aiPolishReply()" v-if="!replySaved" :disabled="replyPolishing"><span v-if="replyPolishing" class="spinner-border spinner-border-sm"></span><i v-else class="bi bi-stars"></i> [[ replyPolishing ? 'AI 润色中...' : '一键AI修改' ]]</button>
+                <button class="btn btn-primary btn-sm" @click="generateReply()" v-if="!replySaved"><i class="bi bi-file-earmark-word"></i> 生成回复函</button>
               </div>
                 <div class="card-body" v-show="!replyCollapsed">
                   <div v-if="!ar" class="hint">完成费用分析后，系统将按当前扣费明细生成致交通局的回复函初稿。</div>
@@ -1385,19 +1496,21 @@
                     <label class="form-label" for="f_student_name_edit">学员姓名<span class="hint" style="font-weight:400;margin-left:4px">（用于归档夹与登记表文件命名）</span></label>
                     <input id="f_student_name_edit" class="form-control" style="max-width:240px" v-model="studentNameEdit" placeholder="三系统未查到，请补录姓名或代号">
                   </div>
-                  <div style="margin-top:14px">
-                    <label class="form-label">配合度评价（[[ selectedTicket.school_short || qr.school_short || '—' ]]）</label>
-                    <span v-for="k in coopOptions" :key="k" class="coop-opt" :class="{['on-'+k]: branchCooperation===k}" @click="branchCooperation=k">
-                      <span class="cico" :style="{background: k==='好' ? 'var(--color-success)' : (k==='中' ? 'var(--color-warning)' : 'var(--color-danger)')}">[[ k==='好' ? '✓' : (k==='中' ? '—' : '✕') ]]</span>[[ k ]]
-                    </span>
-                  </div>
-                  <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
-                    <button class="btn btn-secondary btn-sm" @click="previewRegistrationForm()" :disabled="previewFormLoading || !selectedTicketId">
-                      <i class="bi bi-eye"></i> [[ previewFormLoading ? '预览加载中…' : '预览登记表' ]]
-                    </button>
-                    <button class="btn btn-primary btn-sm" @click="confirmGenerateForm()" :disabled="formLoading || !selectedTicketId">
-                      <i class="bi bi-file-earmark-text"></i> [[ formLoading ? '登记表生成中…' : '生成登记表' ]]
-                    </button>
+                  <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-top:14px;flex-wrap:wrap">
+                    <div>
+                      <label class="form-label">配合度评价（[[ selectedTicket.school_short || qr.school_short || '—' ]]）</label>
+                      <span v-for="k in coopOptions" :key="k" class="coop-opt" :class="{['on-'+k]: branchCooperation===k}" @click="branchCooperation=k">
+                        <span class="cico" :style="{background: k==='好' ? 'var(--color-success)' : (k==='中' ? 'var(--color-warning)' : 'var(--color-danger)')}">[[ k==='好' ? '✓' : (k==='中' ? '—' : '✕') ]]</span>[[ k ]]
+                      </span>
+                    </div>
+                    <div style="display:flex;justify-content:flex-end;gap:8px">
+                      <button class="btn btn-secondary btn-sm" @click="previewRegistrationForm()" :disabled="previewFormLoading || !selectedTicketId">
+                        <i class="bi bi-eye"></i> [[ previewFormLoading ? '预览加载中…' : '预览登记表' ]]
+                      </button>
+                      <button class="btn btn-primary btn-sm" @click="confirmGenerateForm()" :disabled="formLoading || !selectedTicketId">
+                        <i class="bi bi-file-earmark-text"></i> [[ formLoading ? '登记表生成中…' : '生成登记表' ]]
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1405,28 +1518,19 @@
               <!-- ⑤ 归档 -->
               <div class="card panel"><div class="card-header"><i class="bi bi-archive text-primary"></i> ⑤ 归档</div>
                 <div class="card-body">
-                  <div class="grid-2">
-                    <div>
-                      <div class="gate-item" :class="archiveGates.notes ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.notes ? 'bi-check-circle-fill':'bi-x-circle'"></i> 处理情况已填写</div>
-                      <div class="gate-item" :class="archiveGates.coop ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.coop ? 'bi-check-circle-fill':'bi-x-circle'"></i> 配合度已评价</div>
-                      <div class="gate-item" :class="archiveGates.fee ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.fee ? 'bi-check-circle-fill':'bi-x-circle'"></i> 扣费明细表已确认（金额口径 · 不落盘）</div>
-                      <p class="hint" style="padding:2px 0 6px">— 回复函非必需</p>
-                      <button class="btn btn-primary" style="margin-top:10px" :disabled="!canArchive || selectedTicket.archive_status==='已归档'" @click="doArchiveAndGoList()">
-                        <i class="bi bi-archive-fill"></i> [[ selectedTicket.archive_status==='已归档' ? '✓ 已归档' : '📦 归档到此路径' ]]
-                      </button>
-                      <p v-if="!canArchive" class="hint" style="margin-top:6px">未满足：[[ gateErrors.join('；') ]]</p>
-                    </div>
-                    <div>
-                      <label class="form-label" for="f_archive_root">归档根目录<span class="hint" style="font-weight:400;margin-left:4px">（默认沿用上次归档路径，可点「选择」浏览文件夹）</span></label>
-                      <div style="display:flex;gap:6px">
-                        <input id="f_archive_root" class="form-control" v-model.trim="archiveRoot" placeholder="案件归档">
-                        <button class="btn btn-secondary" style="white-space:nowrap" @click="openFolderPicker()" title="浏览并选择文件夹"><i class="bi bi-folder2-open"></i> 选择</button>
-                      </div>
-                      <div class="path-tree">[[ archiveRoot || '案件归档' ]]/<br>&nbsp;└─ [[ (selectedTicket.school_short) || '未知' ]]/<br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;├─ [[ selectedTicket.complaint_date ]]_[[ selectedTicket.student_name ]]_投诉登记表.docx <span class="ok" v-if="selectedTicket.registration_form_path">✓ 已生成</span><span class="dim" v-else>未生成·可在④预览/生成</span><br>
-                        &nbsp;&nbsp;&nbsp;&nbsp;└─ [[ selectedTicket.complaint_date ]]_[[ selectedTicket.student_name ]]_投诉回复函.docx <span class="dim">[[ replySaved ? '✓ 已生成' : '（可选·未生成）' ]]</span></div>
-                    </div>
+                  <div class="arch-row">
+                    <div class="gate-item" :class="archiveGates.notes ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.notes ? 'bi-check-circle-fill':'bi-x-circle'"></i> 处理情况已填写</div>
+                    <div class="gate-item" :class="archiveGates.coop ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.coop ? 'bi-check-circle-fill':'bi-x-circle'"></i> 配合度已评价</div>
+                    <div class="gate-item" :class="archiveGates.fee ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.fee ? 'bi-check-circle-fill':'bi-x-circle'"></i> 扣费明细表已确认（金额口径 · 不落盘）</div>
                   </div>
+                  <div class="arch-row arch-foot">
+                    <p class="hint"><i class="bi bi-info-circle"></i> 回复函非必需；生成后按「[[ selectedTicket.complaint_date ]]_[[ selectedTicket.student_name ]]_投诉登记表 / 投诉回复函.docx」写入顶部学员归档路径</p>
+                    <span style="flex:1"></span>
+                    <button class="btn btn-primary" :disabled="!canArchive || selectedTicket.archive_status==='已归档'" @click="doArchiveAndGoList()">
+                      <i class="bi bi-archive-fill"></i> [[ selectedTicket.archive_status==='已归档' ? '✓ 已归档' : '📦 归档到此路径' ]]
+                    </button>
+                  </div>
+                  <p v-if="!canArchive" class="hint" style="margin-top:6px">未满足：[[ gateErrors.join('；') ]]</p>
                 </div>
               </div>
             </div>
@@ -1446,7 +1550,7 @@
                     <div class="row"><span class="k">实缴学费</span><b class="v">¥[[ money(ar ? (ar.actual_paid || ar.paid_amount) : ((qr.driving_fee && qr.driving_fee.pay_fee) || 0)) ]]<span v-if="!ar && qr.driving_fee && qr.driving_fee.pay_fee" class="hint" style="font-weight:400">（平台已缴，待合同分析确认）</span></b></div>
                     <div class="row"><span class="k">监管剩余</span><b class="v">[[ qr.driving_fee && qr.driving_fee.residue_supervise_amt != null ? '¥' + money(qr.driving_fee.residue_supervise_amt) : '-' ]]</b></div>
                     <div class="row"><span class="k">经营单位</span><b class="v">[[ selectedTicket.school_name || qr.school_name || '—' ]]</b></div>
-                    <div class="row"><span class="k">合同状态</span><b class="v">[[ qr.contract_available ? '有电子合同' : (qr.contract_check_deferred ? '延后检查' : '无合同') ]]</b></div>
+                    <div class="row"><span class="k">合同状态</span><b class="v" :class="qr.contract_available ? 'contract-ok' : (qr.contract_check_deferred ? 'contract-deferred' : 'contract-no')">[[ qr.contract_available ? '✅ 有合同' : (qr.contract_check_deferred ? '⏳ 延后检查' : '❌ 无合同') ]]</b></div>
                   </div>
                 </div>
               </div>
@@ -1456,10 +1560,36 @@
                 </div>
                 <div v-show="timelineOpen" class="acc-list">
                   <div class="card-body" style="font-size:12px">
-                    <div class="tl-item"><span class="d">[[ selectedTicket.complaint_date || form.complaint_date ]]</span>投诉登记，计入统计</div>
-                    <div class="tl-item"><span class="d">—</span>三系统查询<span v-if="qr && qr.name">完成</span><span v-else>待查询</span></div>
-                    <div class="tl-item"><span class="d">—</span>扣费明细<span :class="selectedTicket.fee_plan_status==='confirmed' ? 'gate-ok':'gate-no'">[[ selectedTicket.fee_plan_status==='confirmed' ? '已确认' : '待确认' ]]</span></div>
-                    <div class="tl-item"><span class="d">—</span>[[ selectedTicket.archive_status==='已归档' ? '已归档' : '待归档' ]]</div>
+                    <div :class="['tl-item', (selectedTicket.complaint_date || form.complaint_date) ? 'done' : 'todo']">
+                      <span class="d">[[ selectedTicket.complaint_date || form.complaint_date || '—' ]]</span>
+                      <i :class="(selectedTicket.complaint_date || form.complaint_date) ? 'bi bi-check-circle-fill' : 'bi bi-circle'"></i>
+                      投诉登记，计入统计
+                    </div>
+                    <div :class="['tl-item', (qr && qr.name) ? 'done' : ((selectedTicket.complaint_date || form.complaint_date) ? 'doing' : 'todo')]">
+                      <span class="d">—</span>
+                      <i :class="(qr && qr.name) ? 'bi bi-check-circle-fill' : ((selectedTicket.complaint_date || form.complaint_date) ? 'bi bi-circle-fill' : 'bi bi-circle')"></i>
+                      三系统查询 [[ (qr && qr.name) ? '已完成' : ((selectedTicket.complaint_date || form.complaint_date) ? '进行中' : '待查询') ]]
+                    </div>
+                    <div :class="['tl-item', selectedTicket.fee_plan_status==='confirmed' ? 'done' : ((qr && qr.name) ? 'doing' : 'todo')]">
+                      <span class="d">—</span>
+                      <i :class="selectedTicket.fee_plan_status==='confirmed' ? 'bi bi-check-circle-fill' : ((qr && qr.name) ? 'bi bi-circle-fill' : 'bi bi-circle')"></i>
+                      扣费明细 · <span :class="selectedTicket.fee_plan_status==='confirmed' ? 'gate-ok' : ''">[[ selectedTicket.fee_plan_status==='confirmed' ? '已确认' : '待确认' ]]</span>
+                    </div>
+                    <div :class="['tl-item', selectedTicket.registration_form_path ? 'done' : (selectedTicket.fee_plan_status==='confirmed' ? 'doing' : 'todo')]">
+                      <span class="d">—</span>
+                      <i :class="selectedTicket.registration_form_path ? 'bi bi-check-circle-fill' : (selectedTicket.fee_plan_status==='confirmed' ? 'bi bi-circle-fill' : 'bi bi-circle')"></i>
+                      投诉登记表 [[ selectedTicket.registration_form_path ? '已生成' : (selectedTicket.fee_plan_status==='confirmed' ? '进行中' : '未生成') ]]
+                    </div>
+                    <div :class="['tl-item', (replySaved || selectedTicket.reply_path) ? 'done' : (selectedTicket.registration_form_path ? 'doing' : 'todo')]">
+                      <span class="d">—</span>
+                      <i :class="(replySaved || selectedTicket.reply_path) ? 'bi bi-check-circle-fill' : (selectedTicket.registration_form_path ? 'bi bi-circle-fill' : 'bi bi-circle')"></i>
+                      投诉回复函 [[ (replySaved || selectedTicket.reply_path) ? '已生成' : (selectedTicket.registration_form_path ? '进行中' : '未生成') ]]
+                    </div>
+                    <div :class="['tl-item', selectedTicket.archive_status==='已归档' ? 'done' : ((replySaved || selectedTicket.reply_path) ? 'doing' : 'todo')]">
+                      <span class="d">—</span>
+                      <i :class="selectedTicket.archive_status==='已归档' ? 'bi bi-check-circle-fill' : ((replySaved || selectedTicket.reply_path) ? 'bi bi-circle-fill' : 'bi bi-circle')"></i>
+                      归档 [[ selectedTicket.archive_status==='已归档' ? '已完成' : ((replySaved || selectedTicket.reply_path) ? '进行中' : '待归档') ]]
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1725,6 +1855,132 @@
               </div>
             </div>
           </div>
+
+          <!-- 我的资料（所有人可见，含改密入口） -->
+          <div class="card panel" style="margin-top:20px">
+            <div class="card-header"><i class="bi bi-person-circle text-primary"></i> 我的资料</div>
+            <div class="card-body">
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px 16px">
+                <div>
+                  <label class="form-label">用户名</label>
+                  <input class="form-control" :value="currentUser?.username || ''" disabled>
+                </div>
+                <div>
+                  <label class="form-label">真实姓名</label>
+                  <input class="form-control" :value="currentUser?.real_name || ''" disabled>
+                </div>
+                <div>
+                  <label class="form-label">角色</label>
+                  <input class="form-control" :value="currentUser?.role_label || ''" disabled>
+                </div>
+                <div v-if="currentUser?.phone" style="grid-column:1 / -1">
+                  <label class="form-label">手机号</label>
+                  <input class="form-control" :value="currentUser?.phone || ''" disabled>
+                </div>
+              </div>
+              <div v-if="users.profileErr.value" style="color:var(--color-danger);font-size:12px;margin-top:8px">[[ users.profileErr.value ]]</div>
+              <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+                <button class="btn btn-secondary" @click="users.openMyPwd()"><i class="bi bi-key"></i> 修改密码</button>
+                <span class="hint" style="font-size:11.5px;color:var(--color-text-secondary)">修改密码后当前 session 立即失效，需要重新登录</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 用户管理（仅 admin 可见） -->
+          <div v-if="users.isAdmin.value" class="card panel" style="margin-top:20px">
+            <div class="card-header" style="display:flex;align-items:center">
+              <span><i class="bi bi-people text-primary"></i> 用户管理</span>
+              <span style="margin-left:auto"></span>
+              <button class="btn btn-primary btn-sm" @click="users.openCreate()"><i class="bi bi-plus-lg"></i> 新增用户</button>
+            </div>
+            <div class="card-body" style="padding:0">
+              <table class="user-table">
+                <thead>
+                  <tr>
+                    <th>用户名</th>
+                    <th>真实姓名</th>
+                    <th>角色</th>
+                    <th>手机号</th>
+                    <th>状态</th>
+                    <th>最后登录</th>
+                    <th style="width:240px">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="u in users.list.value" :key="u.id">
+                    <td>[[ u.username ]]</td>
+                    <td>[[ u.real_name ]]</td>
+                    <td><span class="role-badge" :class="'role-' + u.role">[[ u.role_label ]]</span></td>
+                    <td>[[ u.phone || '-' ]]</td>
+                    <td>
+                      <span class="status-dot" :class="u.status === '启用' ? 'on' : 'off'"></span>
+                      [[ u.status ]]
+                    </td>
+                    <td class="muted">[[ u.last_login_at ? u.last_login_at.slice(0,16).replace('T',' ') : '从未' ]]</td>
+                    <td class="user-actions">
+                      <button class="btn btn-secondary btn-sm" @click="users.openEdit(u)">编辑</button>
+                      <button class="btn btn-secondary btn-sm" @click="users.openReset(u)">重置密码</button>
+                      <button class="btn btn-secondary btn-sm" :class="u.status === '启用' ? 'danger' : 'primary'" :disabled="u.id === currentUser?.id" @click="users.toggleStatus(u)">[[ u.status === '启用' ? '停用' : '启用' ]]</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!users.list.value.length && !users.loading.value">
+                    <td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-disabled)">暂无用户</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- 历史处理人 → 账号 别名映射（仅 admin 可见） -->
+          <div v-if="users.isAdmin.value" class="card panel" style="margin-top:20px">
+            <div class="card-header" style="display:flex;align-items:center">
+              <span><i class="bi bi-link-45deg text-primary"></i> 历史处理人映射</span>
+              <span style="margin-left:10px;font-size:12px;color:var(--color-text-secondary)">把旧工单里的姓名（如「李老师」）映射到当前系统账号。映射后会自动回写所有未关联工单。</span>
+              <span style="margin-left:auto"></span>
+              <button class="btn btn-primary btn-sm" @click="users.openAliasCreate()"><i class="bi bi-plus-lg"></i> 新增映射</button>
+            </div>
+            <div class="card-body" style="padding:0">
+              <!-- 未映射的历史处理人（待办） -->
+              <div v-if="users.unmapped.value.length" style="padding:14px 16px;background:var(--color-warning-50,#FFFBEB);border-bottom:1px solid var(--color-border)">
+                <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">
+                  <i class="bi bi-exclamation-triangle text-warning"></i>
+                  还有 <b>[[ users.unmapped.value.length ]]</b> 个历史处理人未关联：
+                </div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px">
+                  <button v-for="u in users.unmapped.value" :key="u.old_name" class="btn btn-secondary btn-sm" @click="users.openAliasFromUnmapped(u)">
+                    「[[ u.old_name ]]」· <span class="muted">[[ u.cnt ]] 条工单</span>
+                    <i class="bi bi-arrow-right" style="margin-left:6px"></i>
+                    <span style="color:var(--color-primary)">绑定账号</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 已映射的列表 -->
+              <table class="user-table">
+                <thead>
+                  <tr>
+                    <th>历史名称</th>
+                    <th>关联账号</th>
+                    <th>创建时间</th>
+                    <th style="width:140px">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="a in users.aliases.value" :key="a.id">
+                    <td><b>「[[ a.old_name ]]」</b></td>
+                    <td>[[ a.user_real_name || '?' ]] <span class="muted">(@[[ a.username ]])</span></td>
+                    <td class="muted">[[ a.created_at ? a.created_at.slice(0,16).replace('T',' ') : '' ]]</td>
+                    <td>
+                      <button class="btn btn-secondary btn-sm danger" @click="users.deleteAliasRow(a)">删除</button>
+                    </td>
+                  </tr>
+                  <tr v-if="!users.aliases.value.length && !users.aliasLoading.value">
+                    <td colspan="4" style="text-align:center;padding:24px;color:var(--color-text-disabled)">暂无映射</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </section>
     </main>
@@ -1862,7 +2118,7 @@
     <!-- ═══ 撤诉弹窗 ═══ -->
     <div class="modal-overlay" v-cloak v-if="withdrawModalOpen" @click.self="withdrawModalOpen=false">
       <div class="modal-content" style="width:min(480px,92vw)">
-        <div class="m-head"><i class="bi bi-flag"></i> 标记撤诉<button class="m-close" @click="withdrawModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
+        <div class="m-head"><i class="bi bi-flag"></i> 学员撤诉<button class="m-close" @click="withdrawModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
         <div class="m-body">
           <p style="margin-bottom:10px">确认将 <b>[[ selectedTicket.student_name || qr.name || '—' ]]</b> 的投诉标记为「已撤诉」？</p>
           <ul class="hint" style="padding-left:18px;line-height:1.9">
@@ -1883,7 +2139,10 @@
         <div class="m-head"><i class="bi bi-arrow-left-right"></i> 批量转办<button class="m-close" @click="transferModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
         <div class="m-body">
           <p style="margin-bottom:10px">将选中的 <b>[[ clSelectedIds.length ]]</b> 条案件转交给：</p>
-          <input class="form-control" v-model.trim="transferTarget" placeholder="输入接收人姓名，如：张老师" @keyup.enter="confirmBatchTransfer()">
+          <select class="form-control" v-model="transferTarget">
+            <option :value="null" disabled>请选择接收人</option>
+            <option v-for="u in assignableUsers" :key="u.id" :value="u.id">[[ u.real_name ]] ([[ u.role_label ]])</option>
+          </select>
         </div>
         <div class="m-foot">
           <button class="btn btn-secondary" @click="transferModalOpen=false">取消</button>
@@ -1925,10 +2184,10 @@
       </div>
     </div>
 
-    <!-- ═══ 归档根目录选择弹窗 ═══ -->
+    <!-- ═══ 学员归档路径选择弹窗 ═══ -->
     <div class="modal-overlay" v-cloak v-if="folderModalOpen" @click.self="folderModalOpen=false">
       <div class="modal-content" style="width:min(520px,92vw)">
-        <div class="m-head"><i class="bi bi-folder2-open"></i> 选择归档根目录<button class="m-close" @click="folderModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
+        <div class="m-head"><i class="bi bi-folder2-open"></i> 选择学员归档路径<button class="m-close" @click="folderModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
         <div class="m-body" style="padding:12px 18px">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
             <button class="btn btn-secondary btn-sm" :disabled="!fbParent || fbLoading" @click="fbUp()" title="上一级"><i class="bi bi-arrow-up"></i> 上级</button>
@@ -1946,9 +2205,141 @@
           </div>
         </div>
         <div class="m-foot">
-          <span class="hint" style="flex:1">将当前浏览的文件夹设为归档根目录</span>
+          <span class="hint" style="flex:1">将当前浏览的文件夹设为学员归档路径</span>
           <button class="btn btn-secondary" @click="folderModalOpen=false">取消</button>
           <button class="btn btn-primary" :disabled="fbLoading || !fbPath" @click="fbConfirm()"><i class="bi bi-check2"></i> 选择此文件夹</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 新增/编辑用户弹窗 ═══ -->
+    <div class="modal-overlay" v-cloak v-if="users.modalOpen.value" @click.self="users.closeModal()">
+      <div class="modal-content" style="width:min(480px,92vw)">
+        <div class="m-head">
+          <i class="bi bi-person-plus"></i>
+          [[ users.modalMode.value === 'create' ? '新增用户' : '编辑用户' ]]
+          <button class="m-close" @click="users.closeModal()" aria-label="关闭"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="m-body" style="padding:14px 18px">
+          <div class="form-group">
+            <label class="form-label">用户名</label>
+            <input class="form-control" v-model="users.modalForm.value.username" :disabled="users.modalMode.value==='edit'" placeholder="登录账号，唯一">
+          </div>
+          <div class="form-group">
+            <label class="form-label">真实姓名</label>
+            <input class="form-control" v-model="users.modalForm.value.real_name" placeholder="如 张三">
+          </div>
+          <div class="form-group">
+            <label class="form-label">角色</label>
+            <select class="form-control" v-model="users.modalForm.value.role">
+              <option v-for="r in USER_ROLES" :key="r.value" :value="r.value">[[ r.label ]]</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">手机号（可选）</label>
+            <input class="form-control" v-model="users.modalForm.value.phone" placeholder="1开头的11位数字">
+          </div>
+          <div class="form-group" v-if="users.modalMode.value==='create'">
+            <label class="form-label">初始密码</label>
+            <input class="form-control" v-model="users.modalForm.value.password" placeholder="建议先用 123456，让对方首次登录后修改">
+          </div>
+          <p v-if="users.modalErr.value" class="hint" style="color:var(--color-danger);margin:0"><i class="bi bi-exclamation-triangle"></i> [[ users.modalErr.value ]]</p>
+        </div>
+        <div class="m-foot">
+          <span class="hint" style="flex:1"></span>
+          <button class="btn btn-secondary" @click="users.closeModal()">取消</button>
+          <button class="btn btn-primary" :disabled="users.modalSaving.value" @click="users.submitModal()">
+            <i class="bi bi-check2"></i> [[ users.modalSaving.value ? '保存中…' : '保存' ]]
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ admin 重置用户密码弹窗 ═══ -->
+    <div class="modal-overlay" v-cloak v-if="users.resetOpen.value" @click.self="users.resetOpen.value=false">
+      <div class="modal-content" style="width:min(420px,92vw)">
+        <div class="m-head">
+          <i class="bi bi-key"></i> 重置密码
+          <span v-if="users.resetTarget.value" style="margin-left:8px;font-weight:400;font-size:13px;color:var(--color-text-secondary)">目标：[[ users.resetTarget.value.username ]]（[[ users.resetTarget.value.real_name ]]）</span>
+          <button class="m-close" @click="users.resetOpen.value=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="m-body" style="padding:14px 18px">
+          <p class="hint" style="margin:0 0 12px">设置后该用户需要重新登录。请当面/微信告知对方新密码。</p>
+          <div class="form-group">
+            <label class="form-label">新密码</label>
+            <input class="form-control" type="text" v-model="users.resetPassword.value" placeholder="输入新密码">
+          </div>
+        </div>
+        <div class="m-foot">
+          <span class="hint" style="flex:1"></span>
+          <button class="btn btn-secondary" @click="users.resetOpen.value=false">取消</button>
+          <button class="btn btn-primary" :disabled="users.resetSaving.value" @click="users.submitReset()">
+            <i class="bi bi-check2"></i> [[ users.resetSaving.value ? '重置中…' : '确认重置' ]]
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 改自己密码弹窗 ═══ -->
+    <div class="modal-overlay" v-cloak v-if="users.myPwdOpen.value" @click.self="users.myPwdOpen.value=false">
+      <div class="modal-content" style="width:min(420px,92vw)">
+        <div class="m-head">
+          <i class="bi bi-key"></i> 修改我的密码
+          <button class="m-close" @click="users.myPwdOpen.value=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="m-body" style="padding:14px 18px">
+          <div class="form-group">
+            <label class="form-label">原密码</label>
+            <input class="form-control" type="password" v-model="users.myPwdForm.value.old_password">
+          </div>
+          <div class="form-group">
+            <label class="form-label">新密码</label>
+            <input class="form-control" type="password" v-model="users.myPwdForm.value.new_password">
+          </div>
+          <div class="form-group">
+            <label class="form-label">确认新密码</label>
+            <input class="form-control" type="password" v-model="users.myPwdForm.value.confirm_password">
+          </div>
+          <p v-if="users.myPwdErr.value" class="hint" style="color:var(--color-danger);margin:0"><i class="bi bi-exclamation-triangle"></i> [[ users.myPwdErr.value ]]</p>
+        </div>
+        <div class="m-foot">
+          <span class="hint" style="flex:1;font-size:11.5px">修改后当前 session 立即失效</span>
+          <button class="btn btn-secondary" @click="users.myPwdOpen.value=false">取消</button>
+          <button class="btn btn-primary" :disabled="users.myPwdSaving.value" @click="users.submitMyPwd()">
+            <i class="bi bi-check2"></i> [[ users.myPwdSaving.value ? '提交中…' : '确认修改' ]]
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 历史处理人 → 账号 新增映射弹窗 ═══ -->
+    <div class="modal-overlay" v-cloak v-if="users.aliasModalOpen.value" @click.self="users.aliasModalOpen.value=false">
+      <div class="modal-content" style="width:min(440px,92vw)">
+        <div class="m-head">
+          <i class="bi bi-link-45deg"></i> 新增历史处理人映射
+          <button class="m-close" @click="users.aliasModalOpen.value=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="m-body" style="padding:14px 18px">
+          <p class="hint" style="margin:0 0 12px">把工单里出现过的处理人姓名（如「李老师」）关联到当前系统账号。映射后会自动回写所有未关联的工单。</p>
+          <div class="form-group">
+            <label class="form-label">历史处理人名称</label>
+            <input class="form-control" v-model="users.aliasForm.value.old_name" placeholder="如：李老师">
+          </div>
+          <div class="form-group">
+            <label class="form-label">关联到系统账号</label>
+            <select class="form-control" v-model="users.aliasForm.value.user_id">
+              <option :value="null" disabled>请选择账号</option>
+              <option v-for="u in users.list.value" :key="u.id" :value="u.id">[[ u.real_name ]] ([[ u.username ]], [[ u.role_label ]])</option>
+            </select>
+          </div>
+          <p v-if="users.aliasModalErr.value" class="hint" style="color:var(--color-danger);margin:0"><i class="bi bi-exclamation-triangle"></i> [[ users.aliasModalErr.value ]]</p>
+        </div>
+        <div class="m-foot">
+          <span class="hint" style="flex:1"></span>
+          <button class="btn btn-secondary" @click="users.aliasModalOpen.value=false">取消</button>
+          <button class="btn btn-primary" :disabled="users.aliasSaving.value" @click="users.submitAlias()">
+            <i class="bi bi-check2"></i> [[ users.aliasSaving.value ? '提交中…' : '提交映射' ]]
+          </button>
         </div>
       </div>
     </div>
@@ -1968,14 +2359,14 @@
       "api": "/static/js/utils/api.js?v=15",
       "helpers": "/static/js/utils/helpers.js?v=14",
       "useToast": "/static/js/composables/useToast.js?v=14",
-      "useComplaint": "/static/js/composables/useComplaint.js?v=15",
+      "useComplaint": "/static/js/composables/useComplaint.js?v=16",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=14",
-      "useSettings": "/static/js/composables/useSettings.js?v=18",
+      "useSettings": "/static/js/composables/useSettings.js?v=20",
       "useHistory": "/static/js/composables/useHistory.js?v=14",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=20"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=23"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=24"></script>
+  <script type="module" src="/static/js/app.js?v=32"></script>
 </body>
 </html>
