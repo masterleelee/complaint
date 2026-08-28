@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 
 import database  # noqa: E402
 
@@ -33,6 +34,8 @@ def client(fresh_db):
 
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 
@@ -210,7 +213,7 @@ def test_empty_query_result_creates_no_ticket(client, fresh_db, monkeypatch):
             "error": "",
         }
 
-    def fake_query_by_phone(phone, timeout=60.0):
+    def fake_query_by_phone(phone, expected_name="", timeout=60.0):
         return {
             "name": "", "id_card": "", "phone": phone,
             "sources": {"internal": "not_found", "third": "not_found", "driving": "not_found"},

@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 from docx import Document
 
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="register-form-tests-"))
@@ -33,6 +34,8 @@ def fresh_db():
 def client(fresh_db):
     app_module.app.config["TESTING"] = True
     with app_module.app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 
@@ -46,6 +49,7 @@ def _reply_dir(tmp_path, monkeypatch):
     def _fake_load():
         cfg = real.copy()
         cfg["paths"] = dict(real.get("paths", {}), reply_dir=str(tmp_path))
+        cfg["archive_root"] = str(tmp_path)
         return cfg
 
     monkeypatch.setattr(visit_service_module, "load_config", _fake_load)

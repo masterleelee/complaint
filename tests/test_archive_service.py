@@ -45,8 +45,8 @@ class TestBuildArchiveDir:
         case_dir, register, reply = build_archive_dir(_ticket(), root=root)
         expected = tmp_path / "归档根" / "分校" / "南城-南城分校" / "2026-08-22_张三_110101199003070011_南城"
         assert case_dir == str(expected)
-        assert register == str(expected / "2026-08-22_张三_投诉登记表.docx")
-        assert reply == str(expected / "2026-08-22_张三_投诉回复函.docx")
+        assert register == str(expected / "投诉登记表.docx")
+        assert reply == str(expected / "投诉回复函.docx")
 
     def test_unknown_org_falls_back_to_weigushu(self, tmp_path):
         case_dir, _, _ = build_archive_dir(
@@ -96,8 +96,8 @@ class TestArchiveCase:
             "success": True,
             "dir": str(expected_dir),
             "files": [
-                str(expected_dir / "2026-08-22_张三_投诉登记表.docx"),
-                str(expected_dir / "2026-08-22_张三_投诉回复函.docx"),
+                str(expected_dir / "投诉登记表.docx"),
+                str(expected_dir / "投诉回复函.docx"),
             ],
             "opened": False,
         }

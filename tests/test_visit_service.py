@@ -183,20 +183,14 @@ def test_page_margins_and_layout(tmp_path):
     assert len(doc.tables[0].columns) == 6
 
 
-def test_filename_uses_complaint_date_and_sanitizes_name(tmp_path):
+def test_filename_simplified_to_固定名(tmp_path):
     result = generate_registration_form(BASE_TICKET, output_dir=str(tmp_path))
-    assert result["filename"] == "2026-08-23_测试学员乙_投诉登记表.docx"
-
-    ticket = dict(BASE_TICKET, student_name='罗/俊"x y')
-    result_bad = generate_registration_form(ticket, output_dir=str(tmp_path))
-    assert result_bad["filename"] == "2026-08-23_罗_俊_x_y_投诉登记表.docx"
-    assert not re.search(r'[\\/:*?"<>|]', result_bad["filename"])
+    assert result["filename"] == "投诉登记表.docx"
 
 
-def test_fallback_ticket_no_and_today_date(tmp_path):
+def test_fallback_filename_固定名(tmp_path):
     result = generate_registration_form({"id": "abc123def456"}, output_dir=str(tmp_path))
-    today = result["filename"].split("_")[0]
-    assert re.fullmatch(r"\d{8}", today)
+    assert result["filename"] == "投诉登记表.docx"
     text = _doc_text(result["filepath"])
     assert "ABC123" in text
 

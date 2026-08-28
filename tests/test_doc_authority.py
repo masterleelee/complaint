@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 from docx import Document
 
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="doc-authority-tests-"))
@@ -37,6 +38,8 @@ def fresh_db():
 def client(fresh_db):
     app_module.app.config["TESTING"] = True
     with app_module.app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 
@@ -90,7 +93,10 @@ def _archive_patches(monkeypatch, tmp_path):
 # 1) 回复函金额取快照，请求体金额仅触发告警
 # ───────────────────────────────────────────────────────────
 def test_reply_generate_uses_snapshot_amounts(client, fresh_db, tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "get_archive_folder", lambda *a, **k: str(tmp_path))
+    def _fake_build_dir(ticket, root=None):
+        d = tmp_path
+        return str(d), str(d / "投诉登记表.docx"), str(d / "投诉回复函.docx")
+    monkeypatch.setattr(app_module, "build_archive_dir", _fake_build_dir)
     ticket = _make_ticket()
 
     resp = client.post("/api/reply/generate", json={
@@ -149,7 +155,7 @@ def test_withdraw_archived_case_writes_note_and_refreshes_form(client, fresh_db,
     body = resp.get_json()
     assert body["success"] is True
     case_dir = Path(body["dir"])
-    reg_target = case_dir / "2026-08-24_李四_投诉登记表.docx"
+    reg_target = case_dir / "投诉登记表.docx"
     assert reg_target.is_file()
     assert "已协调网点退费2000元" not in _doc_text(reg_target)
 

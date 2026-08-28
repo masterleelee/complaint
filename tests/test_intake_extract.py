@@ -8,6 +8,7 @@
 5. complaint_summary 落库（save_ticket 白名单 + _persist_query_result 映射）
 """
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 
 import database
 from services import intake_service
@@ -38,6 +39,8 @@ def client(fresh_db):
 
     flask_app.config["TESTING"] = True
     with flask_app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 

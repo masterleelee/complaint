@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
@@ -37,6 +38,8 @@ def fresh_db():
 def client(fresh_db):
     app_module.app.config["TESTING"] = True
     with app_module.app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 
@@ -65,7 +68,10 @@ def _make_ticket(**overrides):
 # 1) /api/reply/generate → v2 docx 标题居中 + 落款右对齐
 # ───────────────────────────────────────────────────────────
 def test_reply_generate_v2_format(client, fresh_db, tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "get_archive_folder", lambda *a, **k: str(tmp_path))
+    def _fake_build_dir(ticket, root=None):
+        d = tmp_path
+        return str(d), str(d / "投诉登记表.docx"), str(d / "投诉回复函.docx")
+    monkeypatch.setattr(app_module, "build_archive_dir", _fake_build_dir)
     ticket = _make_ticket()
 
     resp = client.post("/api/reply/generate", json={

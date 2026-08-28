@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 
 # 必须在导入 app 之前把数据库指向临时文件，避免测试触碰真实数据
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="v2-workbench-tests-"))
@@ -31,6 +32,8 @@ def fresh_db():
 def client(fresh_db):
     app_module.app.config["TESTING"] = True
     with app_module.app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from conftest import _autologin_admin  # noqa: F401
 
 _TMP_DIR = Path(tempfile.mkdtemp(prefix="manual-intake-tests-"))
 
@@ -40,9 +41,13 @@ def fresh_db():
 @pytest.fixture()
 def client(fresh_db, tmp_path, monkeypatch):
     # 受理建夹打桩：测试不写真实「案件归档」目录
-    monkeypatch.setattr(app_module, "get_archive_folder", lambda *a, **k: str(tmp_path))
+    def _fake_build_dir(ticket, root=None):
+        return str(tmp_path), str(tmp_path / "投诉登记表.docx"), str(tmp_path / "投诉回复函.docx")
+    monkeypatch.setattr(app_module, "build_archive_dir", _fake_build_dir)
     app_module.app.config["TESTING"] = True
     with app_module.app.test_client() as c:
+        try: _autologin_admin(c)
+        except Exception: pass
         yield c
 
 
@@ -160,6 +165,25 @@ def test_worker_marks_no_match_eligible(client, fresh_db, monkeypatch):
     _inject_job("job-ok")
     app_module._query_job_worker("job-ok", {"id_card": VALID_ID})
     job = client.get("/api/query/status/job-ok").get_json()
+    assert job["status"] == "failed"
+    assert job["no_match"] is True
+    assert job["manual_intake_eligible"] is True
+
+
+def test_worker_no_match_when_engine_backfills_id_card(client, fresh_db, monkeypatch):
+    """真实引擎会把查询用证件号回填进结果，仅姓名判空才算查无，不得落库空工单。"""
+    async def fake_query_all(id_card, timeout=60, on_update=None):
+        return SimpleNamespace(
+            name="", id_card=id_card,
+            sources={"internal": "not_found", "third": "not_found", "driving": "not_found"},
+        )
+
+    monkeypatch.setattr(app_module.query_engine, "query_all", fake_query_all)
+    monkeypatch.setattr(database, "save_ticket",
+                        lambda *a, **k: pytest.fail("查无记录不应创建工单"))
+    _inject_job("job-backfill")
+    app_module._query_job_worker("job-backfill", {"id_card": VALID_ID})
+    job = client.get("/api/query/status/job-backfill").get_json()
     assert job["status"] == "failed"
     assert job["no_match"] is True
     assert job["manual_intake_eligible"] is True
