@@ -19,7 +19,18 @@ export function useComplaint(onAutoQueryDone = null) {
     complaint_date: todayStr(),
     complaint_type: "A",
     handler_name: "",
+    handler_user_id: null,  // 当前账号体系下拉选择处理人；null=未选择
   });
+
+  // 可指派人列表（admin + handler，排除停用/viewer）
+  const assignableUsers = Vue.ref([]);
+  async function loadAssignableUsers() {
+    try {
+      const d = await getJ("/api/users/assignable");
+      console.log('[useComplaint] assignable:', d);
+      if (!d.error && Array.isArray(d.data)) assignableUsers.value = d.data;
+    } catch (e) { /* 静默 */ }
+  }
 
   // 受理文件上传
   const intakeFile = Vue.ref(null);
@@ -440,16 +451,15 @@ export function useComplaint(onAutoQueryDone = null) {
     if (status === "pending") return "bi-circle";
     if (status === "timeout") return "bi-clock-fill";
     if (status === "error") return "bi-x-circle-fill";
-    if (status === "no_contract") return "bi-dash-circle";
+    if (status === "no_contract") return "bi-x-circle-fill";
+    if (status === "not_found") return "bi-x-circle-fill";
     return "bi-info-circle-fill";
   }
 
-  // 徽章三档：绿=查到数据，灰=查无记录/无合同，红=访问失败，黄=其余（查询中/未知）
+  // ① 三系统查询卡片右上角徽章：二档 ✅绿=查到数据 / ❌红=其余（含查无/无合同/失败/查询中）
   function sourcePillClass(status) {
     if (status === "success") return "ok";
-    if (status === "not_found" || status === "no_contract") return "na";
-    if (status === "error" || status === "timeout") return "err";
-    return "warn";
+    return "na-err";
   }
 
   // 来源查询耗时明细：登录等待/查询/重试次数，及错误原因
@@ -743,6 +753,7 @@ export function useComplaint(onAutoQueryDone = null) {
         complaint_type: form.complaint_type,
         source_channel: concreteChannel,
         handler_name: form.handler_name.trim(),
+        handler_user_id: form.handler_user_id || null,
         complaint_desc: (intakeText.value || "").trim(),
         complaint_summary: (intakeResult.value && intakeResult.value.complaint_summary) || "",
         complaint_demands: (intakeResult.value && intakeResult.value.complaint_demands) || "",
@@ -905,6 +916,7 @@ export function useComplaint(onAutoQueryDone = null) {
         complaint_demands: manualForm.complaint_demands.trim(),
         complaint_date: form.complaint_date || todayStr(),
         handler_name: form.handler_name || "",
+        handler_user_id: form.handler_user_id || null,
       });
       if (!resp.success) throw new Error(resp.error || "人工建案失败");
       currentTicketId.value = resp.data.ticket_id || "";
@@ -933,6 +945,7 @@ export function useComplaint(onAutoQueryDone = null) {
     form.complaint_date = (ticket.complaint_date || todayStr()).slice(0, 10);
     form.complaint_type = ticket.complaint_type || "A";
     form.handler_name = ticket.handler_name || "";
+    form.handler_user_id = ticket.handler_user_id || null;
     studentName.value = ticket.student_name || ticket.query_result?.name || "";
     schoolShort.value = "全部";
     regStart.value = "";
@@ -969,7 +982,7 @@ export function useComplaint(onAutoQueryDone = null) {
     qErr.value = qr.value.error || "";
   }
 
-  function reset() {
+  function reset(currentUser) {
     clearTransient();
     if (queryProgress._timer) { clearInterval(queryProgress._timer); queryProgress._timer = null; }
     if (pulseTimer) { clearTimeout(pulseTimer); pulseTimer = null; pulseIdCard.value = false; pulsePhone.value = false; }
@@ -979,7 +992,14 @@ export function useComplaint(onAutoQueryDone = null) {
     form.other_channel = "";
     form.complaint_date = todayStr();
     form.complaint_type = "A";
-    form.handler_name = "";
+    // 处理人默认当前登录用户（仅 admin/handler；viewer 不进表单）
+    if (currentUser && currentUser.id && currentUser.role !== 'viewer') {
+      form.handler_user_id = currentUser.id;
+      form.handler_name = currentUser.real_name || currentUser.username;
+    } else {
+      form.handler_user_id = null;
+      form.handler_name = "";
+    }
     studentName.value = "";
     schoolShort.value = "全部";
     regStart.value = "";
@@ -1047,6 +1067,9 @@ export function useComplaint(onAutoQueryDone = null) {
     queryAll,
     restore,
     reset,
+    // 处理人下拉数据
+    assignableUsers,
+    loadAssignableUsers,
     // 统一智能查询
     studentName,
     schoolShort,

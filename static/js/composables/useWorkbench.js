@@ -6,7 +6,7 @@
 import { getJ, postJ, putJ, delJ } from "api";
 import { todayStr } from "helpers";
 
-export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, onStatsRefresh = null) {
+export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, onStatsRefresh = null, sharedAssignableUsers = null) {
   // 统计联动：撤诉/归档/解锁费用改变统计口径后，由 app.js 注入的 loadStats 刷新看板
   function _refreshStats() {
     if (typeof onStatsRefresh === "function") onStatsRefresh();
@@ -87,10 +87,21 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   }
 
   async function openFolderPicker() {
-    folderModalOpen.value = true;
-    // 起始目录：当前归档根目录为绝对路径则从它开始，否则从用户主目录开始（path 留空由后端默认）
+    // 优先调起系统原生文件夹选择对话框（macOS），失败时回退为网页内目录浏览
     const cur = (archiveRoot.value || "").trim();
     const start = cur && /^[/~]/.test(cur) ? cur : "";
+    try {
+      const d = await postJ("/api/fs/native-picker", { start });
+      if (d && d.cancelled) return;
+      if (!d || d.success === false || !d.data || !d.data.path) {
+        throw new Error((d && d.error) || "无法调起原生文件夹选择对话框");
+      }
+      archiveRoot.value = d.data.path;
+      return;
+    } catch (e) {
+      toast("已回退网页内目录浏览", e.message, "info");
+    }
+    folderModalOpen.value = true;
     await fbLoad(start);
   }
 
@@ -157,6 +168,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const clChannel = Vue.ref("");
   const clHandler = Vue.ref("");
   const clFee = Vue.ref("");          // confirmed / pending / none
+  const clSchool = Vue.ref("");       // 代号（school_short）
   const clDays = Vue.ref("all");      // all / 7 / 30
   const clDateFrom = Vue.ref("");
   const clDateTo = Vue.ref("");
@@ -193,14 +205,52 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     return s.length === 11 ? s.slice(0, 3) + "****" + s.slice(-4) : (s || "—");
   }
 
-  const handlerOptions = Vue.computed(() => {
-    const set = new Set();
-    for (const t of allTickets.value) {
-      const h = String(t.handler_name || "").trim();
-      if (h) set.add(h);
-    }
-    return [...set].sort();
+  // 处理人下拉/转办：使用系统账号下拉（admin+handler，排除 viewer 和停用）
+  // assignableUsers 从 useComplaint 共享传入（同一份缓存，不重复请求）
+  const assignableUsers = sharedAssignableUsers || Vue.ref([]);
+  const userById = Vue.computed(() => {
+    const m = new Map();
+    for (const u of assignableUsers.value) m.set(u.id, u);
+    return m;
   });
+
+  // 工单表渲染：处理人列。优先按 handler_user_id 查真实姓名；没 user_id 时显示原 handler_name + 灰色"未关联账号"
+  function handlerLabel(t) {
+    if (t.handler_user_id) {
+      const u = userById.value.get(t.handler_user_id);
+      if (u) return { text: u.real_name, mapped: true };
+    }
+    const name = String(t.handler_name || "").trim();
+    if (!name) return { text: "未分配", mapped: true };
+    return { text: name, mapped: false };
+  }
+
+  const handlerOptions = Vue.computed(() => {
+    // 合并：assignableUsers + 工单表里出现过的"未关联"名称
+    const set = new Map();
+    for (const u of assignableUsers.value) set.set("user:" + u.id, { value: "user:" + u.id, label: u.real_name });
+    for (const t of allTickets.value) {
+      if (!t.handler_user_id) {
+        const h = String(t.handler_name || "").trim();
+        if (h) set.set("raw:" + h, { value: "raw:" + h, label: h + "（未关联）" });
+      }
+    }
+    return [...set.values()];
+  });
+
+  // 把"处理人筛选"统一解析为匹配函数
+  function matchHandler(t, val) {
+    if (!val) return true;
+    if (val === "__unassigned") return !String(t.handler_name || "").trim();
+    if (val.startsWith("user:")) {
+      const uid = Number(val.slice(5));
+      return t.handler_user_id === uid;
+    }
+    if (val.startsWith("raw:")) {
+      return !t.handler_user_id && String(t.handler_name || "").trim() === val.slice(4);
+    }
+    return false;
+  }
   const channelOptions = Vue.computed(() => {
     const set = new Set();
     for (const t of allTickets.value) {
@@ -209,6 +259,14 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     }
     return [...set];
   });
+  const clSchoolOptions = Vue.computed(() => {
+    const set = new Set();
+    for (const t of allTickets.value) {
+      const s = String(t.school_short || "").trim();
+      if (s) set.add(s);
+    }
+    return [...set].sort();
+  });
 
   function _clMatch(t) {
     if (clGroup.value === "open" && !(["待处理", "处理中"].includes(t.handle_status) && t.withdraw_status !== "已撤诉" && t.archive_status !== "已归档")) return false;
@@ -216,8 +274,9 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     if (clGroup.value === "withdrawn" && t.withdraw_status !== "已撤诉") return false;
     if (clType.value && t.complaint_type !== clType.value) return false;
     if (clChannel.value && (t.source_channel || "") !== clChannel.value) return false;
+    if (clSchool.value && (t.school_short || "") !== clSchool.value) return false;
     if (clHandler.value === "__unassigned" && String(t.handler_name || "").trim()) return false;
-    if (clHandler.value && clHandler.value !== "__unassigned" && t.handler_name !== clHandler.value) return false;
+    if (clHandler.value && !matchHandler(t, clHandler.value)) return false;
     if (clFee.value && feeState(t) !== clFee.value) return false;
     if (clOnlyOverdue.value && !isOverdue(t)) return false;
     if (clOnlyManual.value && !String(t.intake_type || "").trim()) return false;
@@ -282,7 +341,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const clPageSize = Vue.ref(10);
   const clPage = Vue.ref({ open: 1, archived: 1, withdrawn: 1 });
   Vue.watch(
-    [clKw, clType, clChannel, clHandler, clFee, clDays, clDateFrom, clDateTo,
+    [clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
      clOnlyOverdue, clOnlyManual, clGroup, () => clSort.value.key, () => clSort.value.dir, clPageSize],
     () => { clPage.value = { open: 1, archived: 1, withdrawn: 1 }; }
   );
@@ -320,7 +379,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     else clSort.value = { key, dir: -1 };
   }
   function clClearFilters() {
-    clKw.value = ""; clType.value = ""; clChannel.value = ""; clHandler.value = "";
+    clKw.value = ""; clType.value = ""; clChannel.value = ""; clSchool.value = ""; clHandler.value = "";
     clFee.value = ""; clDays.value = "all"; clDateFrom.value = ""; clDateTo.value = "";
     clOnlyOverdue.value = false; clOnlyManual.value = false;
   }
@@ -344,24 +403,26 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     }
   }
 
-  // 批量转办弹窗
+  // 批量转办弹窗（接收 handler_user_id + handler_name）
   const transferModalOpen = Vue.ref(false);
-  const transferTarget = Vue.ref("");
+  const transferTarget = Vue.ref(null);  // user_id
   const transferSaving = Vue.ref(false);
   function askBatchTransfer() {
     if (!clSelectedIds.value.length) return;
-    transferTarget.value = "";
+    transferTarget.value = null;
     transferModalOpen.value = true;
   }
   async function confirmBatchTransfer() {
-    const target = String(transferTarget.value).trim();
-    if (!target) { toast("请填写接收人", "", "warning"); return; }
+    const targetId = transferTarget.value;
+    if (!targetId) { toast("请选择接收人", "", "warning"); return; }
+    const u = (assignableUsers.value || []).find(x => x.id === targetId);
+    const targetName = u ? u.real_name : "";
     transferSaving.value = true;
     let ok = 0, fail = 0, firstErr = "";
     try {
       for (const id of [...clSelectedIds.value]) {
         try {
-          const d = await putJ(`/api/tickets/${id}`, { handler_name: target });
+          const d = await putJ(`/api/tickets/${id}`, { handler_user_id: targetId, handler_name: targetName });
           if (d.success) ok++;
           else { fail++; if (!firstErr) firstErr = d.error || "未知错误"; }
         } catch { fail++; if (!firstErr) firstErr = "网络请求失败"; }
@@ -369,7 +430,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       transferModalOpen.value = false;
       clClearSelection();
       await loadTickets();
-      if (!fail) toast(`已转办 ${ok} 条给 ${target}`, "", "success");
+      if (!fail) toast(`已转办 ${ok} 条给 ${targetName}`, "", "success");
       else if (!ok) toast("转办失败", firstErr, "danger");
       else toast("部分转办成功", `成功 ${ok} 条，失败 ${fail} 条：${firstErr}`, "warning");
     } finally {
@@ -383,6 +444,12 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const deleteSaving = Vue.ref(false);
   function askDeleteSelected() {
     if (!clSelectedIds.value.length) return;
+    deleteModalOpen.value = true;
+  }
+  // 单行删除：复用批量删除弹窗与确认逻辑
+  function askDeleteRow(t) {
+    if (!t || !t.id) return;
+    clSelectedIds.value = [t.id];
     deleteModalOpen.value = true;
   }
   async function confirmDeleteSelected() {
@@ -611,14 +678,16 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     openFolderPicker, fbLoad, fbEnter, fbUp, fbConfirm,
     // 投诉列表页重设计
     OVERDUE_DAYS, TYPE_LABELS, FEE_LABELS,
-    clKw, clType, clChannel, clHandler, clFee, clDays, clDateFrom, clDateTo,
+    clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
     clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
-    handlerOptions, channelOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
+    handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
     clPageSize, pagedGroups, clSetPage,
     daysOpen, isOverdue, feeState, maskPhone,
     clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
     batchExportSelected,
     transferModalOpen, transferTarget, transferSaving, askBatchTransfer, confirmBatchTransfer,
-    deleteModalOpen, deleteSaving, askDeleteSelected, confirmDeleteSelected,
+    deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
+    // 账号体系：处理人下拉 + 真实姓名解析（assignableUsers 从 useComplaint 共享）
+    assignableUsers, handlerLabel,
   };
 }
