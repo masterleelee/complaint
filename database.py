@@ -199,6 +199,33 @@ def init_db():
                 value TEXT NOT NULL DEFAULT ''
             );
 
+            -- 用户表（账号体系：admin/handler/viewer）
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL DEFAULT '',
+                real_name TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT 'handler',  -- 'admin' | 'handler' | 'viewer'
+                phone TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '启用',    -- '启用' | '停用'
+                session_version INTEGER NOT NULL DEFAULT 0,
+                last_login_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+            CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+
+            -- 处理人历史名称 → 用户账号映射（admin 手工配）
+            CREATE TABLE IF NOT EXISTS handler_name_aliases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                old_name TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                created_by INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_aliases_user ON handler_name_aliases(user_id);
+
             -- 兼容旧版 complaints_v1 表（用于 get_complaint_by_idcard）
             CREATE TABLE IF NOT EXISTS complaints_v1 (
                 id TEXT PRIMARY KEY,
@@ -277,6 +304,8 @@ def init_db():
             ("negotiation_outcome", "TEXT DEFAULT ''"),
             ("archived_dir", "TEXT DEFAULT ''"),
             ("intake_type", "TEXT DEFAULT ''"),
+            ("handler_user_id", "INTEGER DEFAULT NULL"),
+            ("handler_external_name", "TEXT DEFAULT ''"),
         ]
         cursor = conn.execute("PRAGMA table_info(complaint_tickets)")
         existing_columns = [row[1] for row in cursor.fetchall()]
@@ -320,6 +349,56 @@ def init_db():
                 updated_at=?
             WHERE status IN ('queued', 'running')
         """, (now, now))
+
+
+def _ensure_default_admin() -> int:
+    """users 表为空时建一个默认 admin/admin 账号（仅首次启动生效）。"""
+    from werkzeug.security import generate_password_hash
+    with get_db() as conn:
+        cnt = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        if cnt > 0:
+            return 0
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            """INSERT INTO users (username, password_hash, real_name, role, phone, status,
+                                  session_version, last_login_at, created_at, updated_at)
+               VALUES (?, ?, ?, 'admin', '', '启用', 0, '', ?, ?)""",
+            ("admin", generate_password_hash("admin"), "系统管理员", now, now),
+        )
+        system_logger.warning(
+            "[账号] 已自动创建默认管理员 admin/admin，请登录后立即修改密码"
+        )
+        return 1
+
+
+def migrate_handler_names_to_user() -> int:
+    """把 aliases 表里配好的映射回写到 complaint_tickets.handler_user_id（幂等）。
+
+    执行规则：
+    1. 找到所有 handler_user_id IS NULL 且 handler_name != '' 的工单
+    2. 在 aliases 表里按 old_name = handler_name 查映射
+    3. 命中则写回 handler_user_id
+    4. 不命中则保留原 handler_name 用于「未关联账号」展示
+
+    返回本次回写的工单数。
+    """
+    with get_db() as conn:
+        rows = conn.execute(
+            """SELECT t.id AS ticket_id, t.handler_name, a.user_id
+               FROM complaint_tickets t
+               JOIN handler_name_aliases a ON a.old_name = t.handler_name
+               WHERE t.handler_user_id IS NULL AND t.handler_name != ''"""
+        ).fetchall()
+        if not rows:
+            return 0
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for r in rows:
+            conn.execute(
+                "UPDATE complaint_tickets SET handler_user_id=?, updated_at=? WHERE id=?",
+                (r["user_id"], now, r["ticket_id"]),
+            )
+        system_logger.info("[数据库] 历史处理人映射回写：%d 个工单", len(rows))
+        return len(rows)
 
 
 # ═══════════════════════════════════════════════════
@@ -392,6 +471,8 @@ def save_ticket(data: dict, force_new: bool = False) -> str:
         "negotiation_outcome",
         "archived_dir",
         "intake_type",
+        "handler_user_id",
+        "handler_external_name",
     }
 
     with get_db() as conn:
@@ -1491,3 +1572,5 @@ def migrate_communications_to_notes() -> int:
 
 # 模块加载时初始化
 init_db()
+_ensure_default_admin()
+migrate_handler_names_to_user()
