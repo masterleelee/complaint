@@ -10,6 +10,7 @@ import certifi
 import uuid
 import hashlib
 import shutil
+import subprocess
 import tempfile
 import atexit
 from datetime import datetime, date
@@ -43,6 +44,7 @@ from database import (
 )
 from core.query_engine import query_engine, query_all_systems_sync
 from core.auth_manager import auth_manager, refresh_session_if_due, SystemType
+from core.auth import login_required, role_required
 from services.contract_service import (
     analyze_contract_from_file, apply_authoritative_total_fee,
     build_contract_clauses,
@@ -52,6 +54,7 @@ from services.reply_docx import generate_reply_docx
 from services.archive_service import archive_gate_errors, build_archive_dir, archive_case
 from services.intake_service import parse_complaint_file, parse_complaint_text, ensure_upload_dir, ai_summarize_complaint
 from services.org_unit_service import ORGANIZATION_UNITS, resolve_org_unit
+from services import user_service
 from services.file_service import is_path_within, create_derived_copy, unique_path
 from services.file_parser import warmup_ocr
 from utils.logger import system_logger
@@ -59,6 +62,10 @@ from utils.logger import system_logger
 app = Flask(__name__, template_folder="templates", static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB
 app.config["TEMPLATES_AUTO_RELOAD"] = True  # 禁用模板缓存
+
+# 账号体系：session/cookie 配置
+from core.auth import configure_session
+configure_session(app)
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -154,36 +161,9 @@ def _prune_query_jobs(max_jobs: int = QUERY_JOBS_MAX):
             QUERY_JOBS.pop(job_id, None)
 
 
-def get_archive_folder(name: str, id_card: str, school_short: str) -> str:
-    """获取或创建学员的归档文件夹（优先复用已有文件夹）"""
-    safe_name = _safe_path_component(name, "未知学员")
-    safe_id_card = _safe_path_component(id_card, "未知证件")
-    safe_school = _safe_path_component(school_short, "未知校区")
-    # 先查找是否已存在该学员的文件夹（按身份证号匹配）
-    if os.path.exists(ARCHIVE_DIR):
-        exact_identity_suffix = f"_{safe_name}_{safe_id_card}_{safe_school}"
-        for folder_name in os.listdir(ARCHIVE_DIR):
-            candidate = os.path.join(ARCHIVE_DIR, folder_name)
-            if (
-                folder_name.endswith(exact_identity_suffix)
-                and os.path.isdir(candidate)
-                and is_path_within(candidate, [ARCHIVE_DIR])
-            ):
-                return candidate
-    
-    # 不存在则创建新文件夹
-    date_str = datetime.now().strftime("%Y%m%d")
-    folder_name = f"{date_str}_{safe_name}_{safe_id_card}_{safe_school}"
-    folder_path = os.path.join(ARCHIVE_DIR, folder_name)
-    if not is_path_within(folder_path, [ARCHIVE_DIR]):
-        raise ValueError("归档目录不安全")
-    os.makedirs(folder_path, exist_ok=True)
-    return folder_path
-
-
 # ═══════════════════════════════════════════════════════════════
 #  辅助函数
-# ═══════════════════════════════════════════════════════════════
+#  ═══════════════════════════════════════════════════════════════
 
 def _ok(data=None, msg="成功"):
     """统一成功返回"""
@@ -425,12 +405,12 @@ def _sync_withdraw_archive(ticket: dict) -> list:
         os.makedirs(case_dir, exist_ok=True)
         if str(ticket.get("registration_form_path") or "").strip():
             try:
-                with tempfile.TemporaryDirectory() as tmp_dir:
-                    gen = _regen_registration_form(ticket, output_dir=tmp_dir)
-                    if gen.get("success"):
-                        shutil.copyfile(gen["filepath"], reg_target)
-                    else:
-                        errors.append(f"登记表重新生成失败: {gen.get('error')}")
+                gen = _regen_registration_form(ticket, output_dir=case_dir)
+                if gen.get("success"):
+                    # _regen_registration_form 已经直接落到 case_dir/投诉登记表.docx
+                    pass
+                else:
+                    errors.append(f"登记表重新生成失败: {gen.get('error')}")
             except Exception as e:
                 errors.append(f"登记表重新生成失败: {e}")
         note_path = os.path.join(case_dir, f"{date}_{name}_撤诉说明.txt")
@@ -531,7 +511,20 @@ def _start_background_services():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    from core.auth import _load_current_user
+    from services.user_service import ROLE_LABEL
+    user = _load_current_user()
+    if not user:
+        return render_template("login.html")
+    current_user = {
+        "id": user["id"],
+        "username": user["username"],
+        "real_name": user["real_name"],
+        "role": user["role"],
+        "role_label": ROLE_LABEL.get(user["role"], user["role"]),
+        "phone": user.get("phone", ""),
+    }
+    return render_template("index.html", current_user=current_user)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -539,6 +532,7 @@ def index():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/intake/parse", methods=["POST"])
+@login_required
 def api_intake_parse():
     """提取投诉关键信息：支持 JSON {"text": "..."} 直接解析，或上传投诉工单文件"""
     try:
@@ -632,6 +626,21 @@ def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) ->
             school_short = match.group(1)
             result["school_short"] = school_short
 
+    # 处理人：优先用前端传的 handler_user_id；否则用当前登录用户（兜底；非请求上下文时为 None）
+    handler_user_id = data.get("handler_user_id")
+    handler_name = (data.get("handler_name") or "").strip()
+    try:
+        from flask import g as _g
+        current_user = getattr(_g, "current_user", None)
+    except RuntimeError:
+        current_user = None
+    if not handler_user_id and current_user:
+        handler_user_id = current_user["id"]
+    if handler_user_id and not handler_name:
+        u = user_service.get_user_by_id(int(handler_user_id))
+        if u:
+            handler_name = u["real_name"]
+
     ticket_data = {
         "id_card": id_card or result.get("id_card", ""),
         "student_name": result.get("name", ""),
@@ -647,10 +656,11 @@ def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) ->
         "source_channel": data.get("source_channel", "") or "交通部门",
         "complaint_type": data.get("complaint_type", "") or "A",
         "complaint_date": data.get("complaint_date", datetime.now().strftime("%Y-%m-%d")),
-        "handler_name": data.get("handler_name", ""),
+        "handler_name": handler_name,
+        "handler_user_id": handler_user_id,
         "complaint_content": str(data.get("complaint_desc", "") or ""),
-        "complaint_summary": str(data.get("complaint_summary", "") or ""),
-        "complaint_demands": str(data.get("complaint_demands", "") or ""),
+        "complaint_summary": str(data.get("complaint_summary") or ""),
+        "complaint_demands": str(data.get("complaint_demands") or ""),
         "attachments": data.get("attachments", []),
     }
     # 受理端选择「另建新工单」(force_new=true) 时跳过同日同人去重；
@@ -678,6 +688,7 @@ def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) ->
 
 
 @app.route("/api/query", methods=["POST"])
+@login_required
 def api_query():
     """查询三系统学员信息（支持身份证/居留证优先，手机号备选）"""
     try:
@@ -686,6 +697,7 @@ def api_query():
             return _err("请求体不是合法JSON", 400)
         id_card = data.get("id_card", "").strip()
         phone = data.get("phone", "").strip()
+        expected_name = str(data.get("student_name") or data.get("expected_name") or "").strip()
 
         # 证件号校验（18位身份证验真伪，其他证件不验）
         if id_card:
@@ -701,7 +713,7 @@ def api_query():
         if id_card and len(id_card) >= 7:
             result = query_all_systems_sync(id_card)
         elif phone and len(phone) == 11:
-            result = query_all_systems_by_phone(phone)
+            result = query_all_systems_by_phone(phone, expected_name=expected_name)
         else:
             return _err("请输入有效的证件号（至少7位）或手机号(11位)")
 
@@ -717,21 +729,34 @@ def api_query():
 #  API: 手机号查询三系统
 # ═══════════════════════════════════════════════════════════════
 
-def query_all_systems_by_phone(phone: str, timeout: float = 60.0) -> dict:
+def query_all_systems_by_phone(phone: str, expected_name: str = "", timeout: float = 60.0) -> dict:
     """
-    同步方式通过手机号查询所有系统（先查内部系统拿证件号，再用证件号查全系统）
+    同步方式通过手机号查询所有系统。
+
+    查询策略（串行降级，避免对三系统造成并发封控）：
+    - 步骤 2a：姓名+手机号组合查 → 内部系统反查唯一证号 → 走三系统
+        命中后比对姓名，姓名不一致打 name_mismatch=True 仍继续返回（不阻断）
+    - 步骤 2b：仅手机号查 → 内部系统反查所有候选（带姓名）
+        ├─ 唯一候选 → 走三系统
+        └─ 多个候选 → 返回 candidates 列表让用户选
+    - 步骤 3 兜底由前端走姓名模糊搜索（/api/students/search）
     """
     from core.query_engine import query_engine
     from core.auth_manager import SystemType
+    from crawlers.internal import PhoneLookupAmbiguityError
     import time
 
     try:
         started_at = time.monotonic()
-        # 第一步：通过手机号在内部系统找到身份证号
         crawler = query_engine._crawlers.get(SystemType.INTERNAL)
-        id_card = crawler.lookup_id_card_by_phone(phone) if crawler else ""
+        if not crawler:
+            return {
+                "name": "", "id_card": "", "phone": phone,
+                "sources": {"internal": "error", "third": "not_found", "driving": "not_found"},
+                "error": "内部系统爬虫未初始化",
+            }
 
-        if not id_card:
+        def _empty_result(internal_status: str, err_msg: str) -> dict:
             return {
                 "name": "", "id_card": "", "phone": phone,
                 "license_type": "", "registration_date": "",
@@ -739,37 +764,79 @@ def query_all_systems_by_phone(phone: str, timeout: float = 60.0) -> dict:
                 "student_status": "", "exam_stage": "",
                 "exam_counts": {}, "training_hours": {},
                 "training_details": [], "fees": [], "timeline_display": [],
-                "sources": {"internal": "not_found", "third": "not_found", "driving": "not_found"},
-                "error": "手机号在内部系统未查到学员",
+                "sources": {"internal": internal_status, "third": "not_found", "driving": "not_found"},
+                "error": err_msg,
             }
 
-        # 第二步：用证件号查三系统（支持特殊格式如 F1249468(8)）
-        # 处理特殊证件号前缀补全：如 1249468(8) → F1249468(8)
-        id_cards_to_try = [id_card]
-        if id_card and len(id_card) >= 7 and not id_card[0].isalpha() and '(' in id_card:
-            # 可能是居留证缺了首字母前缀，尝试加 F 前缀
-            id_cards_to_try.append("F" + id_card)
+        def _name_mismatch_marker(merged: dict, system_name: str) -> dict:
+            """若 expected_name 与系统返回姓名不一致，给结果打 name_mismatch 标记。"""
+            if not expected_name:
+                return merged
+            sys_name = str(merged.get("name") or "").strip()
+            if sys_name and sys_name != str(expected_name).strip():
+                merged = dict(merged)
+                merged["name_mismatch"] = True
+                merged["name_mismatch_reason"] = (
+                    f"输入姓名「{expected_name}」与系统返回「{sys_name}」不一致"
+                )
+            return merged
 
-        # 先尝试完整证件号查询，失败则逐个尝试
-        merged = None
-        for try_id in id_cards_to_try:
-            remaining = timeout - (time.monotonic() - started_at)
-            if remaining <= 0:
-                break
-            r = query_all_systems_sync(try_id, timeout=remaining)
-            merged = r
-            if r.get("name"):
-                break
+        # ── 步骤 2a：姓名+手机号组合查 ──
+        if expected_name:
+            try:
+                id_card = crawler.lookup_id_card_by_phone(phone)
+                if id_card:
+                    merged = _query_by_id_cards_with_fallback(
+                        crawler, id_card, started_at, timeout
+                    )
+                    if merged and merged.get("name"):
+                        return _name_mismatch_marker(merged, merged.get("name"))
+            except PhoneLookupAmbiguityError:
+                # 多个候选 → 步骤 2b 接管
+                pass
+            except Exception:
+                # 2a 异常不阻断 → 继续走 2b
+                pass
 
-        return merged or {
-            "name": "", "id_card": id_card, "phone": phone,
+        # ── 步骤 2b：仅手机号查（带姓名候选） ──
+        try:
+            candidates = crawler.lookup_students_by_phone(phone)
+        except Exception:
+            candidates = []
+
+        if not candidates:
+            return _empty_result("not_found", "手机号在内部系统未查到学员")
+
+        if len(candidates) == 1:
+            cand = candidates[0]
+            merged = _query_by_id_cards_with_fallback(
+                crawler, cand["id_card"], started_at, timeout
+            )
+            if merged and merged.get("name"):
+                return _name_mismatch_marker(merged, cand.get("name"))
+            # 唯一候选但三系统查无（超时/未录），仍把候选作为单条返回
+            return _single_candidate_result(cand, phone)
+
+        # 多个候选 → 列表给用户选
+        return {
+            "name": "", "id_card": "", "phone": phone,
             "license_type": "", "registration_date": "",
             "school_name": "", "school_short": "",
             "student_status": "", "exam_stage": "",
             "exam_counts": {}, "training_hours": {},
             "training_details": [], "fees": [], "timeline_display": [],
-            "sources": {"internal": "timeout", "third": "timeout", "driving": "timeout"},
-            "error": "手机号查询超过总时限",
+            "sources": {"internal": "ambiguous", "third": "not_found", "driving": "not_found"},
+            "candidates": [
+                {
+                    "id_card": c["id_card"],
+                    "name": c["name"],
+                    "phone": c["phone"] or phone,
+                    "source": "内部系统",
+                }
+                for c in candidates
+            ],
+            "expected_name": expected_name,
+            "error": "手机号匹配到多个学员，请人工选择",
         }
 
     except Exception as e:
@@ -785,9 +852,48 @@ def query_all_systems_by_phone(phone: str, timeout: float = 60.0) -> dict:
         }
 
 
+def _query_by_id_cards_with_fallback(crawler, id_card: str, started_at: float, timeout: float) -> dict:
+    """用证号查三系统，支持居留证 F 前缀补全。"""
+    import time
+    id_cards_to_try = [id_card]
+    if id_card and len(id_card) >= 7 and not id_card[0].isalpha() and '(' in id_card:
+        id_cards_to_try.append("F" + id_card)
+
+    merged = None
+    for try_id in id_cards_to_try:
+        remaining = timeout - (time.monotonic() - started_at)
+        if remaining <= 0:
+            break
+        r = query_all_systems_sync(try_id, timeout=remaining)
+        merged = r
+        if r.get("name"):
+            break
+    return merged
+
+
+def _single_candidate_result(cand: dict, phone: str) -> dict:
+    """步骤 2b 唯一候选但三系统查无：返回候选基本信息，不报错。"""
+    return {
+        "name": cand.get("name", ""),
+        "id_card": cand.get("id_card", ""),
+        "phone": cand.get("phone", phone),
+        "license_type": "", "registration_date": "",
+        "school_name": "", "school_short": "",
+        "student_status": "", "exam_stage": "",
+        "exam_counts": {}, "training_hours": {},
+        "training_details": [], "fees": [], "timeline_display": [],
+        "sources": {"internal": "candidate", "third": "not_found", "driving": "not_found"},
+    }
+
+
 def _query_job_worker(job_id: str, data: dict):
     id_card = data.get("id_card", "").strip()
     phone = data.get("phone", "").strip()
+    expected_name = str(
+        data.get("student_name")
+        or data.get("expected_name")
+        or ""
+    ).strip()
 
     # 投诉摘要与爬虫并行生成：摘要仅供工单存档，与三系统查询无关联，
     # 提前起线程跑，爬虫完成后再汇合（思考关闭后约 2~4s，远短于爬虫耗时）
@@ -825,17 +931,19 @@ def _query_job_worker(job_id: str, data: dict):
             )
             result = dict(merged.__dict__)
         else:
-            result = query_all_systems_by_phone(phone)
+            result = query_all_systems_by_phone(phone, expected_name=expected_name)
 
-        # 空壳拦截：姓名与证件号同时为空说明未命中学员档案，不建工单，
+        # 空壳拦截：未命中学员档案（无姓名返回）说明查无此人，不建工单，
         # job 置失败并把文案透传给前端轮询（前端 status.error 直接展示给操作员）。
+        # 只用姓名判空：查询引擎总会把查询用的证件号回填到结果里，若再判证件号
+        # 为空则此分支永不生效，会照常落库空工单且前端收不到 no_match 标记。
         # 同时附 no_match/manual_intake_eligible：三系统均「明确查无」（not_found/no_contract）
         # 时前端展示「转人工建案」入口；存在超时/异常时不放行，避免把已录入学员误判为漏录。
         sources = result.get("sources", {}) or {}
         manual_eligible = bool(sources) and all(
             s in {"not_found", "no_contract"} for s in sources.values()
         )
-        if not str(result.get("name") or "").strip() and not str(result.get("id_card") or "").strip():
+        if not str(result.get("name") or "").strip():
             with QUERY_JOBS_LOCK:
                 QUERY_JOBS[job_id].update({
                     "status": "failed",
@@ -895,6 +1003,7 @@ def _query_job_worker(job_id: str, data: dict):
 
 
 @app.route("/api/query/start", methods=["POST"])
+@login_required
 def api_query_start():
     data = request.get_json(force=True, silent=True)
     if data is None:
@@ -933,6 +1042,7 @@ def api_query_start():
 
 
 @app.route("/api/query/status/<job_id>", methods=["GET"])
+@login_required
 def api_query_status(job_id):
     with QUERY_JOBS_LOCK:
         job = QUERY_JOBS.get(job_id)
@@ -943,6 +1053,7 @@ def api_query_status(job_id):
 
 
 @app.route("/api/students/search", methods=["POST"])
+@login_required
 def api_students_search():
     """统一智能查询：按姓名(模糊) + 报名点 + 报名时间范围到内部系统检索候选学员。"""
     try:
@@ -993,6 +1104,7 @@ def api_students_search():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/school-codes", methods=["GET"])
+@login_required
 def api_school_codes():
     """获取所有代号（校区简称）列表，附带标准字典中的名称与类型"""
     try:
@@ -1011,11 +1123,13 @@ def api_school_codes():
 
 
 @app.route("/api/organization-units", methods=["GET"])
+@login_required
 def api_organization_units():
     """获取分校/分店标准字典，供未匹配时人工选择。"""
     return _ok(ORGANIZATION_UNITS)
 
 @app.route("/api/tickets/same-day-check", methods=["POST"])
+@login_required
 def api_tickets_same_day_check():
     """受理预检：同日同身份证是否已有工单（与 save_ticket 去重口径一致）。"""
     try:
@@ -1042,6 +1156,7 @@ MANUAL_INTAKE_TYPE = "三系统无信息"
 
 
 @app.route("/api/tickets/manual-create", methods=["POST"])
+@login_required
 def api_tickets_manual_create():
     """三系统无信息学员 · 人工建案。
 
@@ -1107,26 +1222,18 @@ def api_tickets_manual_create():
             "complaint_type": str(data.get("complaint_type") or "").strip() or "A",
             "complaint_date": complaint_date,
             "handler_name": str(data.get("handler_name") or "").strip(),
+            "handler_user_id": data.get("handler_user_id") or None,
             "complaint_content": str(data.get("complaint_content") or "").strip(),
             "complaint_summary": str(data.get("complaint_summary") or "").strip(),
             "complaint_demands": str(data.get("complaint_demands") or "").strip(),
         }
         ticket_id = save_ticket(ticket_data)
 
-        # 受理建夹 + 投诉内容留档（口径与 PUT /api/tickets/<id> 一致）
-        complaint_content = ticket_data["complaint_content"]
-        if complaint_content:
-            try:
-                folder_path = get_archive_folder(student_name, id_card, unit["code"])
-                txt_path = os.path.join(folder_path, "投诉内容.txt")
-                with open(txt_path, "w", encoding="utf-8") as f:
-                    f.write(f"投诉时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"投诉渠道: {ticket_data['source_channel']}\n")
-                    f.write(f"投诉类型: {ticket_data['complaint_type']}\n")
-                    f.write(f"数据来源: {MANUAL_INTAKE_TYPE}（人工录入）\n\n")
-                    f.write(complaint_content)
-            except OSError:
-                pass
+        # 受理建夹（统一走 4 段式 build_archive_dir；投诉内容已记录到登记表，这里不再写独立 txt）
+        try:
+            build_archive_dir(ticket_data)
+        except (ValueError, OSError) as exc:
+            add_log("manual_create", f"归档目录建立失败: {exc}", success=False, ticket_id=ticket_id)
 
         add_log(
             "manual_create",
@@ -1147,6 +1254,7 @@ def api_tickets_manual_create():
 
 
 @app.route("/api/tickets", methods=["GET"])
+@login_required
 def api_tickets_list():
     """获取投诉工单列表"""
     try:
@@ -1177,6 +1285,7 @@ def api_tickets_list():
 
 
 @app.route("/api/tickets/<ticket_id>", methods=["GET"])
+@login_required
 def api_tickets_get(ticket_id):
     """获取单个工单详情"""
     try:
@@ -1189,6 +1298,7 @@ def api_tickets_get(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>", methods=["PUT"])
+@login_required
 def api_tickets_update(ticket_id):
     """更新工单（支持文件归档）"""
     try:
@@ -1214,21 +1324,8 @@ def api_tickets_update(ticket_id):
         if gate_error:
             add_log("ticket_update", gate_error, success=False, ticket_id=ticket_id)
             return _err(gate_error)
-        
-        # 如果有投诉描述，自动生成 txt 文件归档
-        complaint_desc = data.get("complaint_desc", "")
-        if complaint_desc:
-            folder_path = get_archive_folder(
-                ticket.get("student_name", ""),
-                ticket.get("id_card", ""),
-                ticket.get("school_short", "")
-            )
-            txt_path = os.path.join(folder_path, "投诉内容.txt")
-            with open(txt_path, 'w', encoding='utf-8') as f:
-                f.write(f"投诉时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"投诉渠道: {data.get('source_channel', '未知')}\n")
-                f.write(f"投诉类型: {data.get('complaint_type', '未知')}\n\n")
-                f.write(complaint_desc)
+
+        # 投诉描述落档由登记表承载，不再写独立的「投诉内容.txt」（避免目录多文件语义重叠）。
         
         if data.get("archive_status") == "已归档":
             data["handle_status"] = "已完结"
@@ -1246,6 +1343,7 @@ def api_tickets_update(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>", methods=["DELETE"])
+@login_required
 def api_tickets_delete(ticket_id):
     """删除工单（硬删除数据库记录，不清理磁盘归档文件）"""
     try:
@@ -1278,6 +1376,7 @@ def _merge_graduation_warning(existing, student_status) -> list:
 
 
 @app.route("/api/tickets/<ticket_id>/fee-confirm", methods=["POST"])
+@login_required
 def api_ticket_fee_confirm(ticket_id):
     """确认费用方案（v2 简化）：直接保存扣费行集与实缴金额并标记已确认。"""
     try:
@@ -1372,6 +1471,7 @@ def api_ticket_fee_confirm(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>/fee-unlock", methods=["POST"])
+@login_required
 def api_ticket_fee_unlock(ticket_id):
     """解锁已确认的费用明细：confirmed 置回未确认；若案件已归档/已完结则同步重新打开。"""
     ticket = get_ticket(ticket_id)
@@ -1400,6 +1500,7 @@ def api_ticket_fee_unlock(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>/withdraw", methods=["PUT"])
+@login_required
 def api_ticket_withdraw(ticket_id):
     """撤诉标记（v2）：任意状态可用（含已归档），写入撤诉时间与原因。"""
     try:
@@ -1432,6 +1533,7 @@ def api_ticket_withdraw(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>/withdraw-status", methods=["PUT"])
+@login_required
 def api_ticket_withdraw_status(ticket_id):
     """更新撤诉状态（归档后仍可单独修改，不影响费用方案与协商结论）。
 
@@ -1468,6 +1570,7 @@ def api_ticket_withdraw_status(ticket_id):
 
 
 @app.route("/api/tickets/export", methods=["GET"])
+@login_required
 def api_tickets_export():
     """导出工单数据为 Excel"""
     try:
@@ -1590,7 +1693,261 @@ def api_tickets_export():
 
 
 # ═══════════════════════════════════════════════════════════════
-#  API: 认证管理
+#  API: 账号体系（系统账号登录/登出/当前用户）
+#  与下方 /api/auth/* 三系统爬虫登录不同，不要混用
+# ═══════════════════════════════════════════════════════════════
+
+@app.route("/api/session/login", methods=["POST"])
+def api_session_login():
+    try:
+        from core.auth import login_user
+        from services.user_service import (
+            get_user_by_username, verify_password, ROLE_LABEL,
+        )
+        data = request.get_json(force=True, silent=True) or {}
+        username = (data.get("username") or "").strip()
+        password = data.get("password") or ""
+        if not username or not password:
+            return _err("用户名或密码不能为空", 400)
+        user = get_user_by_username(username)
+        if not user or not verify_password(user, password):
+            return _err("用户名或密码错误", 401)
+        if user.get("status") != "启用":
+            return _err("账号已停用，请联系管理员", 403)
+        login_user(user)
+        fresh = get_user_by_username(username)
+        return _ok({
+            "id": fresh["id"],
+            "username": fresh["username"],
+            "real_name": fresh["real_name"],
+            "role": fresh["role"],
+            "role_label": ROLE_LABEL.get(fresh["role"], fresh["role"]),
+            "phone": fresh.get("phone", ""),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
+@app.route("/api/session/logout", methods=["POST"])
+def api_session_logout():
+    from core.auth import logout_user
+    logout_user()
+    return _ok(None, "已退出登录")
+
+
+@app.route("/api/session/me", methods=["GET"])
+def api_session_me():
+    from core.auth import _load_current_user
+    from services.user_service import ROLE_LABEL
+    user = _load_current_user()
+    if not user:
+        return _err("未登录", 401)
+    return _ok({
+        "id": user["id"],
+        "username": user["username"],
+        "real_name": user["real_name"],
+        "role": user["role"],
+        "role_label": ROLE_LABEL.get(user["role"], user["role"]),
+        "phone": user.get("phone", ""),
+    })
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API: 用户管理（admin 增删改查；非 admin 可改自己密码/资料）
+# ═══════════════════════════════════════════════════════════════
+
+def _user_to_public(u: dict) -> dict:
+    """把 user 行转为不含 password_hash 的对外结构。"""
+    from services.user_service import ROLE_LABEL
+    return {
+        "id": u["id"],
+        "username": u["username"],
+        "real_name": u["real_name"],
+        "role": u["role"],
+        "role_label": ROLE_LABEL.get(u["role"], u["role"]),
+        "phone": u.get("phone", ""),
+        "status": u.get("status", "启用"),
+        "last_login_at": u.get("last_login_at", ""),
+        "created_at": u.get("created_at", ""),
+    }
+
+
+@app.route("/api/users", methods=["GET"])
+@login_required
+def api_users_list():
+    """账号列表。仅 admin 可见，handler/viewer 看到 403。"""
+    from flask import g
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可查看账号列表", 403)
+    from services.user_service import list_users
+    role = (request.args.get("role") or "").strip()
+    status = (request.args.get("status") or "").strip()
+    items = [_user_to_public(u) for u in list_users(role=role, status=status)]
+    return _ok(items)
+
+
+@app.route("/api/users/assignable", methods=["GET"])
+@login_required
+def api_users_assignable():
+    """处理人下拉候选：所有已登录用户都能调（用于工单转办/指派）。"""
+    from services.user_service import list_assignable_users
+    items = list_assignable_users()
+    return _ok(items)
+
+
+@app.route("/api/users", methods=["POST"])
+@login_required
+def api_users_create():
+    from flask import g
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可创建账号", 403)
+    from services.user_service import create_user as svc_create
+    body = request.get_json(force=True, silent=True) or {}
+    r = svc_create(
+        username=body.get("username", ""),
+        password=body.get("password", ""),
+        real_name=body.get("real_name", ""),
+        role=body.get("role", "handler"),
+        phone=body.get("phone", ""),
+    )
+    if not r["success"]:
+        return _err(r["error"], 400)
+    return _ok(_user_to_public(r["user"]))
+
+
+@app.route("/api/users/<int:user_id>", methods=["PUT"])
+@login_required
+def api_users_update(user_id: int):
+    from flask import g
+    from services.user_service import update_user_profile, change_user_role
+    me = g.current_user
+    if me["role"] != "admin" and me["id"] != user_id:
+        return _err("无权修改其他用户", 403)
+    body = request.get_json(force=True, silent=True) or {}
+    # 非 admin 改自己：只能改 real_name/phone，不能改 role
+    if me["role"] != "admin":
+        if "role" in body and body["role"] != me["role"]:
+            return _err("不能修改自己的角色", 403)
+    r = update_user_profile(user_id, real_name=body.get("real_name", ""), phone=body.get("phone", ""))
+    if not r["success"]:
+        return _err(r["error"], 400)
+    # admin 改角色
+    if me["role"] == "admin" and "role" in body:
+        rr = change_user_role(user_id, body["role"])
+        if not rr["success"]:
+            return _err(rr["error"], 400)
+        r["user"] = rr["user"]
+    return _ok(_user_to_public(r["user"]))
+
+
+@app.route("/api/users/<int:user_id>/status", methods=["PUT"])
+@login_required
+def api_users_status(user_id: int):
+    from flask import g
+    from services.user_service import set_user_status
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可启停用账号", 403)
+    body = request.get_json(force=True, silent=True) or {}
+    r = set_user_status(user_id, body.get("status", ""))
+    if not r["success"]:
+        return _err(r["error"], 400)
+    # admin 不能停用自己
+    if g.current_user["id"] == user_id and body.get("status") == "停用":
+        return _err("不能停用自己", 400)
+    return _ok(_user_to_public(r["user"]))
+
+
+@app.route("/api/users/<int:user_id>/reset-password", methods=["POST"])
+@login_required
+def api_users_reset_password(user_id: int):
+    from flask import g
+    from services.user_service import reset_password
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可重置他人密码", 403)
+    body = request.get_json(force=True, silent=True) or {}
+    r = reset_password(user_id, body.get("new_password", ""))
+    if not r["success"]:
+        return _err(r["error"], 400)
+    return _ok(None, "密码已重置")
+
+
+@app.route("/api/users/me/password", methods=["POST"])
+@login_required
+def api_users_me_password():
+    from flask import g
+    from services.user_service import change_own_password
+    body = request.get_json(force=True, silent=True) or {}
+    r = change_own_password(
+        g.current_user["id"],
+        body.get("old_password", ""),
+        body.get("new_password", ""),
+    )
+    if not r["success"]:
+        return _err(r["error"], 400)
+    return _ok(None, "密码已修改")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API: 历史处理人 → 账号 别名映射（admin 配置；映射后自动回写工单）
+# ═══════════════════════════════════════════════════════════════
+
+@app.route("/api/users/aliases", methods=["GET"])
+@login_required
+def api_users_aliases_list():
+    from flask import g
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可查看映射", 403)
+    from services.user_service import list_aliases, list_unmapped_handler_names
+    return _ok({
+        "aliases": list_aliases(),
+        "unmapped": list_unmapped_handler_names(),
+    })
+
+
+@app.route("/api/users/aliases", methods=["POST"])
+@login_required
+def api_users_aliases_create():
+    from flask import g
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可创建映射", 403)
+    from services.user_service import create_alias
+    body = request.get_json(force=True, silent=True) or {}
+    r = create_alias(
+        old_name=body.get("old_name", ""),
+        user_id=body.get("user_id", 0),
+        created_by=g.current_user["id"],
+    )
+    if not r["success"]:
+        return _err(r["error"], 400)
+    # 立刻回写工单
+    from database import migrate_handler_names_to_user
+    n = migrate_handler_names_to_user()
+    return _ok({"rewritten": n}, f"映射成功，已回写 {n} 个工单")
+
+
+@app.route("/api/users/aliases/<int:alias_id>", methods=["DELETE"])
+@login_required
+def api_users_aliases_delete(alias_id: int):
+    from flask import g
+    if g.current_user["role"] != "admin":
+        return _err("仅管理员可删除映射", 403)
+    from services.user_service import delete_alias
+    r = delete_alias(alias_id)
+    if not r["success"]:
+        return _err(r["error"], 400)
+    # 回滚：把对应工单 handler_user_id 置回 NULL（保留原 handler_name）
+    from database import get_db
+    with get_db() as conn:
+        conn.execute(
+            "UPDATE complaint_tickets SET handler_user_id=NULL, updated_at=? WHERE handler_name=?",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), r["old_name"]),
+        )
+    return _ok(None, "已删除映射，相关工单回滚为未关联")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API: 认证管理（三系统爬虫登录）
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/auth/status")
@@ -1639,6 +1996,7 @@ def api_auth_clear():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/contract/download", methods=["POST"])
+@login_required
 def api_contract_download():
     try:
         data = request.get_json(force=True, silent=True)
@@ -1666,7 +2024,16 @@ def api_contract_download():
             return _err("该学员2024年3月15日前报名，东莞驾培无电子合同，请上传合同文件或手动填写费用信息")
 
         # 确定存储路径（归档到学员独立文件夹）
-        save_dir = get_archive_folder(student_name, id_card, school_short)
+        save_dir, _, _ = build_archive_dir(
+            {
+                "complaint_date": ticket.get("complaint_date", "") if ticket else "",
+                "student_name": student_name,
+                "id_card": id_card,
+                "school_short": school_short,
+                "organization_unit_type": (ticket.get("organization_unit_type") if ticket else "") or "",
+                "organization_unit_name": (ticket.get("organization_unit_name") if ticket else "") or "",
+            }
+        )
 
         # 检查缓存（除非强制重新下载）
         if not force:
@@ -1714,6 +2081,7 @@ def api_contract_download():
 
 
 @app.route("/api/contract/upload", methods=["POST"])
+@login_required
 def api_contract_upload():
     try:
         # 尝试多种方式获取文件
@@ -1772,7 +2140,15 @@ def api_contract_upload():
             original_stem = os.path.splitext(os.path.basename(file.filename.replace("\\", "/")))[0]
             safe_orig = _safe_path_component(original_stem, "contract")
             if id_card and name:
-                save_dir = get_archive_folder(name, id_card, school_short)
+                ticket_snapshot = {
+                    "complaint_date": ticket.get("complaint_date", "") if ticket else "",
+                    "student_name": name,
+                    "id_card": id_card,
+                    "school_short": school_short,
+                    "organization_unit_type": (ticket.get("organization_unit_type") if ticket else "") or "",
+                    "organization_unit_name": (ticket.get("organization_unit_name") if ticket else "") or "",
+                }
+                save_dir, _, _ = build_archive_dir(ticket_snapshot)
                 # 文件名标准化：姓名_合同_序号
                 safe_name = _safe_path_component(name, "未知学员")
                 filename = f"{safe_name}_合同_{safe_orig}{ext}"
@@ -1905,6 +2281,7 @@ def api_contract_upload():
 
 
 @app.route("/api/contract/analyze", methods=["POST"])
+@login_required
 def api_contract_analyze():
     try:
         data = request.get_json(force=True, silent=True)
@@ -2207,6 +2584,7 @@ def _contract_analysis_fingerprint(data: dict, filepath: str) -> str:
 
 
 @app.route("/api/contract/analyze/start", methods=["POST"])
+@login_required
 def api_contract_analyze_start():
     data = request.get_json(force=True, silent=True)
     if data is None:
@@ -2253,6 +2631,7 @@ def api_contract_analyze_start():
 
 
 @app.route("/api/contract/analyze/status/<job_id>", methods=["GET"])
+@login_required
 def api_contract_analyze_status(job_id):
     with CONTRACT_ANALYSIS_LOCK:
         job = CONTRACT_ANALYSIS_JOBS.get(job_id)
@@ -2280,6 +2659,7 @@ def api_contract_analyze_status(job_id):
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/reply/generate", methods=["POST"])
+@login_required
 def api_reply_generate():
     try:
         data = request.get_json(force=True, silent=True)
@@ -2304,14 +2684,24 @@ def _do_generate_reply(ticket: dict, official: dict, data: dict):
     try:
         ticket_id = str(official.get("ticket_id") or "")
 
-        # 确定回复函保存路径（文件命名规则保持旧版不变）
+        # 确定回复函保存路径（统一走 build_archive_dir，命名简化为「投诉回复函.docx」）
         reply_name = official.get("name", "")
         reply_id_card = official.get("id_card", "")
-        reply_school = official.get("school_short", "")
-        if reply_name and reply_id_card:
-            reply_dir = get_archive_folder(reply_name, reply_id_card, reply_school)
-        else:
-            reply_dir = REPLY_DIR
+        reply_school = official.get("school_short", "") or "未归属"
+        reply_ticket = {
+            "complaint_date": ticket.get("complaint_date", ""),
+            "student_name": reply_name,
+            "id_card": reply_id_card,
+            "school_short": reply_school,
+            "organization_unit_type": ticket.get("organization_unit_type", ""),
+            "organization_unit_name": ticket.get("organization_unit_name", ""),
+        }
+        try:
+            _, _, reply_target = build_archive_dir(reply_ticket)
+        except (ValueError, OSError):
+            reply_target = os.path.join(REPLY_DIR, "投诉回复函.docx")
+        # 直接覆盖：终归档会重复执行，需要幂等；每案件目录只一个回复函，unique_path 加 (1) 无意义
+        output_path = reply_target
 
         # 金额一律取数据库已确认快照，不信任请求体
         deductions = official.get("deductions", []) or []
@@ -2330,10 +2720,6 @@ def _do_generate_reply(ticket: dict, official: dict, data: dict):
                         mismatch = True
                 except (TypeError, ValueError):
                     pass
-
-        today_str = datetime.now().strftime("%Y%m%d")
-        base_filename = f"{today_str}{reply_name}{reply_id_card}投诉回复函{reply_school}"
-        output_path = unique_path(os.path.join(reply_dir, base_filename + ".docx"))
 
         result = generate_reply_docx(ticket=ticket, deductions=deductions, output_path=output_path)
         if result.get("success"):
@@ -2370,6 +2756,7 @@ def _do_generate_reply(ticket: dict, official: dict, data: dict):
 
 
 @app.route("/api/reply/download")
+@login_required
 def api_reply_download():
     try:
         filepath = request.args.get("path", "")
@@ -2390,6 +2777,7 @@ def api_reply_download():
 
 
 @app.route("/api/fs/browse")
+@login_required
 def api_fs_browse():
     """目录浏览（归档路径选择弹框用）：列出指定目录下的子文件夹。
 
@@ -2424,14 +2812,52 @@ def api_fs_browse():
         return _err(str(e))
 
 
-@app.route("/api/tickets/<ticket_id>/archive", methods=["POST"])
-def api_tickets_archive(ticket_id):
-    """D10 最终归档（权威实现）：三闸门校验 → 建夹 → 复制两件套 → 更新状态。
+@app.route("/api/fs/native-picker", methods=["POST"])
+@login_required
+def api_fs_native_picker():
+    """调起系统原生文件夹选择对话框（macOS osascript choose folder），返回所选绝对路径。
 
-    与 get_archive_folder（受理建夹，沿用 {日期}_{姓名}_{身份证}_{校区} 规则）分工不同：
-    本路由按 archive_service.build_archive_dir 的
-    {root}/{单位类型}/{代号-单位名}/{日期}_{姓名}_{身份证}_{代号}/ 规则拼路径，
-    仅作为结案归档入口，不负责受理阶段建夹。两者路径规则差异保留，不顺手统一。
+    body 可传 start 作为起始目录；用户取消时返回 cancelled=True。
+    浏览器安全策略拿不到本地绝对路径，故由本机 Flask 进程代为调起系统对话框。
+    """
+    if sys.platform != "darwin":
+        return _err("当前系统不支持原生文件夹选择对话框", 501)
+    try:
+        payload = request.get_json(silent=True) or {}
+        script = 'POSIX path of (choose folder with prompt "选择学员归档路径"'
+        start = str(payload.get("start") or "").strip()
+        if start and os.path.isdir(os.path.abspath(os.path.expanduser(start))):
+            loc = os.path.abspath(os.path.expanduser(start)).replace('"', '\\"')
+            script += f' default location POSIX file "{loc}"'
+        script += ")"
+        proc = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=600)
+        out = (proc.stdout or "").strip()
+        if proc.returncode == 0 and out:
+            return jsonify({"success": True, "data": {"path": out.rstrip("/") or "/"}})
+        stderr = (proc.stderr or "")
+        if "-128" in stderr:
+            return jsonify({"success": False, "cancelled": True})
+        return _err(stderr.strip() or "无法打开原生文件夹选择对话框")
+    except subprocess.TimeoutExpired:
+        return _err("原生文件夹选择超时，请重试")
+    except FileNotFoundError:
+        return _err("未找到 osascript，无法调起原生文件夹选择对话框")
+    except Exception as e:
+        return _err(str(e))
+
+
+@app.route("/api/tickets/<ticket_id>/archive", methods=["POST"])
+@login_required
+def api_tickets_archive(ticket_id):
+    """D10 最终归档（权威实现）：三闸门校验 → 兜底生成两件套 → 校验存在 → 更新状态。
+
+    唯一目录规则（与登记表/回复函生成、合同下载复用 build_archive_dir）：
+        {archive_root}/{单位类型}/{代号}-{单位名}/{complaint_date}_{姓名}_{身份证}_{代号}/
+            投诉登记表.docx
+            投诉回复函.docx
+            {姓名}_合同_*.pdf
+
+    源端落盘已经按这个规则，archive_case 仅做兜底搬运（源路径在别的目录时搬过来）。
     """
     try:
         ticket = get_ticket(ticket_id)
@@ -2473,7 +2899,7 @@ def api_tickets_archive(ticket_id):
                 warnings.append(f"登记表重新生成失败，沿用旧文件: {gen.get('error')}")
 
         # 收集已生成的源文件：登记表（受理流程写盘 registration_form_path）、
-        # 回复函（/api/reply/generate 写盘 reply_path），存在才复制
+        # 回复函（/api/reply/generate 写盘 reply_path），存在才归档
         files = {}
         if reg_src and os.path.isfile(reg_src):
             files["register_form"] = reg_src
@@ -2511,6 +2937,7 @@ def api_tickets_archive(ticket_id):
 
 
 @app.route("/api/templates", methods=["GET"])
+@login_required
 def api_templates_list():
     """列出回复模板"""
     try:
@@ -2520,6 +2947,7 @@ def api_templates_list():
 
 
 @app.route("/api/templates/upload", methods=["POST"])
+@login_required
 def api_templates_upload():
     """上传回复模板"""
     try:
@@ -2559,6 +2987,7 @@ def api_templates_upload():
 
 
 @app.route("/api/templates/<template_id>/default", methods=["PUT"])
+@login_required
 def api_templates_set_default(template_id):
     """设置默认模板"""
     from services.template_service import set_default_template
@@ -2569,6 +2998,7 @@ def api_templates_set_default(template_id):
 
 
 @app.route("/api/templates/<template_id>", methods=["DELETE"])
+@login_required
 def api_templates_delete(template_id):
     """删除模板（同时清理磁盘文件；删除最后一个默认模板时给出警告）"""
     from database import get_db, get_default_template
@@ -2603,6 +3033,7 @@ def api_templates_delete(template_id):
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/tickets/<ticket_id>/register-form", methods=["POST"])
+@login_required
 def api_tickets_register_form(ticket_id):
     """生成投诉登记表"""
     try:
@@ -2657,6 +3088,7 @@ def api_tickets_register_form(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>/register-form/preview", methods=["POST"])
+@login_required
 def api_tickets_register_form_preview(ticket_id):
     """预览投诉登记表内容（不落盘、不调用 AI，与归档时生成的 docx 共用同一数据构建逻辑）"""
     try:
@@ -2693,6 +3125,7 @@ def api_tickets_register_form_preview(ticket_id):
 
 
 @app.route("/api/tickets/<ticket_id>/detail")
+@login_required
 def api_ticket_detail(ticket_id):
     from database import get_ticket
     ticket = get_ticket(ticket_id)
@@ -2723,6 +3156,7 @@ def api_ticket_detail(ticket_id):
 
 
 @app.route("/api/contract/analysis/<ticket_id>")
+@login_required
 def api_get_analysis(ticket_id):
     from database import get_ticket
     ticket = get_ticket(ticket_id)
@@ -2994,6 +3428,7 @@ def _build_contract_profile(ticket: dict, clauses: list) -> dict:
 
 
 @app.route("/api/contract/comparison/<ticket_id>")
+@login_required
 def api_contract_comparison(ticket_id):
     from database import get_ticket
     ticket = get_ticket(ticket_id)
@@ -3003,6 +3438,7 @@ def api_contract_comparison(ticket_id):
 
 
 @app.route("/api/contract/comparison/<ticket_id>/refresh", methods=["POST"])
+@login_required
 def api_contract_comparison_refresh(ticket_id):
     from database import get_ticket
     ticket = get_ticket(ticket_id)
@@ -3039,6 +3475,7 @@ def api_contract_comparison_refresh(ticket_id):
 
 
 @app.route("/api/contract/save_analysis", methods=["POST"])
+@login_required
 def api_save_analysis():
     data = request.get_json(force=True, silent=True)
     if data is None:
@@ -3109,6 +3546,7 @@ def api_save_analysis():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/config", methods=["GET"])
+@login_required
 def api_config_get():
     cfg = load_config()
     safe = json.loads(json.dumps(cfg))
@@ -3122,6 +3560,7 @@ def api_config_get():
 
 
 @app.route("/api/config", methods=["PUT", "POST"])
+@login_required
 def api_config_put():
     try:
         new_config = request.get_json(force=True, silent=True)
@@ -3158,6 +3597,7 @@ def api_config_put():
 
 
 @app.route("/api/config/llm/test", methods=["POST"])
+@login_required
 def api_config_llm_test():
     """测试大模型连通性：用当前表单参数发一次最小 chat 请求。"""
     try:
@@ -3212,6 +3652,7 @@ NOTES_POLISH_PROMPT = """你是驾校投诉处理专员。工作人员用随手�
 
 
 @app.route("/api/notes/polish", methods=["POST"])
+@login_required
 def api_notes_polish():
     """处理情况 AI 优化：把输入框中用户记录的内容整理为正式表述（忠实原文，不编造）。"""
     try:
@@ -3250,10 +3691,68 @@ def api_notes_polish():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  API: 回复函 AI 润色
+# ═══════════════════════════════════════════════════════════════
+
+REPLY_POLISH_PROMPT = """你是驾校投诉回复函的公文润色助手。下面按顺序给出回复函的各段文字，请逐段润色。
+要求：
+1. 只优化语言表达：修正错别字、病句、口语化表述，统一标点与公文排版规范，语气正式、得体、专业
+2. 严禁改动任何数字、金额、身份证号、日期、合同编码等事实信息，严禁新增或删除任何事实内容
+3. 保持段落顺序不变，润色后的段落数量必须与输入完全一致
+4. 输出时，各段落之间用单独一行的 <PARA> 分隔；不要输出编号、解释或任何其他文字
+
+回复函原文：
+"""
+
+
+@app.route("/api/reply/polish", methods=["POST"])
+@login_required
+def api_reply_polish():
+    """回复函 AI 润色：逐段润色函件正文，忠实事实，保留段落结构。"""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        paragraphs = body.get("paragraphs") or []
+        paragraphs = [str(p or "").strip() for p in paragraphs if str(p or "").strip()]
+        if not paragraphs:
+            return _err("请先生成回复函内容再润色", 400)
+
+        import requests as _requests
+        llm = _llm_config("llm")
+        if not llm.get("api_url") or not llm.get("api_key") or not llm.get("model"):
+            return _err("未配置大模型接口，请在系统设置中填写后重试", 400)
+        resp = _requests.post(
+            llm["api_url"],
+            headers={"Authorization": f"Bearer {llm['api_key']}", "Content-Type": "application/json"},
+            json={
+                "model": llm["model"],
+                "messages": [{
+                    "role": "user",
+                    "content": REPLY_POLISH_PROMPT + "\n<PARA>\n".join(paragraphs),
+                }],
+                "max_tokens": 2048,
+                "temperature": 0.3,
+                # 思考模式：润色需要模型先通读全文再改写，关闭思考会导致逐句机械复述
+                "enable_thinking": True,
+            },
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return _err(_format_llm_error(resp), 400)
+        polished = ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        polished = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", polished.strip()).strip()
+        if not polished:
+            return _err("AI 未返回有效内容，请重试", 400)
+        return _ok({"polished": polished})
+    except Exception as e:
+        return _err(f"AI 润色失败：{e}", 500)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  API: 历史记录 + 统计
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/complaints")
+@login_required
 def api_complaints_list():
     """获取投诉记录列表（兼容旧接口）"""
     status = request.args.get("status", "")
@@ -3275,11 +3774,13 @@ def api_complaints_list():
 
 
 @app.route("/api/statistics")
+@login_required
 def api_statistics():
     return jsonify(get_statistics())
 
 
 @app.route("/api/ticket-statistics")
+@login_required
 def api_ticket_statistics():
     start_date = request.args.get("start_date", "")
     end_date = request.args.get("end_date", "")
@@ -3296,6 +3797,7 @@ def api_ticket_statistics():
 
 
 @app.route("/api/org-vehicle-counts", methods=["GET"])
+@login_required
 def api_org_vehicle_counts():
     """获取所有网点的车辆数配置"""
     items = get_org_vehicle_count_items()
@@ -3303,6 +3805,7 @@ def api_org_vehicle_counts():
 
 
 @app.route("/api/org-vehicle-counts", methods=["PUT"])
+@login_required
 def api_org_vehicle_counts_save():
     """批量保存网点车辆数配置"""
     data = request.get_json(force=True, silent=True)
@@ -3337,6 +3840,7 @@ def api_org_vehicle_counts_save():
 
 
 @app.route("/api/statistics/duration")
+@login_required
 def api_duration_stats():
     """处理时长统计"""
     date_start = request.args.get("start_date", "") or request.args.get("date_start", "")
@@ -3354,6 +3858,7 @@ def api_duration_stats():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route("/api/contract/download-file")
+@login_required
 def api_contract_download_file():
     filepath = request.args.get("path", "")
     if not filepath or not os.path.exists(filepath):
@@ -3367,6 +3872,7 @@ def api_contract_download_file():
 
 
 @app.route("/api/contract/preview")
+@login_required
 def api_contract_preview():
     filepath = request.args.get("path", "")
     if not filepath:
