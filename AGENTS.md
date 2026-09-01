@@ -1,6 +1,6 @@
 # 学员投诉自动处理系统
 
-> 跨工具规范文件（AGENTS.md 标准，由 Linux 基金会 Agentic AI Foundation 托管）。`CLAUDE.md` 与之保持一致，两者同步维护。
+> 跨工具规范文件（AGENTS.md 标准，由 Linux 基金会 Agentic AI Foundation 托管）。本项目仅用 WorkBuddy，此文件即唯一项目规范，WorkBuddy 启动时自动读取。
 
 ## 技术栈与架构
 Flask + Vue 3 的 Web 后台，覆盖学员投诉工单的自动受理、三系统查询、合同分析、退费计算、文档生成、飞书归档。后端入口 `app.py`，前端 `templates/index.html`（Vue 用 `[[ ]]`），数据在 `data/complaints.db`。更多设计见 `docs/`（36 篇）与 `PLAN.md`/`CONTEXT.md`/`DESIGN.md`/`MEMORY.md`。
