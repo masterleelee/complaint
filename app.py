@@ -49,6 +49,7 @@ from core.auth import login_required, role_required
 from services.contract_service import (
     analyze_contract_from_file, apply_authoritative_total_fee,
     build_contract_clauses,
+    merge_analysis_into_contract_set, normalize_contract_set,
     _llm_config, _format_llm_error,
 )
 from services.reply_docx import generate_reply_docx
@@ -2659,8 +2660,8 @@ def api_contract_upload():
             candidates.append((file, ext))
         if not candidates:
             return _err("没有可保存的文件")
-        if len(candidates) > 1 and not all(ext in CONTRACT_IMAGE_EXTENSIONS for _file, ext in candidates):
-            return _err("仅支持一份文档或同一份合同的多页图片；多合同请分别上传")
+        # 一套合同模型（工单 03）：连续图片段归为一份（多页合并），每个 PDF 独立一份
+        groups = []
 
         saved_files = []
         source_files = []
@@ -2734,53 +2735,81 @@ def api_contract_upload():
             source_files.append(source_entry)
             saved_files.append({"filepath": filepath, "filename": filename})
 
+            if ext in CONTRACT_IMAGE_EXTENSIONS:
+                if not groups or not groups[-1]["is_images"]:
+                    groups.append({"is_images": True, "entries": []})
+                groups[-1]["entries"].append(source_entry)
+            else:
+                groups.append({"is_images": False, "entries": [source_entry]})
+
         if not saved_files:
             return _err("没有可保存的文件（格式可能不支持）")
 
-        # ── 核心逻辑：如果有多张图片，自动合并成 PDF ──
+        # ── 按份处理：图片组多页合并为一份 PDF，PDF 自成一份 ──
+        contract_entries = []
         merged_pdf_path = None
-        if len(image_paths) > 1:
-            try:
-                import img2pdf
-                safe_name = _safe_path_component(name, "上传")
-                pdf_filename = f"{safe_name}_合同_合并版.pdf"
-                merged_pdf_path = unique_path(os.path.join(save_dir, pdf_filename))
-
-                # 先压缩图片再合并，减小 PDF 体积
-                from services.image_compressor import compress_for_vision_api
+        for group in groups:
+            entries = group["entries"]
+            if not entries:
+                continue
+            rep_path = entries[0]["filepath"]
+            if group["is_images"] and len(entries) > 1:
+                group_images = [e["analysis_path"] for e in entries]
+                group_merged = ""
                 try:
-                    compressed_for_pdf = compress_for_vision_api(
-                        image_paths, 
-                        max_size=(1920, 1920),
-                        jpeg_quality=75,  # PDF 用稍低质量，体积更小
-                        target_max_mb=1.5
-                    )
-                except Exception:
-                    compressed_for_pdf = image_paths
-                
-                with open(merged_pdf_path, "wb") as f:
-                    # img2pdf.convert 接收文件路径列表
-                    f.write(img2pdf.convert(compressed_for_pdf))
-                
-                # 清理临时压缩文件
-                for temp_path in compressed_for_pdf:
-                    if ".compressed" in temp_path and os.path.exists(temp_path):
-                        try:
-                            os.remove(temp_path)
-                        except:
-                            pass
-                
-                add_log("contract_merge", f"已将 {len(image_paths)} 张图片合并为 PDF")
-            except Exception as merge_err:
-                if merged_pdf_path and os.path.exists(merged_pdf_path):
+                    import img2pdf
+                    safe_name = _safe_path_component(name, "上传")
+                    pdf_filename = f"{safe_name}_合同_合并版.pdf"
+                    group_merged = unique_path(os.path.join(save_dir, pdf_filename))
+
+                    # 先压缩图片再合并，减小 PDF 体积
+                    from services.image_compressor import compress_for_vision_api
                     try:
-                        os.remove(merged_pdf_path)
-                    except OSError:
-                        pass
-                merged_pdf_path = None
-                traceback.print_exc()
-                add_log("contract_merge_err", f"PDF 合并失败: {str(merge_err)}", success=False)
-                # 合并失败不影响原始图片上传，继续执行
+                        compressed_for_pdf = compress_for_vision_api(
+                            group_images,
+                            max_size=(1920, 1920),
+                            jpeg_quality=75,  # PDF 用稍低质量，体积更小
+                            target_max_mb=1.5
+                        )
+                    except Exception:
+                        compressed_for_pdf = group_images
+
+                    with open(group_merged, "wb") as f:
+                        # img2pdf.convert 接收文件路径列表
+                        f.write(img2pdf.convert(compressed_for_pdf))
+
+                    # 清理临时压缩文件
+                    for temp_path in compressed_for_pdf:
+                        if ".compressed" in temp_path and os.path.exists(temp_path):
+                            try:
+                                os.remove(temp_path)
+                            except OSError:
+                                pass
+
+                    add_log("contract_merge", f"已将 {len(group_images)} 张图片合并为一份 PDF")
+                    rep_path = group_merged
+                    if merged_pdf_path is None:
+                        merged_pdf_path = group_merged
+                except Exception as merge_err:
+                    if group_merged and os.path.exists(group_merged):
+                        try:
+                            os.remove(group_merged)
+                        except OSError:
+                            pass
+                    traceback.print_exc()
+                    add_log("contract_merge_err", f"PDF 合并失败: {str(merge_err)}", success=False)
+                    # 合并失败不影响原始图片上传，按原第一张图作为该份代表
+            contract_entries.append({
+                "kind": "",
+                "tier": "",
+                "file": rep_path,
+                "filename": os.path.basename(rep_path),
+                "analysis_path": entries[0]["analysis_path"],
+                "sha256": entries[0]["sha256"],
+                "text": "",
+                "text_source": "",
+                "text_confidence": "",
+            })
 
         upload_count = len(source_files)
         preview_path = merged_pdf_path or source_files[0]["filepath"]
@@ -2792,10 +2821,23 @@ def api_contract_upload():
             "upload_count": upload_count,
         }
 
+        # 合同集合分条累积：同内容文件（sha 相同）不重复入条
+        merged_set = {"contracts": contract_entries}
         if ticket_id and get_ticket(ticket_id):
+            existing_raw = ticket.get("contract_set")
+            if isinstance(existing_raw, str):
+                try:
+                    existing_raw = json.loads(existing_raw)
+                except json.JSONDecodeError:
+                    existing_raw = {}
+            existing = normalize_contract_set(existing_raw)
+            seen = {e.get("sha256") for e in existing["contracts"] if e.get("sha256")}
+            new_entries = [e for e in contract_entries if not e.get("sha256") or e["sha256"] not in seen]
+            merged_set = {"contracts": existing["contracts"] + new_entries}
             update_ticket(ticket_id, {
                 "contract_path": preview_path,
                 "contract_manifest": manifest,
+                "contract_set": merged_set,
             })
 
         add_log("contract_upload", f"上传 {upload_count} 个文件", ticket_id=ticket_id)
@@ -2807,6 +2849,7 @@ def api_contract_upload():
             "all_files": saved_files,
             "count": upload_count,
             "manifest": manifest,
+            "contract_set": merged_set,
         })
 
     except RequestEntityTooLarge:
@@ -3066,13 +3109,19 @@ def _run_contract_analysis(data: dict) -> dict:
         if current_ticket and current_ticket.get("fee_plan_status") == "confirmed":
             update_ticket(ticket_id, {"contract_path": filepath})
         else:
+            # 分析结果按文件引用合并进工单合同集合（上传分条累积后的回填，工单 03）
+            merged_set = merge_analysis_into_contract_set(
+                current_ticket.get("contract_set") if current_ticket else {},
+                result.get("contract_set") or {},
+                filepath,
+            )
             update_ticket(ticket_id, {
                 "total_fee": result.get("total_fee", 0),
                 "actual_paid": result.get("actual_paid", 0),
                 "deduction_fee": result.get("total_deduction", 0),
                 "refund_fee": result.get("refund", 0),
                 "deduction_detail": result.get("deductions", []),
-                "contract_set": result.get("contract_set", {}),
+                "contract_set": merged_set,
                 "contract_code": result.get("contract_code", ""),
                 "contract_path": filepath,
                 "special_warnings": result.get("special_warnings", []),
