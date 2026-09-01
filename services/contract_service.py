@@ -525,6 +525,113 @@ def _extract_standard_contract_data(text: str) -> dict:
     }
 
 
+# ── 合同集合分条结构（工单 03-contract-set-storage，ADR-0002） ─────────
+
+# 提取来源 → 正文置信度：文本层直读无损失；多模态次之；本地 OCR 最弱。
+TEXT_SOURCE_CONFIDENCE = {
+    "pdf_text": "high",
+    "vision_text": "medium",
+    "local_ocr": "low",
+}
+
+
+def text_confidence_of(source: str) -> str:
+    return TEXT_SOURCE_CONFIDENCE.get(str(source or ""), "low")
+
+
+def normalize_contract_set(raw) -> dict:
+    """合同集合规范化：旧单份/畸形结构兼容为分条，绝不抛错。
+
+    新结构每条含 kind/tier/file/text/text_source/text_confidence；
+    旧结构条目（contract_id/title/total_fee/evidence/rules）按单条兼容读取，
+    file 从 evidence.file 兜底补齐。非 dict 条目剔除。
+    """
+    contracts = []
+    if isinstance(raw, dict) and isinstance(raw.get("contracts"), list):
+        for item in raw["contracts"]:
+            if not isinstance(item, dict):
+                continue
+            entry = dict(item)
+            evidence = entry.get("evidence") if isinstance(entry.get("evidence"), dict) else {}
+            entry.setdefault("kind", "")
+            entry.setdefault("tier", "")
+            entry.setdefault("file", str(evidence.get("file") or ""))
+            entry.setdefault("text", "")
+            entry.setdefault("text_source", "")
+            entry.setdefault("text_confidence", "")
+            contracts.append(entry)
+    return {"contracts": contracts}
+
+
+def attach_contract_text(contract_set_raw, extraction: dict, filepath: str) -> dict:
+    """把提取正文按文件引用写回合同集合条目（ADR-0002：正文随结果落库）。
+
+    - file 与 filepath 匹配的条目 ← text/text_source/text_confidence；
+    - 唯一条目兜底（旧分析结果 file 未登记场景）；
+    - 集合为空 → 生成单条。
+    """
+    normalized = normalize_contract_set(contract_set_raw)
+    contracts = normalized["contracts"]
+    text = str(extraction.get("text") or "")
+    if not text:
+        return normalized
+    source = str(extraction.get("source") or "")
+
+    target = None
+    for entry in contracts:
+        if (entry.get("file") or "") == filepath:
+            target = entry
+            break
+    if target is None and len(contracts) == 1:
+        target = contracts[0]
+    if target is None:
+        target = {"kind": "", "tier": "", "file": filepath, "text": "", "text_source": "", "text_confidence": ""}
+        contracts.append(target)
+    target["text"] = text
+    target["text_source"] = source
+    target["text_confidence"] = text_confidence_of(source)
+    return {"contracts": contracts}
+
+
+def merge_analysis_into_contract_set(existing_raw, analysis_raw, filepath: str) -> dict:
+    """把单份分析结果合并进工单合同集合（上传分条累积后的回填，工单 03/04）。
+
+    - file 与 filepath 匹配的条目 ← 分析字段（rules/total_fee/title/contract_id/evidence/kind/tier/text*）；
+    - 无匹配 → 追加为一条；集合为空或唯一条目未登记文件时直接采用；
+    - 文件登记字段（file/analysis_path/sha256/filename）保留不动。
+    """
+    existing = normalize_contract_set(existing_raw)
+    analysis = normalize_contract_set(analysis_raw)
+    contracts = existing["contracts"]
+    source_entry = dict(analysis["contracts"][0]) if analysis["contracts"] else None
+    if source_entry is None:
+        return {"contracts": contracts}
+
+    target = None
+    for entry in contracts:
+        if (entry.get("file") or "") == filepath:
+            target = entry
+            break
+    if target is None:
+        if not contracts:
+            return {"contracts": [source_entry]}
+        if len(contracts) == 1 and not (contracts[0].get("file") or ""):
+            target = contracts[0]
+        else:
+            contracts.append(source_entry)
+            return {"contracts": contracts}
+
+    # 档位/种类：分析条目暂空时保留条目已登记值（改档重算不丢用户选择）
+    for key in ("kind", "tier"):
+        if not source_entry.get(key) and target.get(key):
+            source_entry[key] = target[key]
+    preserved = {k: target[k] for k in ("file", "analysis_path", "sha256", "filename") if k in target}
+    target.clear()
+    target.update(source_entry)
+    target.update(preserved)
+    return {"contracts": contracts}
+
+
 def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_candidate") -> dict:
     """Turn extracted contract facts into rules while excluding AI-calculated exam amounts."""
     total_fee = _as_float(data.get("total_fee", 0))
@@ -585,7 +692,12 @@ def contract_set_from_ai_data(data: dict, source_file: str, source: str = "ai_ca
                 "clause": "合同退费考试费条款",
             })
         makeup_fee = _as_float(makeup_table.get(subject_key, 0))
-        if includes_makeup and makeup_count > 0 and makeup_fee > 0:
+        # 不判断补考次数：本函数产出的是「单次金额」规则模板，次数由下游结合三系统
+        # 考试次数计算（refund_engine._calculate_rule: makeup_count = max(attempts - 1, 0)，
+        # 并自行处理 count == 0）。与上方考试费规则、以及人工复核版
+        # contract_set_from_reviewed_fields 的 `if includes_makeup and makeup_fee > 0` 对称。
+        # 历史 bug：此处曾误加未定义变量 `makeup_count > 0`，导致 AI 路径 NameError。
+        if includes_makeup and makeup_fee > 0:
             rules.append({
                 "type": "makeup_fee",
                 "item": f"{subject_label}补考费",
@@ -1313,6 +1425,8 @@ def analyze_contract_from_file(
         result.update({k: v for k, v in extraction.items() if k != "text"})
         _attach_extraction_review(result, extraction)
         result["special_warnings"] = _detect_special_cases(registration_date, exam_counts, skill_cert_date)
+        # 正文随结果落库（ADR-0002 硬前提）——识别不完整也要留正文供预览/人工核对
+        result["contract_set"] = attach_contract_text(result.get("contract_set") or {}, extraction, filepath)
         return result
 
     standard_data = _extract_standard_contract_data(contract_text)
@@ -1324,6 +1438,7 @@ def analyze_contract_from_file(
         result["special_warnings"] = _detect_special_cases(registration_date, exam_counts, skill_cert_date)
         result.update({k: v for k, v in extraction.items() if k != "text"})
         _attach_extraction_review(result, extraction)
+        result["contract_set"] = attach_contract_text(result["contract_set"], extraction, filepath)
         return result
 
     result = analyze_contract(
@@ -1349,4 +1464,5 @@ def analyze_contract_from_file(
     result["special_warnings"] = _detect_special_cases(registration_date, exam_counts, skill_cert_date)
     result.update({k: v for k, v in extraction.items() if k != "text"})
     _attach_extraction_review(result, extraction)
+    result["contract_set"] = attach_contract_text(result.get("contract_set") or {}, extraction, filepath)
     return result

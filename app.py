@@ -52,7 +52,14 @@ from services.contract_service import (
     _llm_config, _format_llm_error,
 )
 from services.reply_docx import generate_reply_docx
-from services.archive_service import archive_gate_errors, build_archive_dir, archive_case
+from services.archive_service import (
+    archive_gate_errors,
+    build_archive_dir,
+    archive_case,
+    archive_contract,
+    contract_target_name,
+    validate_archive_root,
+)
 from services.intake_service import parse_complaint_file, parse_complaint_text, ensure_upload_dir, ai_summarize_complaint
 from services.org_unit_service import ORGANIZATION_UNITS, resolve_org_unit
 from services import user_service
@@ -2395,6 +2402,7 @@ def api_contract_download():
         school_short = data.get("school_short", "未知")
         force = data.get("force", False)  # 是否强制重新下载
         ticket_id = data.get("ticket_id", "").strip()
+        ticket = None
 
         if not id_card:
             return _err("缺少身份证号")
@@ -2407,6 +2415,15 @@ def api_contract_download():
             ticket = get_ticket(ticket_id)
             if ticket:
                 reg_date = ticket.get("registration_date", "") or ""
+        # 兜底：即使前端没传 ticket_id，也按身份证号反查最近工单，
+        # 用真实单位字段参与归档路径，避免「未归属/东-未归属/...」这种漏单位目录。
+        if not ticket:
+            from database import find_latest_ticket_by_id_card
+            latest = find_latest_ticket_by_id_card(id_card)
+            if latest:
+                ticket = latest
+                if not ticket_id:
+                    ticket_id = latest.get("id", "") or ""
         parsed_reg = _parse_date_str(reg_date)
         if parsed_reg and parsed_reg < DRIVING_ECONTRACT_START_DATE:
             return _err("该学员2024年3月15日前报名，东莞驾培无电子合同，请上传合同文件或手动填写费用信息")
@@ -2428,12 +2445,19 @@ def api_contract_download():
             from database import contract_cache_get
             cached = contract_cache_get(id_card)
             if cached and os.path.exists(cached["file_path"]):
+                # 归档路径统一：缓存文件不在当前案件夹时，按标准命名复制入位并刷新缓存
+                src = _canonicalize_contract_path(cached["file_path"], student_name, save_dir)
+                try:
+                    from database import contract_cache_save
+                    contract_cache_save(id_card, student_name or "未知", src, os.path.getsize(src))
+                except Exception:
+                    pass
                 add_log("contract_cache", f"使用缓存合同: {cached['student_name']} ({id_card})")
                 if ticket_id:
-                    _save_contract_to_ticket(ticket_id, cached["file_path"], os.path.basename(cached["file_path"]))
+                    _save_contract_to_ticket(ticket_id, src, os.path.basename(src))
                 return _ok({
-                    "filepath": cached["file_path"],
-                    "filename": os.path.basename(cached["file_path"]),
+                    "filepath": src,
+                    "filename": os.path.basename(src),
                     "cached": True,
                     "downloaded_at": cached["downloaded_at"],
                 })
@@ -2451,6 +2475,8 @@ def api_contract_download():
             raise
 
         if filepath:
+            # 命名统一：爬虫落盘名（日期+姓名+证件+合同.pdf）→ {姓名}_合同_* 标准命名
+            filepath = _canonicalize_contract_path(filepath, student_name, save_dir)
             filename = os.path.basename(filepath)
             file_size = os.path.getsize(filepath)
             from database import contract_cache_save
@@ -2501,6 +2527,14 @@ def api_contract_upload():
         ticket = get_ticket(ticket_id) if ticket_id else None
         if ticket_id and not ticket:
             return _err("工单不存在", 404)
+        # 兜底：未带 ticket_id 时按身份证反查最近工单，补全单位字段，
+        # 避免归档目录退化为「未归属」。
+        if not ticket and id_card:
+            from database import find_latest_ticket_by_id_card
+            latest = find_latest_ticket_by_id_card(id_card)
+            if latest:
+                ticket = latest
+                ticket_id = ticket.get("id", "") or ticket_id
         if ticket:
             id_card = str(ticket.get("id_card") or "").strip()
             name = str(ticket.get("student_name") or "").strip()
@@ -2545,11 +2579,16 @@ def api_contract_upload():
                 save_dir = UPLOAD_DIR
 
             os.makedirs(save_dir, exist_ok=True)
-            if not is_path_within(save_dir, [ARCHIVE_DIR, UPLOAD_DIR]):
+            upload_allowed = [os.path.abspath(ARCHIVE_DIR), os.path.abspath(UPLOAD_DIR)]
+            custom_root = str((load_config() or {}).get("archive_root") or "").strip()
+            if custom_root:
+                # 用户可在「学员信息页/设置」修改 archive_root，落盘目录须同步放行
+                upload_allowed.append(os.path.abspath(os.path.expanduser(custom_root)))
+            if not is_path_within(save_dir, upload_allowed):
                 return _err("合同保存目录不安全", 403)
             filepath = unique_path(os.path.join(save_dir, filename))
             filename = os.path.basename(filepath)
-            if not is_path_within(filepath, [ARCHIVE_DIR, UPLOAD_DIR]):
+            if not is_path_within(filepath, upload_allowed):
                 return _err("合同文件路径不安全", 403)
             file.save(filepath)
 
@@ -2784,13 +2823,48 @@ def _save_contract_to_ticket(ticket_id: str, filepath: str, filename: str) -> No
         add_log("contract_save", f"写入工单失败: {e}", success=False)
 
 
-def _validate_contract_analysis_request(data: dict) -> tuple[str, str]:
-    filepath = str(data.get("filepath") or "").strip()
-    allowed_dirs = [
+def _contract_allowed_dirs() -> list:
+    """合同文件落盘/访问白名单：固定目录 + 用户自定义 archive_root（设置页/学员信息页可改）。"""
+    dirs = [
         os.path.abspath(ARCHIVE_DIR),
         os.path.abspath(UPLOAD_DIR),
         os.path.abspath(REPLY_DIR),
     ]
+    custom_root = str((load_config() or {}).get("archive_root") or "").strip()
+    if custom_root:
+        dirs.append(os.path.abspath(os.path.expanduser(custom_root)))
+    return dirs
+
+
+def _canonicalize_contract_path(filepath: str, student_name: str, case_dir: str) -> str:
+    """把合同统一入位：{archive_root}/{案件夹}/{姓名}_合同_{原名}{扩展名}。
+
+    - 源在案件夹外（如旧默认目录、缓存目录）→ 复制进案件夹；
+    - 源已在案件夹内但命名不规范 → 原地改名；
+    - 失败时退回原路径，不阻断下载/缓存流程。
+    """
+    try:
+        os.makedirs(case_dir, exist_ok=True)
+        target = os.path.join(case_dir, contract_target_name(student_name, os.path.basename(filepath)))
+        real_src = os.path.realpath(filepath)
+        real_target = os.path.realpath(target)
+        if real_src == real_target:
+            return filepath
+        if real_src.startswith(os.path.realpath(case_dir) + os.sep):
+            if os.path.exists(target):
+                os.remove(target)
+            os.replace(filepath, target)
+        else:
+            shutil.copyfile(filepath, target)
+        return target
+    except OSError as exc:
+        add_log("contract_canonicalize", f"合同标准命名入位失败: {exc}", success=False)
+        return filepath
+
+
+def _validate_contract_analysis_request(data: dict) -> tuple[str, str]:
+    filepath = str(data.get("filepath") or "").strip()
+    allowed_dirs = _contract_allowed_dirs()
     if not is_path_within(filepath, allowed_dirs):
         return "", "无权访问该文件"
     if not filepath or not os.path.exists(filepath):
@@ -3773,26 +3847,71 @@ def _extract_signing_date(text: str) -> str:
 
 
 def _extract_contract_term(text: str, signing_date: str) -> str:
-    """提取合同期限整句：跨行合并 PDF 换行断句；若原文只写到“至 YYYY 年”（月日被换行截断），
-    结合签订日期 + 有效期年数推导精确到期日；中文日期统一零填充显示。"""
-    m = re.search(r"(本培训服务合同有效期[\s\S]{2,60}?)(?:止|。)", text) or \
-        re.search(r"(?:合同期限|有效期)[:：]?\s*([\s\S]{4,80}?)(?:止|。)", text)
-    if not m:
-        m2 = re.search(r"(?:合同期限|有效期)[:：]?\s*([^\n]{4,40})", text)
-        return re.sub(r"\s+", "", m2.group(1)) if m2 else ""
-    # 合并跨行并压缩 PDF/换行产生的空白
-    term = re.sub(r"\s+", "", m.group(1))
-    # 原文只写到年份（如“…有效期为3年，自签订之日起至2029年”）：推导精确到期日
-    year_only = re.search(r"至(\d{4})年$", term)
-    years_m = re.search(r"有效期[为是]?(\d+)年", term)
+    """提取合同期限整句：跨行合并 PDF 换行断句；若原文只写到"至 YYYY 年"（月日被换行截断），
+    结合签订日期 + 有效期年数推导精确到期日；若原文是"为 X 年……计算"（无明确截止日），
+    也由签订日期 + X 年推导到期日并补成完整句。中文数字与阿拉伯数字都识别，中文日期统一零填充显示。"""
+    # 把每个"句号/分号/换行"作为句边界，挑选同时满足"含 有效期/合同期限"且"含 X 年"的句子。
+    # 这样可以避免把条款标题（如"一 合同有效期"）当成期限句本身。
+    sentences = re.split(r"[。；\n]+", text)
+    year_re = re.compile(r"([一二三四五六七八九十百零\d]+)\s*年")
+    term = ""
+    for s in sentences:
+        s = s.strip()
+        if not s:
+            continue
+        if ("有效期" in s or "合同期限" in s) and year_re.search(s):
+            # 去掉"第X条"之类的标题前缀
+            s = re.sub(r"^第[一二三四五六七八九十百零\d]+条[、..．\s]*", "", s)
+            # 去掉条款序号/标题行
+            s = re.sub(r"^[一二三四五六七八九十百零\d]+[\s、..．]+", "", s)
+            term = re.sub(r"\s+", "", s)
+            break
+    if not term:
+        # 退化路径：只抓"有效期…至…"这一段
+        m2 = re.search(r"(?:合同期限|有效期)[:：]?\s*([^\n]{4,40}?)(?:止|。|$)", text)
+        term = re.sub(r"\s+", "", m2.group(1)) if m2 else ""
+        if not term:
+            return ""
     sign_m = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", signing_date or "")
-    if year_only and years_m and sign_m:
-        y, mo, d = int(sign_m.group(1)), int(sign_m.group(2)), int(sign_m.group(3))
-        try:
-            end = date(y + int(years_m.group(1)), mo, d)
-            term = term[:year_only.start()] + f"至{end.year}年{end.month:02d}月{end.day:02d}日"
-        except ValueError:
-            pass  # 2月29日等边界日期推导失败时保留原文
+    years_m = re.search(r"有效期[为是]?([一二三四五六七八九十百零\d]+)年", term)
+    if years_m and sign_m:
+        years = _cn_to_int(years_m.group(1))
+        if years > 0:
+            y, mo, d = int(sign_m.group(1)), int(sign_m.group(2)), int(sign_m.group(3))
+            try:
+                end = date(y + years, mo, d)
+                # 注意：原文已经以"止"结尾（多见于"至 X 年 X 月 X 日止"），补"日止"会出现"止止"
+                already_ends_stop = term.endswith("止")
+                end_str = f"至{end.year}年{end.month:02d}月{end.day:02d}日止"
+                if "至" in term:
+                    # 原文已有"至 YYYY 年…"但被截断，用推导日期替换/补全（保留原文尾部的"止"）。
+                    # 把"至 YYYY 年"匹配完整（"止"留给替换串），但若原文没有"止"则由替换串补上。
+                    repl = end.year, end.month, end.day
+                    if already_ends_stop:
+                        # 原文已经以"止"结尾：替换串不要再带"止"，否则会出现"止止"
+                        repl_str = f"至{repl[0]}年{repl[1]:02d}月{repl[2]:02d}日"
+                        new_term = re.sub(r"至\d{4}年(?:\d{1,2}月(?:\d{1,2}日)?)?", repl_str, term, count=1)
+                    else:
+                        repl_str = f"至{repl[0]}年{repl[1]:02d}月{repl[2]:02d}日止"
+                        new_term = re.sub(r"至\d{4}年(?:\d{1,2}月(?:\d{1,2}日)?)?止?", repl_str, term, count=1)
+                    if repl_str not in new_term:
+                        # 退化：原文只写到"至 XXXX 年"（月日被换行截断）→ 直接在"至 XXXX 年"后补全
+                        new_term = re.sub(r"至\d{4}年", repl_str, term, count=1)
+                    term = new_term
+                else:
+                    # 原文没写"至…"，以"…起计算/生效"结尾 → 把尾巴换成"…起至…日止"
+                    # 「之」在合同原文里是可选的（「自签订之日」/「自签订之日起」两种都常见）
+                    replaced, n = re.subn(
+                        r"自[^,，。]*?(?:之日?)?(?:起计算|起生效|起算|生效|计算)$",
+                        f"自合同签订之日起{end_str}", term, count=1,
+                    )
+                    if n:
+                        term = replaced
+                    else:
+                        # 没匹配到「自…起…」的尾巴时，直接在句尾追加
+                        term = term.rstrip("。") + f"，{end_str}"
+            except ValueError:
+                pass  # 2月29日等边界日期推导失败时保留原文
     # 中文日期统一零填充（2029年5月3日 → 2029年05月03日）
     term = re.sub(
         r"(\d{4})年(\d{1,2})月(\d{1,2})日",
@@ -3800,6 +3919,61 @@ def _extract_contract_term(text: str, signing_date: str) -> str:
         term,
     )
     return term
+
+
+# 中文数字 0–99，用于「有效期为三年」→ 3 的换算
+_CN_NUM = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+           "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def _cn_to_int(token: str) -> int:
+    """把「三」「十二」「二十」「三十」类数字转成 int；解析失败返回 0。"""
+    if not token:
+        return 0
+    if token.isdigit():
+        return int(token)
+    if token == "十":
+        return 10
+    if "十" in token:
+        a, _, b = token.partition("十")
+        tens = _CN_NUM.get(a, 1) if a else 1
+        ones = _CN_NUM.get(b, 0) if b else 0
+        return tens * 10 + ones
+    if len(token) == 1:
+        return _CN_NUM.get(token, 0)
+    total = 0
+    for ch in token:
+        if ch not in _CN_NUM:
+            return 0
+        total = total * 10 + _CN_NUM[ch]
+    return total
+
+
+def _collapse_spaced_cjk(s: str) -> str:
+    """把 CJK 字/全角标点之间的单空格去掉：'东 莞 市' → '东莞市'，'（ 机 构 ）' → '（机构）'。"""
+    if not s:
+        return s
+    return re.sub(r"(?<=[\u4e00-\u9fff（）])\s+(?=[\u4e00-\u9fff（）])", "", s)
+
+
+def _extract_school_name(full_text: str) -> str:
+    """从合同文本中提取驾培机构（乙方）名称。
+    兼容两种模板：
+      A) 旧版：'驾培机构： 东莞市快捷汽车驾驶员培训有限公司'
+      B) 新版：'甲方（机动车驾驶员培训机构）\\n名称： 东 莞 市 快 捷 ... 有 限 公 司\\n统一社会信用代码：...'
+    B 模板的 PDF 文本常在每两个 CJK 字之间塞一个空格，需要先塌缩。
+    """
+    if not full_text:
+        return ""
+    # 模板 A：旧版「驾培机构：xxx」
+    m = re.search(r"驾培机构[:：]\s*(\S+?)(?:\s|$|统一社会信用代码|地址)", full_text)
+    if m:
+        return _collapse_spaced_cjk(m.group(1).strip())
+    # 模板 B：甲方块「名称：xxx（直到换行或「统一社会信用代码」）」
+    m = re.search(r"名称[:：]\s*([^\n]+?)(?:\s*统一社会信用代码|\s*地址|\s*联系电话|\n)", full_text)
+    if m:
+        return _collapse_spaced_cjk(m.group(1).strip())
+    return ""
 
 
 def _build_contract_profile(ticket: dict, clauses: list) -> dict:
@@ -3820,11 +3994,19 @@ def _build_contract_profile(ticket: dict, clauses: list) -> dict:
         if dm:
             signing = f"{dm.group(1)}年{int(dm.group(2)):02d}月{int(dm.group(3)):02d}日"
 
+    # 乙方（驾培机构）：从合同原文的「名称：」或「驾培机构：」提取；
+    # 提取不到时回退用工单 organization_unit_name（一般是分校/招生点，不是公司全称，但优于破折号）。
+    school = _extract_school_name(full_text)
+    if not school and ticket.get("organization_unit_name"):
+        school = str(ticket["organization_unit_name"]).strip()
+
     return {
         "contract": [
             {"label": "合同编号", "value": ticket.get("contract_code") or _rx(r"合同(?:编号|编码)[:：]?\s*([A-Z0-9]+)")},
-            {"label": "甲方（学驾人）", "value": ticket.get("student_name") or _rx(r"甲\s*方[^名\n]*姓\s*名[:：]\s*(\S+)")},
-            {"label": "乙方（驾培机构）", "value": _rx(r"驾培机构[:：]\s*(\S+)")},
+            # 真实合同里甲方是「培训机构」、乙方是「学员」（与"驾驶培训服务合同"语义一致）；
+            # 但 2022+ 年东莞驾培新模板里反过来：甲方 = 培训机构、乙方 = 学员。同一份合同只要匹配到一种即可。
+            {"label": "甲方（学驾人）", "value": ticket.get("student_name") or _rx(r"乙\s*方[^名\n]*姓\s*名[:：]\s*(\S+)")},
+            {"label": "乙方（驾培机构）", "value": school},
             {"label": "培训车型", "value": _rx(r"培训车型[:：]?\s*([A-Z][12])") or str(ticket.get("license_type") or "")},
             {"label": "合同期限", "value": _extract_contract_term(full_text, signing)},
             {"label": "签订日期", "value": signing},
@@ -4269,8 +4451,7 @@ def api_contract_download_file():
     if not filepath or not os.path.exists(filepath):
         return _err("文件不存在", 404)
 
-    allowed_dirs = [os.path.abspath(ARCHIVE_DIR), os.path.abspath(UPLOAD_DIR), os.path.abspath(REPLY_DIR)]
-    if not is_path_within(filepath, allowed_dirs):
+    if not is_path_within(filepath, _contract_allowed_dirs()):
         return _err("无权访问", 403)
 
     return send_file(filepath, as_attachment=True, download_name=os.path.basename(filepath))
@@ -4285,14 +4466,12 @@ def api_contract_preview():
 
     from config import load_config
     cfg = load_config()
-    ARCHIVE_DIR = os.path.abspath(cfg["paths"]["reply_dir"])
-    UPLOAD_DIR = os.path.abspath(cfg["paths"]["upload_dir"])
     CONTRACT_DIR = os.path.abspath(cfg["paths"]["contract_dir"])
-    PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-    ARCHIVE_FOLDER = os.path.join(PROJECT_ROOT, "案件归档")
 
     abs_path = os.path.realpath(filepath)
-    allowed_dirs = [ARCHIVE_DIR, UPLOAD_DIR, CONTRACT_DIR, ARCHIVE_FOLDER]
+    # 白名单：固定目录 + 项目内案件归档 + 用户自定义 archive_root（原实现误用 reply_dir 且漏自定义路径）
+    allowed_dirs = [*_contract_allowed_dirs(), CONTRACT_DIR,
+                    os.path.join(os.path.dirname(os.path.abspath(__file__)), "案件归档")]
     if not is_path_within(abs_path, allowed_dirs):
         return jsonify({"success": False, "error": "禁止访问"}), 403
 
