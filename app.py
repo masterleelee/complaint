@@ -35,7 +35,7 @@ from database import (
     list_tickets, update_ticket, delete_ticket, get_ticket_statistics, get_processing_duration_stats,
     save_complaint, get_complaint_by_idcard,
     list_complaints, get_statistics,
-    add_log, find_same_day_ticket,
+    add_log, find_same_day_ticket, find_open_ticket_by_idcard,
     save_template, list_templates, get_default_template, delete_template,
     get_distinct_school_short,
     migrate_communications_to_notes,
@@ -1519,13 +1519,23 @@ def api_organization_units():
 @app.route("/api/tickets/same-day-check", methods=["POST"])
 @login_required
 def api_tickets_same_day_check():
-    """受理预检：同日同身份证是否已有工单（与 save_ticket 去重口径一致）。"""
+    """受理预检：该身份证号下是否仍有未结案工单。
+
+    业务语义已扩展为「跨日并入」：只要该学员尚有 handle_status≠已完结
+    且未撤诉、未归档的工单，就视为同一件事的延续，提示操作员并入。
+    """
     try:
         data = request.get_json(force=True, silent=True) or {}
-        ticket = find_same_day_ticket(
-            str(data.get("id_card") or ""),
-            str(data.get("complaint_date") or ""),
-        )
+        id_card = str(data.get("id_card") or "").strip()
+        # 兼容同日语义：若前端仍传 complaint_date，且只查到同日工单，优先用同日
+        complaint_date = str(data.get("complaint_date") or "").strip()[:10]
+        same_day = None
+        if id_card and complaint_date:
+            same_day = find_same_day_ticket(id_card, complaint_date)
+        if same_day:
+            ticket = same_day
+        else:
+            ticket = find_open_ticket_by_idcard(id_card)
         if not ticket:
             return _ok(None)
         return _ok({
@@ -1537,6 +1547,103 @@ def api_tickets_same_day_check():
             "created_at": ticket.get("created_at", ""),
         })
     except Exception as e:
+        return _err(str(e))
+
+
+@app.route("/api/tickets/merge-existing", methods=["POST"])
+@login_required
+def api_tickets_merge_existing():
+    """未结案并入 · 复用既有工单的查询档案（不重查三系统）。
+
+    「确认并入」专用路径：既有工单内已存有上一次三系统查询的完整快照
+    （query_result），跨日 / 跨投诉日期都可复用 —— 学员档案（姓名、合同、
+    报名点）不会因日期变化，直接复用快照 + 写入本次投诉内容完成并入，
+    省去 1~2 分钟的重复爬取。
+    校验口径：同证件号 + 工单未结案（handle_status≠已完结，未撤诉，未归档），
+    不一致或快照缺失时拒绝并入，由前端回退到原有全量查询路径。
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        ticket_id = str(data.get("ticket_id") or "").strip()
+        id_card = str(data.get("id_card") or "").strip()
+        if not ticket_id:
+            return _err("缺少并入工单ID", 400)
+        existing = get_ticket(ticket_id)
+        if not existing:
+            return _err("并入工单不存在", 404)
+        complaint_date = (str(data.get("complaint_date") or "").strip() or "")[:10]
+        # 证件号校验：防止把任意工单串写进别的学员档案
+        if not id_card or (existing.get("id_card") or "") != id_card:
+            return _err("证件号与既有工单不一致，无法并入", 400)
+        # 未结案校验：已完结/已撤诉/已归档的工单视为历史档案，禁止再并入
+        if (existing.get("handle_status") or "") == "已完结":
+            return _err("既有工单已完结，无法并入，请新建工单", 400)
+        if (existing.get("withdraw_status") or "") == "已撤诉":
+            return _err("既有工单已撤诉，无法并入，请新建工单", 400)
+        if (existing.get("archive_status") or "") == "已归档":
+            return _err("既有工单已归档，无法并入，请新建工单", 400)
+        snapshot = existing.get("query_result")
+        if not isinstance(snapshot, dict) or not str(snapshot.get("name") or "").strip():
+            return _err("既有工单缺少有效查询档案，请重新走三系统查询", 400)
+
+        # 本次投诉内容 / 摘要 / 诉求
+        desc = str(data.get("complaint_desc") or "").strip()
+        summary = str(data.get("complaint_summary") or "").strip()
+        demands = str(data.get("complaint_demands") or "").strip()
+        if desc and (not summary or not demands):
+            try:
+                out = ai_summarize_complaint(desc)
+                summary = summary or str(out.get("complaint_summary") or "").strip()
+                demands = demands or str(out.get("complaint_demands") or "").strip()
+            except Exception:
+                pass  # 摘要生成失败不阻塞并入，留空由工作台补生成
+
+        # 处理人：与 _persist_query_result 同口径
+        handler_user_id = data.get("handler_user_id")
+        handler_name = (data.get("handler_name") or "").strip()
+        try:
+            from flask import g as _g
+            current_user = getattr(_g, "current_user", None)
+        except RuntimeError:
+            current_user = None
+        if handler_user_id and not handler_name:
+            u = user_service.get_user_by_id(int(handler_user_id))
+            if u:
+                handler_name = u["real_name"]
+        if not handler_user_id and current_user:
+            handler_user_id = current_user["id"]
+            if not handler_name:
+                handler_name = current_user.get("real_name", "")
+
+        ticket_data = {
+            "id": ticket_id,
+            # 跨日并入：保留原投诉日期（时间线是「8/22 收到投诉，处理到 8/29」），
+            # 仅在原工单缺日期时才用本次日期兜底
+            "complaint_date": existing.get("complaint_date") or complaint_date,
+            "complaint_type": str(data.get("complaint_type") or "").strip() or existing.get("complaint_type", ""),
+            "source_channel": str(data.get("source_channel") or "").strip() or existing.get("source_channel", ""),
+            "handler_name": handler_name,
+            "handler_user_id": handler_user_id,
+            "complaint_content": desc or existing.get("complaint_content", ""),
+            "complaint_summary": summary or existing.get("complaint_summary", ""),
+            "complaint_demands": demands or existing.get("complaint_demands", ""),
+            "attachments": data.get("attachments") or [],
+            "query_result": snapshot,  # 原样保留档案，不重查三系统
+        }
+        save_ticket(ticket_data)
+        add_log(
+            "query",
+            f"同日并入复用档案(未重查三系统): {existing.get('student_name') or snapshot.get('name')} ({id_card})",
+            ticket_id=ticket_id,
+        )
+        result = dict(snapshot)
+        result["merged_into_existing"] = True
+        result["ticket_id"] = ticket_id
+        result["sources"] = result.get("sources") or {}
+        result["query_durations_ms"] = result.get("query_durations_ms") or {}
+        return _ok(result)
+    except Exception as e:
+        traceback.print_exc()
         return _err(str(e))
 
 
@@ -1592,7 +1699,9 @@ def api_tickets_manual_create():
         complaint_date = str(data.get("complaint_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
 
         # 同日同人预检（与 save_ticket 去重同口径）：命中即并入既有工单并回传事实
-        existing = find_same_day_ticket(id_card, complaint_date)
+        # 跨日扩展：同日优先，找不到再退到「未结案工单」
+        same_day = find_same_day_ticket(id_card, complaint_date)
+        existing = same_day or find_open_ticket_by_idcard(id_card)
 
         ticket_data = {
             "student_name": student_name,
@@ -4489,6 +4598,7 @@ def api_org_vehicle_counts_save():
             "unit_name": item.get("unit_name", ""),
             "unit_type": item.get("unit_type", ""),
             "vehicle_count": count,
+            "is_active": 1 if item.get("is_active", True) else 0,
         })
     saved = save_org_vehicle_counts(validated)
     return _ok({"saved": saved})

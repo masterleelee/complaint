@@ -27,7 +27,7 @@ import app as app_module  # noqa: E402
 from docx import Document  # noqa: E402
 
 VALID_ID = "110101199003070011"
-UNIT_ID = "branch-tangxia-lincun"  # 塘厦林村分校（青C）
+UNIT_ID = "branch-tangxia-lincun"  # 塘厦青溪分校（青C）
 
 
 @pytest.fixture()
@@ -111,7 +111,7 @@ def test_create_success_and_normalization(client):
     ticket = database.get_ticket(body["ticket_id"])
     assert ticket["intake_type"] == "三系统无信息"
     assert ticket["school_short"] == "青C"
-    assert ticket["organization_unit_name"] == "塘厦林村分校"
+    assert ticket["organization_unit_name"] == "塘厦青溪分校"
     assert ticket["organization_unit_type"] == "分校"
     assert ticket["organization_unit_code"] == "青C"
     assert ticket["registration_date"] == "2026-07-15"
@@ -219,11 +219,11 @@ def test_statistics_counts_manual(fresh_db, client):
 def test_registration_form_school_fallback():
     from services.visit_service import build_registration_form_data
     data = build_registration_form_data({
-        "organization_unit_name": "塘厦林村分校",
+        "organization_unit_name": "塘厦青溪分校",
         "organization_unit_type": "分校",
         "complaint_type": "A",
     })
-    assert data["fields"][0][5] == "塘厦林村分校"
+    assert data["fields"][0][5] == "塘厦青溪分校"
 
 
 def test_reply_docx_school_fallback(tmp_path):
@@ -231,7 +231,7 @@ def test_reply_docx_school_fallback(tmp_path):
     ticket = {
         "student_name": "陈志明", "id_card": VALID_ID,
         "complaint_date": "2026-08-27", "registration_date": "2026-07-15",
-        "school_name": "", "organization_unit_name": "塘厦林村分校",
+        "school_name": "", "organization_unit_name": "塘厦青溪分校",
         "organization_unit_type": "分校", "license_type": "C1",
         "actual_paid": 3800,
     }
@@ -239,7 +239,7 @@ def test_reply_docx_school_fallback(tmp_path):
     res = generate_reply_docx(ticket, [], str(out))
     assert res["success"] is True
     text = "\n".join(p.text for p in Document(str(out)).paragraphs)
-    assert "塘厦林村" in text
+    assert "塘厦青溪" in text
 
 
 # ── 8) 旧库迁移：intake_type 列存在 ──

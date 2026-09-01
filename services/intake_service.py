@@ -72,6 +72,10 @@ def parse_complaint_text(text: str) -> dict:
         "complaint_summary": "",
     }
 
+    # 即使已命中证件号/手机号，也尝试用轻量正则预提姓名（如"蔡振华,本人..."）
+    # 这样步骤 2a 的姓名一致性校验才能用上；AI 兜底仅在正则失败时启用
+    result["student_name"] = _extract_student_name(cleaned)
+
     # 正则已命中证件号/手机号 → 足以精确查询三系统，跳过 AI 调用（毫秒级返回）
     if result["id_card"] or result["phone"]:
         return result
@@ -82,7 +86,9 @@ def parse_complaint_text(text: str) -> dict:
         result["ai_error"] = ai["error"]
         return result
 
-    result["student_name"] = str(ai.get("student_name") or "").strip()
+    # AI 兜底姓名（仅在正则未提到时采纳）
+    if not result["student_name"]:
+        result["student_name"] = str(ai.get("student_name") or "").strip()
     # AI 兜底证件号/手机号必须通过本地校验才采纳，防止幻觉
     if not result["id_card"]:
         cand = re.sub(r"[\s\-._]", "", str(ai.get("id_card") or "")).upper()
@@ -93,6 +99,21 @@ def parse_complaint_text(text: str) -> dict:
         if re.fullmatch(r"1[3-9]\d{9}", cand):
             result["phone"] = cand
     return result
+
+
+def _extract_student_name(text: str) -> str:
+    """轻量姓名预提：投诉文本通常以「姓名,本人...」开头。
+    仅在文本前 80 字符内匹配 2~4 字中文姓名 + 半角逗号/全角逗号，避免误吞正文。
+    """
+    head = text[:80]
+    # 排除常见非姓名开头词（避免把"投诉人"、"您好"、"电话"等误判）
+    blacklist = {"投诉人", "您好", "电话", "本人", "学员", "反映人", "姓名"}
+    m = re.search(r"^([\u4e00-\u9fff]{2,4})[,，]", head)
+    if m:
+        name = m.group(1).strip()
+        if name not in blacklist and not re.search(r"(学费|驾校|科目|合同)", name):
+            return name
+    return ""
 
 
 def _llm_chat(prompt: str, max_tokens: int) -> dict:
