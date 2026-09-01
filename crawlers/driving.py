@@ -567,7 +567,9 @@ class DrivingCrawler(BaseCrawler):
             os.makedirs(save_dir, exist_ok=True)
             name = student_name or student_info.name or "未知"
             date_str = datetime.now().strftime("%Y%m%d")
-            filename = f"{date_str}+{name}+{id_card}+合同.pdf"
+            # 统一归档命名规范：{姓名}_合同_{日期}.pdf（与 archive_service.contract_target_name 对齐）
+            safe_name = re.sub(r'[\\/:*?"<>|]+', "_", str(name)).strip() or "未知"
+            filename = f"{safe_name}_合同_{date_str}.pdf"
             filepath = os.path.join(save_dir, filename)
 
             # 避免覆盖

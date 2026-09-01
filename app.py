@@ -640,6 +640,76 @@ def validate_id_card(id_card: str) -> tuple[bool, str]:
     return False, "证件号格式不正确"
 
 
+# ── 三系统查询结果判定 ──
+_DEFINITE_NO_MATCH = {"not_found", "no_contract"}
+
+_SYS_LABELS = {
+    "internal": "内部系统",
+    "third": "第三系统",
+    "driving": "东莞驾培",
+}
+
+# 允许出现在 sources 里的全部状态值（含前端进度条会用到的中间态）
+_ALLOWED_SOURCE_STATUS = {
+    "pending", "running", "success",
+    "not_found", "no_contract", "not_queried",
+    "error", "timeout",
+    "ambiguous", "candidate",
+}
+
+
+def classify_match_result(result: dict) -> dict:
+    """空壳拦截判定。按 sources 状态区分「明确查无」与「无法判定」。
+
+    返回字段：
+      outcome: "no_match" | "undetermined" | "ambiguous"
+      manual_intake_eligible: bool
+      sources: dict
+      failed_systems: list[str]   # error / timeout
+      unqueried_systems: list[str]  # not_queried / pending / running
+      system_errors: dict[str, str]
+      message: str
+    """
+    sources = dict(result.get("sources") or {})
+    failed = {k: v for k, v in sources.items() if v in ("error", "timeout")}
+    unqueried = {k: v for k, v in sources.items() if v in ("not_queried", "pending", "running")}
+
+    if result.get("candidates"):
+        outcome = "ambiguous"
+    elif not sources:
+        outcome = "undetermined"
+    elif failed:
+        outcome = "undetermined"
+    elif unqueried:
+        outcome = "undetermined"
+    else:
+        outcome = "no_match"
+
+    return {
+        "outcome": outcome,
+        "manual_intake_eligible": outcome == "no_match",
+        "sources": sources,
+        "failed_systems": sorted(failed),
+        "unqueried_systems": sorted(unqueried),
+        "system_errors": dict(result.get("system_errors") or {}),
+        "message": _outcome_message(outcome, failed, unqueried),
+    }
+
+
+def _outcome_message(outcome: str, failed: dict, unqueried: dict) -> str:
+    if outcome == "no_match":
+        return "未匹配到学员档案：三系统均查无该学员"
+    if outcome == "ambiguous":
+        return "该手机号匹配到多名学员，请人工选择"
+    if failed:
+        names = "、".join(_SYS_LABELS.get(s, s) for s in sorted(failed))
+        return f"未能完成判定：{names} 查询失败或超时，暂不能确认“查无此人”，请重新查询"
+    if unqueried:
+        names = "、".join(_SYS_LABELS.get(s, s) for s in sorted(unqueried))
+        return f"未能确定学员身份：{names} 未查询，请改用身份证号或补充学员姓名后重试"
+    return "未能确定学员身份，请核对查询条件后重试"
+
+
 def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) -> dict:
     school_name = result.get("school_name", "")
     school_short = result.get("school_short", "")
@@ -690,16 +760,17 @@ def _persist_query_result(data: dict, result: dict, id_card: str, phone: str) ->
     # 受理端选择「另建新工单」(force_new=true) 时跳过同日同人去重；
     # 否则按与 save_ticket 相同口径做预检：命中即显式并入既有工单，
     # 并向受理端回传 merged_into_existing 事实，避免静默更新对用户不可见
+    # 跨日扩展：同日优先，找不到再退到「未结案工单」（投诉处理是长期过程）
     force_new = bool(data.get("force_new"))
     if data.get("ticket_id"):
         ticket_data["id"] = data["ticket_id"]
     elif not force_new:
-        same_day = find_same_day_ticket(
-            str(ticket_data.get("id_card") or ""),
-            str(ticket_data.get("complaint_date") or ""),
-        )
-        if same_day:
-            ticket_data["id"] = same_day["id"]
+        id_card = str(ticket_data.get("id_card") or "").strip()
+        complaint_date = str(ticket_data.get("complaint_date") or "").strip()[:10]
+        same_day = find_same_day_ticket(id_card, complaint_date) if complaint_date else None
+        existing = same_day or find_open_ticket_by_idcard(id_card)
+        if existing:
+            ticket_data["id"] = existing["id"]
             result["merged_into_existing"] = True
     saved_ticket_id = save_ticket(ticket_data, force_new=force_new)
     result["ticket_id"] = saved_ticket_id
@@ -781,6 +852,10 @@ def query_all_systems_by_phone(phone: str, expected_name: str = "", timeout: flo
             }
 
         def _empty_result(internal_status: str, err_msg: str) -> dict:
+            # phone_not_found：手机号这条「身份解析」路径确实查过了、确实没查到。
+            # 与 outcome 解耦：outcome 仍因 third/driving 为 not_queried 而判 undetermined
+            # （语义正确——那两个系统确实没查过，不能说查无），但前端需要独立的降级信号，
+            # 否则「手机号查无 + 有姓名」的姓名降级分支永远进不去（见 docs/plans/...）。
             return {
                 "name": "", "id_card": "", "phone": phone,
                 "license_type": "", "registration_date": "",
@@ -788,7 +863,8 @@ def query_all_systems_by_phone(phone: str, expected_name: str = "", timeout: flo
                 "student_status": "", "exam_stage": "",
                 "exam_counts": {}, "training_hours": {},
                 "training_details": [], "fees": [], "timeline_display": [],
-                "sources": {"internal": internal_status, "third": "not_found", "driving": "not_found"},
+                "sources": {"internal": internal_status, "third": "not_queried", "driving": "not_queried"},
+                "phone_not_found": bool(phone),
                 "error": err_msg,
             }
 
@@ -839,7 +915,7 @@ def query_all_systems_by_phone(phone: str, expected_name: str = "", timeout: flo
             if merged and merged.get("name"):
                 return _name_mismatch_marker(merged, cand.get("name"))
             # 唯一候选但三系统查无（超时/未录），仍把候选作为单条返回
-            return _single_candidate_result(cand, phone)
+            return _single_candidate_result(cand, phone, merged)
 
         # 多个候选 → 列表给用户选
         return {
@@ -849,7 +925,7 @@ def query_all_systems_by_phone(phone: str, expected_name: str = "", timeout: flo
             "student_status": "", "exam_stage": "",
             "exam_counts": {}, "training_hours": {},
             "training_details": [], "fees": [], "timeline_display": [],
-            "sources": {"internal": "ambiguous", "third": "not_found", "driving": "not_found"},
+            "sources": {"internal": "ambiguous", "third": "not_queried", "driving": "not_queried"},
             "candidates": [
                 {
                     "id_card": c["id_card"],
@@ -895,8 +971,18 @@ def _query_by_id_cards_with_fallback(crawler, id_card: str, started_at: float, t
     return merged
 
 
-def _single_candidate_result(cand: dict, phone: str) -> dict:
-    """步骤 2b 唯一候选但三系统查无：返回候选基本信息，不报错。"""
+def _single_candidate_result(cand: dict, phone: str, merged: dict | None = None) -> dict:
+    """步骤 2b 唯一候选但三系统查无：返回候选基本信息，不报错。
+
+    sources 优先沿用三系统的真实状态（可能是 not_found / timeout / error）；
+    上游未提供时标记为 not_queried，避免把「没查」或「查询失败」误记成「明确查无」。
+    """
+    real_sources = (merged or {}).get("sources") or {}
+    sources = {
+        "internal": "candidate",
+        "third": real_sources.get("third") or "not_queried",
+        "driving": real_sources.get("driving") or "not_queried",
+    }
     return {
         "name": cand.get("name", ""),
         "id_card": cand.get("id_card", ""),
@@ -906,7 +992,7 @@ def _single_candidate_result(cand: dict, phone: str) -> dict:
         "student_status": "", "exam_stage": "",
         "exam_counts": {}, "training_hours": {},
         "training_details": [], "fees": [], "timeline_display": [],
-        "sources": {"internal": "candidate", "third": "not_found", "driving": "not_found"},
+        "sources": sources,
     }
 
 
@@ -963,18 +1049,20 @@ def _query_job_worker(job_id: str, data: dict):
         # 为空则此分支永不生效，会照常落库空工单且前端收不到 no_match 标记。
         # 同时附 no_match/manual_intake_eligible：三系统均「明确查无」（not_found/no_contract）
         # 时前端展示「转人工建案」入口；存在超时/异常时不放行，避免把已录入学员误判为漏录。
-        sources = result.get("sources", {}) or {}
-        manual_eligible = bool(sources) and all(
-            s in {"not_found", "no_contract"} for s in sources.values()
-        )
         if not str(result.get("name") or "").strip():
+            verdict = classify_match_result(result)
             with QUERY_JOBS_LOCK:
                 QUERY_JOBS[job_id].update({
                     "status": "failed",
-                    "error": "未匹配到学员档案，请核对手机号或改用身份证号查询",
+                    "error": verdict["message"],
                     "no_match": True,
-                    "manual_intake_eligible": manual_eligible,
-                    "sources": sources,
+                    "manual_intake_eligible": verdict["manual_intake_eligible"],
+                    "match_outcome": verdict["outcome"],
+                    "failed_systems": verdict["failed_systems"],
+                    "unqueried_systems": verdict["unqueried_systems"],
+                    "system_errors": verdict["system_errors"],
+                    "sources": verdict["sources"],
+                    "phone_not_found": bool(result.get("phone_not_found")),
                     "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 })
             return
@@ -1076,6 +1164,209 @@ def api_query_status(job_id):
     return jsonify({"success": True, **public_job})
 
 
+# ═══════════════════════════════════════════════════════════════
+#  API: 人工回填证件号后重查三系统（批次 2 · D5 / D6 / D7）
+# ═══════════════════════════════════════════════════════════════
+
+# 重查回写白名单：只补「身份 / 档案」类字段，且只填空不覆盖人工内容。
+# 学时不在此列——按业务口径（index.html:1457）合同与收费来自驾培、实操学时取审核有效
+# 学时，第三系统的培训阶段记录不作为投诉系统的档案来源。
+_REQUERY_PATCH_FIELDS = {
+    "id_card": "id_card",
+    "name": "student_name",
+    "phone": "phone",
+    "license_type": "license_type",
+    "school_name": "school_name",
+    "school_short": "school_short",
+    "registration_date": "registration_date",
+    "exam_stage": "exam_stage",
+    "student_status": "student_status",
+}
+
+# 重查绝不触碰的字段（人工录入内容 + 流程状态）。落库前做硬断言，
+# 一旦白名单被误改导致越界，宁可让任务失败也不能写坏工单。
+# 重查白名单字段的中文业务名——回传给前端的「未覆盖字段」提示要用业务名，
+# 不能把 student_name 这类数据库列名直接显示给操作员。
+_REQUERY_FIELD_LABELS = {
+    "id_card": "身份证号",
+    "student_name": "学员姓名",
+    "phone": "手机号",
+    "license_type": "车型",
+    "school_name": "报名点",
+    "school_short": "网点简称",
+    "registration_date": "报名日期",
+    "exam_stage": "当前进度",
+    "student_status": "学员状态",
+}
+
+_REQUERY_PROTECTED_FIELDS = {
+    "complaint_content", "complaint_demands", "complaint_summary",
+    "attachments", "handling_notes", "branch_cooperation",
+    "branch_cooperation_note", "fee_plan_status", "fee_plan_version",
+    "fee_plan_history", "fee_plan_snapshot", "fee_confirm_note",
+    "fee_confirmed_by", "fee_confirmed_at", "archive_status",
+    "handle_status", "withdraw_status", "withdraw_reason",
+    "reply_path", "registration_form_path", "archived_dir",
+    "training_hours",
+}
+
+
+def _build_requery_patch(ticket: dict, result: dict, id_card: str) -> tuple[dict, list[str]]:
+    """按「只补空字段」策略构造重查回写补丁。
+
+    返回 (patch, skipped)：skipped 是因库内已有值而未覆盖的字段，回传给前端做差异提示。
+    id_card 例外——它是操作员的显式输入，即便库内已有值也照写（属于人工纠错）。
+    """
+    patch: dict = {"id_card": id_card, "query_result": result}
+    skipped: list[str] = []
+
+    for src_key, col in _REQUERY_PATCH_FIELDS.items():
+        if col == "id_card":
+            continue
+        val = result.get(src_key)
+        if isinstance(val, str):
+            val = val.strip()
+        if not val:
+            continue
+        if str(ticket.get(col) or "").strip():
+            skipped.append(_REQUERY_FIELD_LABELS.get(col, col))
+            continue
+        patch[col] = val
+
+    return patch, skipped
+
+
+def _requery_job_worker(job_id: str, ticket_id: str, id_card: str):
+    """回填证件号后的重查任务。与受理期 _query_job_worker 的三点本质差异：
+
+    1. 不做空壳拦截：查无也照常落库 query_result，如实记录三系统状态
+       （受理期查无直接 return，工单上会留下「从未查过」的假象）。
+    2. 绕过 _persist_query_result：那个函数恒写 complaint_content /
+       complaint_demands / complaint_summary / attachments，不传即清空，
+       会把人工录入的投诉内容抹掉（缺陷 D6）。这里改用白名单 patch。
+    3. 只补空字段，绝不覆盖人工填写的内容。
+    """
+    with QUERY_JOBS_LOCK:
+        QUERY_JOBS[job_id].update({
+            "status": "running",
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    try:
+        result = query_all_systems_sync(id_card, timeout=60)
+        sources = dict(result.get("sources") or {})
+
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            with QUERY_JOBS_LOCK:
+                QUERY_JOBS[job_id].update({
+                    "status": "failed",
+                    "error": "工单不存在，可能已被删除",
+                    "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+            return
+
+        patch, skipped = _build_requery_patch(ticket, result, id_card)
+        violation = _REQUERY_PROTECTED_FIELDS.intersection(patch)
+        if violation:
+            raise RuntimeError(
+                f"重查回写越界，拒绝落库：{sorted(violation)}"
+            )
+
+        # 重查改变了档案依据，已生成的回复函内容可能失效 → 按已确认决策自动置过期标记
+        if ticket.get("reply_path"):
+            patch["reply_outdated"] = 1
+
+        update_ticket(ticket_id, patch)
+        add_log(
+            "requery",
+            f"回填证件号重查三系统: {result.get('name') or '未命中'} ({id_card})",
+            ticket_id=ticket_id,
+        )
+
+        with QUERY_JOBS_LOCK:
+            QUERY_JOBS[job_id].update({
+                "status": "done",
+                "result": {
+                    "ticket_id": ticket_id,
+                    "id_card": id_card,
+                    "name": result.get("name", ""),
+                    "sources": sources,
+                    "skipped_fields": skipped,
+                    "reply_outdated": bool(ticket.get("reply_path")),
+                },
+                "sources": sources,
+                "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+    except Exception as e:
+        traceback.print_exc()
+        with QUERY_JOBS_LOCK:
+            QUERY_JOBS[job_id].update({
+                "status": "failed",
+                "error": str(e),
+                "finished_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+
+
+@app.route("/api/tickets/<ticket_id>/requery", methods=["POST"])
+@login_required
+def api_ticket_requery(ticket_id):
+    """人工回填证件号后重查三系统（异步，轮询 /api/query/status/<job_id>）。
+
+    只接受 {id_card}：姓名/手机号查不到时，由人工从第三系统等途径确认证件号后回填。
+    已归档工单拒绝重查，避免破坏已定稿的档案。
+    """
+    try:
+        data = request.get_json(force=True, silent=True)
+        if data is None:
+            return _err("请求体不是合法JSON", 400)
+
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+        if ticket.get("archive_status") == "已归档":
+            return _err("已归档工单不允许重查，请先通过费用解锁（fee-unlock）恢复处理", 400)
+
+        id_card = str(data.get("id_card") or "").strip()
+        if not id_card:
+            return _err("请填写证件号")
+        ok, err = validate_id_card(id_card)
+        if not ok:
+            return _err(err)
+
+        _prune_query_jobs()
+        job_id = uuid.uuid4().hex
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with QUERY_JOBS_LOCK:
+            QUERY_JOBS[job_id] = {
+                "id": job_id,
+                "status": "queued",
+                "created_at": now,
+                "result": None,
+                "sources": {
+                    "internal": "pending",
+                    "third": "pending",
+                    "driving": "pending",
+                },
+                "query_durations_ms": {},
+                "error": "",
+                "requery_ticket_id": ticket_id,
+            }
+        future = QUERY_EXECUTOR.submit(_requery_job_worker, job_id, ticket_id, id_card)
+        with QUERY_JOBS_LOCK:
+            QUERY_JOBS[job_id]["future"] = future
+        return jsonify({"success": True, "job_id": job_id, "status": "queued"})
+    except Exception as e:
+        traceback.print_exc()
+        return _err(f"启动重查失败: {str(e)}", 500)
+
+
+# 姓名检索命中的候选只带「身份证 + 姓名」，手机号/车型/报名日期/学员状态在第三系统
+# 另一个模块「学员申请登记」（fetch_registration_profile）。候选不超过这个条数时顺手补齐，
+# 免得候选页一整行空白。设上限是因为该系统不支持分页、单次约 1 秒，候选多了不值得拖慢检索。
+THIRD_PROFILE_ENRICH_LIMIT = 3
+
+
 @app.route("/api/students/search", methods=["POST"])
 @login_required
 def api_students_search():
@@ -1112,11 +1403,77 @@ def api_students_search():
                 "student_status": info.student_status,
                 "source": "内部系统",
             })
+
+        # 新增可选能力：内部系统 0 命中时，回落到第三系统按姓名查候选。
+        # 仅当 include_third=true 且内部系统确实没查到时才发请求——
+        # ① 基本信息以内部系统为准（index.html:1457 官方口径），内部命中就不需要第三方；
+        # ② 第三系统按姓名全名精确匹配，正常同名不多；且翻页取全（search_by_name 内
+        #     currentpage 翻页），没必要在正常路径上增加它的负载。
+        # 不放进默认行为，保证既有调用方（不传该参数）的响应逐字不变。
+        third_info = {"queried": False, "found": 0, "truncated": False, "enriched": 0, "error": ""}
+        if bool(data.get("include_third")) and not students:
+            third_info["queried"] = True
+            third = query_engine._crawlers.get(SystemType.THIRD)
+            if third is None:
+                third_info["error"] = "第三系统爬虫未初始化"
+            else:
+                try:
+                    t1 = time.monotonic()
+                    res = third.search_by_name(name)
+                    third_rows = []
+                    for cand in res.candidates:
+                        row = {
+                            "id_card": cand.id_card,
+                            "student_name": cand.name,
+                            "phone": "",
+                            "school_short": "",
+                            "school_name": "",
+                            "license_type": "",
+                            "registration_date": "",
+                            "exam_stage": "",
+                            "student_status": "",
+                            "source": "第三系统",
+                        }
+                        students.append(row)
+                        third_rows.append(row)
+
+                    # 候选不超过上限时，按身份证补查「学员申请登记」模块填回档案字段。
+                    # school_short 不取该模块列表的 school_name（那是「」驾校简称），
+                    # 而是取学员详情页的「分点号」（branch_code）——与投诉系统网点代号
+                    # （南/麻/栅D）同口径，正是候选页「报名点」列的数据来源。
+                    # 分点名称是「…招生点」全称，与网点命名口径不一致，不填 school_name。
+                    enriched = 0
+                    if 0 < len(res.candidates) <= THIRD_PROFILE_ENRICH_LIMIT:
+                        for cand, row in zip(res.candidates, third_rows):
+                            try:
+                                prof = third.fetch_registration_profile(cand.id_card)
+                            except Exception as pe:
+                                prof = None
+                                system_logger.warning(
+                                    "[Search] third 档案补查失败 %s: %s", cand.id_card, pe
+                                )
+                            if prof is None:
+                                continue
+                            row["phone"] = prof.phone or ""
+                            row["license_type"] = prof.license_type or ""
+                            row["registration_date"] = prof.registration_date or ""
+                            row["student_status"] = prof.student_status or ""
+                            row["school_short"] = prof.branch_code or ""
+                            enriched += 1
+
+                    elapsed += int((time.monotonic() - t1) * 1000)
+                    third_info["found"] = len(res.candidates)
+                    third_info["truncated"] = res.truncated
+                    third_info["enriched"] = enriched
+                except Exception as e:  # 第三系统异常不阻断内部系统结果
+                    third_info["error"] = str(e)
+
         return _ok({
             "students": students,
             "total": result["total"],
             "org_fallback": result["org_fallback"],
             "elapsed_ms": elapsed,
+            "third": third_info,
         })
     except Exception as e:
         traceback.print_exc()

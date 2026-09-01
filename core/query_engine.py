@@ -29,6 +29,7 @@ class QueryStatus(Enum):
     SUCCESS = "success"
     NOT_FOUND = "not_found"
     NO_CONTRACT = "no_contract"
+    NOT_QUERIED = "not_queried"  # 本轮未查询（无证件号 / 依赖前置未命中），不等于查无
     ERROR = "error"
     TIMEOUT = "timeout"
 
@@ -58,6 +59,14 @@ class MergedStudentInfo:
     # 驾校信息
     school_name: str = ""
     school_short: str = ""
+    # 第三系统「学员申请登记」里的驾校主体名（如「」）。
+    # 只作展示用，绝不可并入 school_name：school_name 在本系统语义是**网点/分校名**，
+    # 回复函模板写死「在{school_name}{unit_type}网点报名」（reply_docx.py:84），
+    # 填进去会生成「在网点报名」病句，登记表「经营单位」同理。
+    third_school_name: str = ""
+    # 第三系统学员详情页的「分点名称」（如「…东城同沙招生点」）。
+    # 内部系统查无时，前端「驾校」栏优先展示它——比「」主体名更有辨识度。
+    third_branch_name: str = ""
     
     # 学习状态
     student_status: str = ""
@@ -227,15 +236,21 @@ class QueryEngine:
             self._query_internal,
             id_card,
         )
+        # 第三系统档案补查（报名时间/手机号）：等内部结果后决定是否发起。
+        # 一次查询两处共用——third 结果合并补位 + driving 跳过闸门补判，
+        # 避免同一档案页被查两次。
+        profile_task = asyncio.ensure_future(self._profile_task(id_card, internal_task))
         tasks = {
             SystemType.INTERNAL: internal_task,
-            SystemType.THIRD: loop.run_in_executor(
-                executors.get(SystemType.THIRD, self._executor),
-                self._query_third,
-                id_card,
+            # 第三系统：阶段学时与内部并行；档案补查结果由共用任务提供
+            SystemType.THIRD: asyncio.ensure_future(
+                self._third_task(id_card, internal_task, profile_task)
             ),
-            # 东莞驾培等待内部结果后再决定是否查询（2024-03-15 前报名无需登录）
-            SystemType.DRIVING: asyncio.ensure_future(self._driving_task(id_card, internal_task)),
+            # 东莞驾培等待内部结果后再决定是否查询（2024-03-15 前报名无需登录）；
+            # 内部查无时再等第三档案报名日期补判（2017 老学员缺口）
+            SystemType.DRIVING: asyncio.ensure_future(
+                self._driving_task(id_card, internal_task, profile_task)
+            ),
         }
         
         results = {}
@@ -417,15 +432,96 @@ class QueryEngine:
             )
 
     @staticmethod
-    def _should_skip_driving(internal_result: Optional[QueryResult]) -> bool:
-        """2024-03-15 前报名（内部系统提供报名日期）的学员，东莞驾培无电子合同，跳过查询"""
-        if not internal_result or internal_result.status != QueryStatus.SUCCESS:
-            return False
+    def _should_skip_driving(
+        internal_result: Optional[QueryResult] = None,
+        third_profile: Any = None,
+    ) -> bool:
+        """2024-03-15 前报名（报名日期可判定）的学员，东莞驾培无电子合同，跳过查询。
+
+        报名日期来源优先级：内部系统 > 第三系统档案补查。
+        内部查无的 2017 老学员（如测试学员甲）内部给不出日期，靠第三档案补判，
+        避免对其白查一轮驾培（约 10s+）。两者都给不出日期时不跳过（维持原行为）。
+        """
         reg_date = getattr(getattr(internal_result, "data", None), "registration_date", "")
         parsed = _parse_date_str(reg_date)
         if parsed is None:
+            parsed = _parse_date_str(getattr(third_profile, "registration_date", "") or "")
+        if parsed is None:
             return False
         return parsed < DRIVING_ECONTRACT_START_DATE
+
+    @staticmethod
+    def _need_third_profile(internal_result: Optional[QueryResult]) -> bool:
+        """内部系统已给出完整基本信息时，不必再查第三系统档案页（避免无谓请求）。
+
+        档案页能补的是报名时间 / 手机号 / 学员状态——内部这三项都齐了就没必要补。
+        """
+        if not internal_result or internal_result.status != QueryStatus.SUCCESS:
+            return True
+        data = getattr(internal_result, "data", None)
+        if data is None:
+            return True
+        return not all(
+            str(getattr(data, f, "") or "").strip()
+            for f in ("registration_date", "phone", "student_status")
+        )
+
+    def _fetch_third_profile(self, id_card: str):
+        """补查第三系统学员档案。任何异常一律吞掉返回 None——它只是补充，不能影响主流程。"""
+        try:
+            return self._get_third().fetch_registration_profile(id_card)
+        except Exception as e:
+            system_logger.warning("[Query] third 档案补查失败: %s", e)
+            return None
+
+    async def _profile_task(self, id_card: str, internal_task):
+        """第三系统档案补查任务（third 合并补位与 driving 跳过判断共用）。
+
+        内部信息齐全（报名时间/手机号/状态都有）时不发起，立即返回 None；
+        否则沿 third 专用线程池补查档案页。任何异常由 _fetch_third_profile 吞掉返回 None。
+        """
+        loop = asyncio.get_event_loop()
+        executors = getattr(self, "_system_executors", {})
+        third_executor = executors.get(SystemType.THIRD, self._executor)
+        try:
+            internal_result = await internal_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            internal_result = None
+        if not self._need_third_profile(internal_result):
+            return None
+        return await loop.run_in_executor(third_executor, self._fetch_third_profile, id_card)
+
+    async def _third_task(self, id_card: str, internal_task, profile_task) -> QueryResult:
+        """第三系统查询任务：阶段学时立即与内部并行发起，档案补查由共用任务提供。"""
+        loop = asyncio.get_event_loop()
+        executors = getattr(self, "_system_executors", {})
+        third_executor = executors.get(SystemType.THIRD, self._executor)
+
+        base_task = loop.run_in_executor(third_executor, self._query_third, id_card)
+        try:
+            internal_result = await internal_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            internal_result = None
+
+        try:
+            base = await base_task
+        except Exception as e:
+            base = QueryResult(system="third", status=QueryStatus.ERROR, error=str(e))
+
+        try:
+            profile = await profile_task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            profile = None
+
+        if profile is not None and base.data is not None:
+            base.data.registration_profile = profile
+        return base
 
     def _warm_driving_login(self) -> bool:
         """预热驾培登录态：登录不依赖内部系统结果，提前并行执行以隐藏耗时"""
@@ -434,13 +530,24 @@ class QueryEngine:
         except Exception:
             return False
 
-    async def _driving_task(self, id_card: str, internal_task) -> QueryResult:
-        """东莞驾培查询任务：登录与内部系统查询并行；是否跳过仍等内部报名日期决定。
+    async def _driving_task(self, id_card: str, internal_task, profile_task) -> QueryResult:
+        """东莞驾培查询任务：登录与内部系统查询并行；是否跳过等报名日期决定——
+        优先内部系统，内部给不出日期（查无/缺字段）时用第三系统档案补判。
         跳过时预热登录作废（后台自行结束，不影响结果）。"""
         loop = asyncio.get_event_loop()
         executors = getattr(self, "_system_executors", {})
         driving_executor = executors.get(SystemType.DRIVING, self._executor)
         login_task = loop.run_in_executor(driving_executor, self._warm_driving_login)
+
+        def _skipped() -> QueryResult:
+            return QueryResult(
+                system="driving",
+                status=QueryStatus.NO_CONTRACT,
+                duration_ms=0,
+                phase_durations_ms={},
+                retry_count=0,
+            )
+
         try:
             internal_result = await internal_task
         except asyncio.CancelledError:
@@ -449,18 +556,38 @@ class QueryEngine:
             internal_result = None
 
         if self._should_skip_driving(internal_result):
-            return QueryResult(
-                system="driving",
-                status=QueryStatus.NO_CONTRACT,
-                duration_ms=0,
-                phase_durations_ms={},
-                retry_count=0,
-            )
+            return _skipped()
+
+        # 内部没有可判定的报名日期 → 等第三档案补查结果再判一次。
+        # 档案补查只在内部信息不全时才真正发起（_need_third_profile 闸门），正常学员零开销。
+        internal_reg = getattr(getattr(internal_result, "data", None), "registration_date", "")
+        if _parse_date_str(internal_reg) is None:
+            try:
+                profile = await profile_task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                profile = None
+            if self._should_skip_driving(internal_result, profile):
+                return _skipped()
+
         return await loop.run_in_executor(
             driving_executor,
             self._query_driving,
             id_card,
         )
+
+    @staticmethod
+    def _short_branch_name(name: str) -> str:
+        """分点名称展示口径（2026-08-31 用户拍板）：去掉公司主体前缀。
+
+        「东莞市快捷汽车驾驶员培训有限公司东城同沙招生点」→「东城同沙招生点」。
+        规则：含「有限公司」时取其后的部分；截完为空则保留原名兜底。
+        """
+        name = (name or "").strip()
+        if "有限公司" in name:
+            name = name.rsplit("有限公司", 1)[1].strip() or name
+        return name
 
     def _merge_results(self, id_card: str, results: Dict[SystemType, QueryResult]) -> MergedStudentInfo:
         """合并三系统查询结果"""
@@ -530,6 +657,33 @@ class QueryEngine:
             info.name = third.name
         if third and not info.license_type:
             info.license_type = third.license_type
+
+        # 第三系统「学员申请登记」档案补位：内部系统与驾培都没给报名日期 / 手机号时，
+        # 从这里补（2017 年老学员内部查无，但第三系统有完整报名档案）。
+        # school_short 取学员详情页的「分点号」（branch_code），与投诉系统网点代号
+        # （南/麻/栅D）同口径；列表页 school_name 是「」驾校简称，仍不并入。
+        if third:
+            prof = getattr(third, "registration_profile", None)
+            if prof:
+                if not info.registration_date:
+                    info.registration_date = prof.registration_date
+                if not info.phone:
+                    info.phone = prof.phone
+                if not info.student_status:
+                    info.student_status = prof.student_status
+                if not info.license_type:
+                    info.license_type = prof.license_type
+                if not info.name:
+                    info.name = prof.name
+                if not info.school_short and prof.branch_code:
+                    info.school_short = prof.branch_code
+                # 驾校主体名只作展示，不并入 school_name（见字段注释）
+                if not info.third_school_name:
+                    info.third_school_name = prof.school_name
+                if not info.third_branch_name:
+                    # 展示口径（2026-08-31 用户拍板）：去掉公司主体前缀，
+                    # 「东莞市快捷汽车驾驶员培训有限公司东城同沙招生点」→「东城同沙招生点」
+                    info.third_branch_name = self._short_branch_name(prof.branch_name)
         
         # 培训时长（来自第三系统）
         if third and third.stages:

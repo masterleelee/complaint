@@ -248,7 +248,10 @@ class InternalCrawler(BaseCrawler):
         return self.query_student(id_card) if id_card else None
 
     def lookup_id_card_by_phone(self, phone: str, _retry: int = 0) -> str:
-        """仅按手机号获取证件号，不加载时间轴和收费记录。"""
+        """仅按手机号获取证件号，不加载时间轴和收费记录。
+
+        若匹配到多个不同证件号则抛 PhoneLookupAmbiguityError，由上层走 2b 候选列表。
+        """
         try:
             url = f"{self.api_base}/xyxxController/listXyxx.action"
             resp = self.post(url, data={
@@ -259,10 +262,10 @@ class InternalCrawler(BaseCrawler):
                 "order": "desc"
             }, timeout=8, retries=0)
             data = self._response_json(resp)
-            
+
             if not data.get("rows"):
                 return ""
-            
+
             id_cards = {
                 row.get("sfzh", "")
                 for row in data["rows"]
@@ -271,12 +274,54 @@ class InternalCrawler(BaseCrawler):
             if len(id_cards) > 1:
                 raise PhoneLookupAmbiguityError("手机号匹配多个学员，请补充身份证号")
             return next(iter(id_cards), "")
-            
+
         except InternalAuthenticationExpired:
             if _retry == 0:
                 self.logout()
                 if self.ensure_login():
                     return self.lookup_id_card_by_phone(phone, _retry=1)
+            raise
+
+    def lookup_students_by_phone(self, phone: str, _retry: int = 0) -> list:
+        """仅按手机号反查所有匹配学员（含姓名），不做去重/不抛歧义异常。
+
+        用于步骤 2b「仅手机号查」：返回 [{"id_card", "name", "phone"}, ...]，
+        空列表表示查无。多个候选由上层让用户人工选择。
+        与 lookup_id_card_by_phone 复用同一 HTTP 接口，差异是保留 name 字段。
+        """
+        try:
+            url = f"{self.api_base}/xyxxController/listXyxx.action"
+            resp = self.post(url, data={
+                "sjhm": phone,
+                "page": 1,
+                "rows": 10,
+                "sort": "createtime",
+                "order": "desc"
+            }, timeout=8, retries=0)
+            data = self._response_json(resp)
+
+            rows = data.get("rows") or []
+            out = []
+            seen = set()
+            for row in rows:
+                id_card = (row.get("sfzh", "") or "").strip()
+                if not id_card or len(id_card) < 7:
+                    continue
+                if id_card in seen:
+                    continue
+                seen.add(id_card)
+                out.append({
+                    "id_card": id_card,
+                    "name": (row.get("name", "") or "").strip(),
+                    "phone": (row.get("sjhm", "") or phone).strip(),
+                })
+            return out
+
+        except InternalAuthenticationExpired:
+            if _retry == 0:
+                self.logout()
+                if self.ensure_login():
+                    return self.lookup_students_by_phone(phone, _retry=1)
             raise
     
     def _load_org_tree(self):
