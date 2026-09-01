@@ -1700,13 +1700,17 @@ def api_tickets_export():
 @app.route("/api/session/login", methods=["POST"])
 def api_session_login():
     try:
-        from core.auth import login_user
+        from core.auth import (
+            login_user, remember_me_seconds, default_session_seconds,
+        )
         from services.user_service import (
             get_user_by_username, verify_password, ROLE_LABEL,
         )
         data = request.get_json(force=True, silent=True) or {}
         username = (data.get("username") or "").strip()
         password = data.get("password") or ""
+        # 「记住我」：前端传布尔，也容忍 "true"/1 等真值；缺省 = False（走 8 小时）
+        remember = bool(data.get("remember"))
         if not username or not password:
             return _err("用户名或密码不能为空", 400)
         user = get_user_by_username(username)
@@ -1714,7 +1718,7 @@ def api_session_login():
             return _err("用户名或密码错误", 401)
         if user.get("status") != "启用":
             return _err("账号已停用，请联系管理员", 403)
-        login_user(user)
+        login_user(user, remember=remember)
         fresh = get_user_by_username(username)
         return _ok({
             "id": fresh["id"],
@@ -1723,6 +1727,9 @@ def api_session_login():
             "role": fresh["role"],
             "role_label": ROLE_LABEL.get(fresh["role"], fresh["role"]),
             "phone": fresh.get("phone", ""),
+            # 便于前端展示 / 测试断言；expires_in 单位：秒
+            "remember": remember,
+            "expires_in": remember_me_seconds() if remember else default_session_seconds(),
         })
     except Exception as e:
         traceback.print_exc()

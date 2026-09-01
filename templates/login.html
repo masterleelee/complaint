@@ -2,131 +2,378 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>学员投诉处理系统</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>学员投诉处理系统 · 登录</title>
+<!-- 深色主题：必须在 CSS 之前加类，避免首屏闪白 -->
 <script>try{if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
 <style>
-  :root{
-    --color-primary:#2563EB;
-    --color-primary-dark:#1D4ED8;
-    --color-primary-50:#EFF6FF;
-    --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
-    --color-text:#0F172A;
-    --color-text-secondary:#475569;
-    --color-text-disabled:#94A3B8;
-    --color-border:#E2E8F0;
-    --color-bg:#EEF3F8;
-    --color-surface:#FFFFFF;
-    --color-success:#16A34A;
-    --color-danger:#DC2626;
-    --color-danger-50:#FEF2F2;
-    --font-sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-    --radius:10px;
-  }
-  *{box-sizing:border-box}
-  html,body{height:100%}
-  body{
-    font-family:var(--font-sans);
-    background:linear-gradient(135deg,#1E3A8A 0%,#2563EB 60%,#3B82F6 100%);
-    margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-    color:var(--color-text);
-  }
-  .login-card{
-    background:var(--color-surface);
-    padding:40px 36px 32px;
-    border-radius:16px;
-    box-shadow:0 24px 64px rgba(15,23,42,.18),0 4px 12px rgba(15,23,42,.06);
-    width:360px;
-  }
-  .brand{
-    display:flex; align-items:center; gap:10px; margin-bottom:24px;
-  }
-  .brand-icon{
-    width:36px; height:36px; border-radius:8px;
-    background:var(--brand-gradient);
-    display:flex; align-items:center; justify-content:center;
-    color:#fff; font-weight:700; font-size:18px;
-  }
-  .brand h1{ font-size:16px; margin:0; color:var(--color-text); font-weight:600; }
-  .brand .sub{ font-size:12px; color:var(--color-text-secondary); margin-top:2px; }
-  .form-group{ margin-bottom:16px; }
-  .form-group label{ display:block; font-size:13px; color:var(--color-text-secondary); margin-bottom:6px; }
-  .form-group input{
-    width:100%; padding:11px 12px;
-    border:1px solid var(--color-border); border-radius:6px;
-    font-size:14px; transition:border-color .15s;
-    background:#fff; color:var(--color-text);
-  }
-  .form-group input:focus{ outline:none; border-color:var(--color-primary); box-shadow:0 0 0 3px rgba(37,99,235,.12); }
-  .login-btn{
-    width:100%; padding:11px;
-    background:var(--color-primary); color:#fff;
-    border:none; border-radius:6px; font-size:14px; font-weight:500;
-    cursor:pointer; transition:background .15s; margin-top:8px;
-  }
-  .login-btn:hover{ background:var(--color-primary-dark); }
-  .login-btn:disabled{ background:#94A3B8; cursor:not-allowed; }
-  .err{
-    color:var(--color-danger); font-size:12px; margin-top:12px; min-height:16px;
-    background:var(--color-danger-50); padding:8px 10px; border-radius:4px;
-    display:none;
-  }
-  .err.show{ display:block; }
-  .footer{ text-align:center; color:var(--color-text-disabled); font-size:11px; margin-top:20px; }
+/* ═══ Token（对齐 DESIGN.md 政务信赖蓝，与 index.html 同源） ═══ */
+:root{
+  --color-primary:#2563EB; --color-primary-dark:#1D4ED8; --color-primary-50:#EFF6FF;
+  --brand-gradient:linear-gradient(180deg,#1E3A8A,#2563EB);
+  --color-success:#16A34A; --color-success-50:#F0FDF4;
+  --color-warning:#D97706; --color-warning-50:#FFFBEB; --warn-bd:rgba(217,119,6,.30); /* 自定义：警告边框，DESIGN.md 无对应 */
+  --color-danger:#DC2626; --color-danger-50:#FEF2F2;
+  --color-text:#0F172A; --color-text-secondary:#475569; --color-text-disabled:#94A3B8;
+  --color-border:#E2E8F0; --bd-strong:#CBD5E1; /* 自定义：DESIGN.md 无对应，强边框 */ /* 自定义：DESIGN.md 无对应，强边框用 */ --color-surface-50:#F8FAFC; --color-surface:#FFFFFF;
+  --font-sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --radius:8px; --radius-lg:16px;
+  --shadow-lg:0 24px 64px rgba(15,23,42,.16);
+}
+html.dark{
+  --color-primary:#3B82F6; --color-primary-dark:#2563EB; --color-primary-50:rgba(37,99,235,.18);
+  --brand-gradient:linear-gradient(180deg,#0F172A,#1E40AF);
+  --color-text:#E2E8F0; --color-text-secondary:#94A3B8; --color-text-disabled:#64748B;
+  --color-border:#1E293B; --bd-strong:#334155; /* 自定义：DESIGN.md 无对应，强边框 */ --color-surface-50:#0F172A; --color-surface:#0B1220;
+  --color-danger-50:rgba(220,38,38,.16); --color-warning-50:rgba(217,119,6,.16); --color-success-50:rgba(22,163,74,.16);
+  --shadow-lg:0 24px 64px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* 自动填充去黄底：覆盖 Chrome 的黄色背景（Spec 第 7 项） */
+input:-webkit-autofill,input:-webkit-autofill:hover,input:-webkit-autofill:focus{
+  -webkit-text-fill-color:var(--color-text);
+  -webkit-box-shadow:0 0 0 1000px var(--color-surface) inset;
+  transition:background-color 9999s ease-out 0s;
+}
+html,body{height:100%}
+body{
+  font:400 14px/1.6 var(--font-sans); color:var(--color-text); -webkit-font-smoothing:antialiased;
+  display:flex; align-items:center; justify-content:center; padding:24px 16px;
+  background:
+    radial-gradient(1100px 560px at 82% -10%,rgba(59,130,246,.30),transparent 60%),
+    radial-gradient(880px 520px at 8% 108%,rgba(30,58,138,.34),transparent 62%),
+    linear-gradient(150deg,#0F1E4D 0%,#1E3A8A 48%,#2563EB 100%);
+  background-attachment:fixed;
+  position:relative;
+}
+html.dark body{
+  background:
+    radial-gradient(1100px 560px at 82% -10%,rgba(37,99,235,.22),transparent 60%),
+    linear-gradient(150deg,#020617 0%,#0B1220 55%,#111C44 100%);
+  background-attachment:fixed;
+}
+/* 网格装饰：不参与交互 */
+body::before{
+  content:''; position:fixed; inset:0; pointer-events:none; opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+  background-size:46px 46px;
+  -webkit-mask-image:radial-gradient(70% 60% at 50% 40%,#000,transparent);
+          mask-image:radial-gradient(70% 60% at 50% 40%,#000,transparent);
+}
+
+/* ═══ 卡片 ═══ */
+.card{
+  position:relative; width:100%; max-width:392px;
+  background:var(--color-surface); border-radius:var(--radius-lg); box-shadow:var(--shadow-lg);
+  padding:32px 30px 20px; border:1px solid rgba(255,255,255,.06);
+}
+html.dark .card{border-color:var(--color-border)}
+
+.head{display:flex;align-items:center;gap:11px;margin-bottom:24px}
+.mark{
+  width:40px;height:40px;border-radius:11px;background:var(--brand-gradient);color:#fff;
+  display:grid;place-items:center;font-size:17px;font-weight:700;flex:none;
+  box-shadow:0 6px 16px rgba(37,99,235,.34);
+}
+.head h1{font-size:15.5px;font-weight:600;letter-spacing:.2px}
+.head .sub{font-size:11.5px;color:var(--color-text-secondary);margin-top:1px}
+
+/* 踢线横幅（别处登录）：罕见且必须显眼，允许推高布局 */
+.kick{
+  display:none; align-items:flex-start; gap:8px;
+  background:var(--color-warning-50); border:1px solid var(--warn-bd);
+  color:#874D00; border-radius:var(--radius); padding:9px 11px; font-size:12px; margin-bottom:16px;
+}
+html.dark .kick{color:#FCD34D}
+.kick.show{display:flex}
+.kick .ic{flex:none;margin-top:2px}
+.kick .x{margin-left:auto;background:none;border:none;color:inherit;opacity:.55;cursor:pointer;font-size:13px;padding:0 2px;flex:none}
+.kick .x:hover{opacity:1}
+
+/* ═══ 字段 ═══ */
+.field{position:relative;margin-bottom:20px}
+.field .ic{position:absolute;left:11px;top:15px;color:var(--color-text-disabled);pointer-events:none;transition:color .15s}
+.field .ic svg{width:15px;height:15px;display:block}
+.field input{
+  width:100%; height:46px; padding:17px 40px 5px 34px;
+  border:1px solid var(--color-border); border-radius:var(--radius);
+  background:var(--color-surface); color:var(--color-text); font:400 14px/1.2 var(--font-sans);
+  outline:none; transition:border-color .15s,box-shadow .15s;
+}
+html.dark .field input{background:#0A1424}
+.field input:focus{border-color:var(--color-primary);box-shadow:0 0 0 3px var(--color-primary-50)}
+.field input:focus + label,
+.field input:not(:placeholder-shown) + label{transform:translateY(-8px) scale(.82);color:var(--color-primary)}
+.field input:focus ~ .ic{color:var(--color-primary)}
+.field label{
+  position:absolute; left:34px; top:14px; font-size:13px; color:var(--color-text-disabled);
+  pointer-events:none; transition:all .15s ease; transform-origin:left top;
+}
+.field.has-err input{border-color:var(--color-danger)}
+.field.has-err input:focus{box-shadow:0 0 0 3px var(--color-danger-50)}
+/* 字段错误绝对定位在下方间隙里 —— 出现时不推高任何元素 */
+.fe{
+  display:none; position:absolute; left:1px; top:calc(100% + 4px);
+  font-size:11.5px; color:var(--color-danger);
+}
+.field.has-err .fe{display:block}
+/* 密码明文切换 */
+.eye{
+  position:absolute; right:6px; top:11px; background:none; border:none; color:var(--color-text-disabled);
+  cursor:pointer; padding:6px; border-radius:6px; display:grid; place-items:center;
+}
+.eye:hover{color:var(--color-text-secondary);background:var(--color-surface-50)}
+.eye svg{width:16px;height:16px;display:block}
+
+/* ═══ 记住我 / 忘记密码 ═══ */
+.row{display:flex;align-items:center;justify-content:space-between;font-size:12.5px;margin:2px 0 0}
+.row label{display:flex;align-items:center;gap:7px;color:var(--color-text-secondary);cursor:pointer;user-select:none}
+.row input[type=checkbox]{width:14px;height:14px;accent-color:var(--color-primary);cursor:pointer;flex:none}
+.row .rm-hint{color:var(--color-text-disabled);font-size:11px}
+.row .rm-hint.on{color:var(--color-primary)}
+.row a{color:var(--color-text-secondary);text-decoration:none;cursor:pointer}
+.row a:hover{color:var(--color-primary)}
+
+/* ═══ 提示槽 / 错误槽：固定高度，任何状态都不跳版 ═══ */
+.slot-hint{min-height:30px;padding-top:6px}
+.caps,.forgot{
+  display:none; align-items:center; gap:6px; font-size:11.5px;
+  border-radius:6px; padding:5px 9px;
+}
+.caps{color:var(--color-warning);background:var(--color-warning-50);border:1px solid var(--warn-bd)}
+.forgot{color:var(--color-text-secondary);background:var(--color-surface-50);border:1px solid var(--color-border)}
+.caps.show,.forgot.show{display:flex}
+.slot-err{min-height:44px;padding:6px 0}
+.err{
+  display:flex; align-items:center; gap:7px;
+  background:var(--color-danger-50); color:var(--color-danger);
+  border-radius:var(--radius); padding:8px 11px; font-size:12.5px;
+  visibility:hidden;
+}
+.err.show{visibility:visible}
+.err span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ═══ 按钮 ═══ */
+.btn{
+  width:100%; height:42px; border:none; border-radius:var(--radius);
+  background:var(--color-primary); color:#fff; font:500 14px/1 var(--font-sans);
+  cursor:pointer; transition:background .15s; display:grid; place-items:center;
+}
+.btn:hover{background:var(--color-primary-dark)}
+.btn:disabled{background:var(--color-text-disabled);cursor:not-allowed}
+.spin{
+  width:15px;height:15px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;
+  border-radius:50%;animation:sp .7s linear infinite;display:inline-block;margin-right:8px;
+}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.foot{
+  margin-top:16px;padding-top:13px;border-top:1px solid var(--color-border);
+  display:flex;justify-content:space-between;font-size:11px;color:var(--color-text-disabled);
+}
+
+@media (max-width:400px){
+  .card{padding:26px 20px 18px}
+  .head h1{font-size:14.5px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.01ms !important;transition-duration:.01ms !important}
+}
 </style>
 </head>
 <body>
-  <form class="login-card" id="loginForm" autocomplete="off">
-    <div class="brand">
-      <div class="brand-icon">K</div>
+  <form class="card" id="loginForm">
+    <div class="head">
+      <div class="mark" aria-hidden="true">快</div>
       <div>
         <h1>投诉处理系统</h1>
         <div class="sub">学员投诉自动处理工作台</div>
       </div>
     </div>
-    <div class="form-group">
-      <label>用户名</label>
-      <input type="text" name="username" autocomplete="username" autofocus>
+
+    <div class="kick" id="kickBanner" role="alert">
+      <svg class="ic" viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M7.13 1.6a1 1 0 0 1 1.74 0l6 10.5A1 1 0 0 1 14 13.6H2a1 1 0 0 1-.87-1.5l6-10.5ZM8 5a.6.6 0 0 0-.6.6v3.2a.6.6 0 0 0 1.2 0V5.6A.6.6 0 0 0 8 5Zm0 6.6a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z"/></svg>
+      <span id="kickBannerText">你在别处登录了，当前会话已失效</span>
+      <button class="x" type="button" id="kickBannerConfirm" aria-label="关闭提示">✕</button>
     </div>
-    <div class="form-group">
-      <label>密码</label>
-      <input type="password" name="password" autocomplete="current-password">
+
+    <div class="field" id="f-username">
+      <span class="ic"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 8a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 8 8Zm0 1.2c-2.9 0-5.2 1.6-5.2 3.5v.9c0 .4.3.7.7.7h9c.4 0 .7-.3.7-.7v-.9c0-1.9-2.3-3.5-5.2-3.5Z"/></svg></span>
+      <input type="text" id="username" name="username" placeholder=" " autocomplete="username" autofocus>
+      <label for="username">用户名</label>
+      <div class="fe" id="err-username"></div>
     </div>
-    <button class="login-btn" type="submit">登录</button>
-    <div class="err" id="err"></div>
-    <div class="footer">首次登录后请立即修改默认密码</div>
+
+    <div class="field" id="f-password">
+      <span class="ic"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V6H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 12 6h-.5V4.5A3.5 3.5 0 0 0 8 1Zm2 5H6V4.5a2 2 0 1 1 4 0V6Z"/></svg></span>
+      <input type="password" id="password" name="password" placeholder=" " autocomplete="current-password">
+      <label for="password">密码</label>
+      <button class="eye" type="button" id="eyeBtn" aria-label="显示密码" aria-pressed="false"></button>
+      <div class="fe" id="err-password"></div>
+    </div>
+
+    <div class="row">
+      <label>
+        <input type="checkbox" id="remember" checked>
+        记住我 <span class="rm-hint on" id="rmHint">（7 天内免登录）</span>
+      </label>
+      <a id="forgotLink" role="button" tabindex="0">忘记密码？</a>
+    </div>
+
+    <div class="slot-hint">
+      <div class="caps" id="capsTip">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M8 1.6 14 13H2L8 1.6Z"/></svg>
+        大写锁定已开启
+      </div>
+      <div class="forgot" id="forgotTip">请联系系统管理员重置密码</div>
+    </div>
+
+    <div class="slot-err">
+      <div class="err" id="err" role="alert" aria-live="polite">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="flex:none" aria-hidden="true"><path d="M8 1.2A6.8 6.8 0 1 0 8 14.8 6.8 6.8 0 0 0 8 1.2Zm.7 10.3H7.3v-1.4h1.4v1.4Zm0-2.6H7.3V4.5h1.4v4.4Z"/></svg>
+        <span id="errText"></span>
+      </div>
+    </div>
+
+    <button class="btn" type="submit" id="submitBtn">登录</button>
+
+    <div class="foot"><span>v2 · build 0831-1605</span><span>数据本地留存</span></div>
   </form>
+
 <script>
-  const form = document.getElementById('loginForm');
-  const errEl = document.getElementById('err');
-  const btn = form.querySelector('button');
-  function showErr(msg){
-    errEl.textContent = msg;
-    errEl.classList.add('show');
-  }
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    errEl.classList.remove('show');
-    btn.disabled = true; btn.textContent = '登录中...';
-    const fd = new FormData(form);
+(function () {
+  'use strict';
+  var form     = document.getElementById('loginForm');
+  var uInput   = document.getElementById('username');
+  var pInput   = document.getElementById('password');
+  var remember = document.getElementById('remember');
+  var rmHint   = document.getElementById('rmHint');
+  var eyeBtn   = document.getElementById('eyeBtn');
+  var btn      = document.getElementById('submitBtn');
+  var errBox   = document.getElementById('err');
+  var errText  = document.getElementById('errText');
+  var capsTip  = document.getElementById('capsTip');
+  var forgotTip= document.getElementById('forgotTip');
+  var kick     = document.getElementById('kickBanner');
+
+  var EYE_ON  = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 3C4.4 3 1.6 5.7 1 8c.6 2.3 3.4 5 7 5s6.4-2.7 7-5c-.6-2.3-3.4-5-7-5Zm0 8.2A3.2 3.2 0 1 1 8 4.8a3.2 3.2 0 0 1 0 6.4Zm0-1.6a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2Z"/></svg>';
+  var EYE_OFF = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.1 2.1 1 3.2l2.4 2.4C2.2 6.5 1.3 7.6 1 8c.6 2.3 3.4 5 7 5 1.2 0 2.3-.3 3.3-.8l2.4 2.4 1.1-1.1L2.1 2.1Zm5.9 9.1c-2 0-3.7-1.1-4.6-2.7.3-.6.9-1.4 1.8-2l.9.9A3.2 3.2 0 0 0 9.7 11c-.5.1-1.1.2-1.7.2Zm5.9-1.5c.3-.5.6-1 .8-1.5-.6-2.3-3.4-5-7-5-.4 0-.8 0-1.2.1l1.3 1.3c2.3.1 4.2 2 4.2 4.3 0 .3 0 .6-.1.8l2 2Z"/></svg>';
+
+  /* ── 踢线横幅（读取 api.js 暂存的 sessionStorage） ── */
+  function readKick() {
     try {
-      const r = await fetch('/api/session/login', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ username: fd.get('username'), password: fd.get('password') }),
-      });
-      const data = await r.json();
-      if (data.success) {
-        window.location.href = '/';
-      } else {
-        showErr(data.error || '登录失败');
-        btn.disabled = false; btn.textContent = '登录';
-      }
-    } catch (err) {
-      showErr('网络异常，请重试');
-      btn.disabled = false; btn.textContent = '登录';
-    }
+      var raw = sessionStorage.getItem('kick_reason');
+      if (!raw) return false;
+      JSON.parse(raw);
+      return true;
+    } catch (e) { return false; }
+  }
+  if (readKick()) kick.classList.add('show');
+  document.getElementById('kickBannerConfirm').addEventListener('click', function () {
+    kick.classList.remove('show');
+    try { sessionStorage.removeItem('kick_reason'); } catch (e) {}
   });
+
+  /* ── 错误 / 字段校验 ── */
+  function showErr(msg) {
+    errText.textContent = msg;
+    errText.title = msg;
+    errBox.classList.add('show');
+  }
+  function clearErr() { errBox.classList.remove('show'); }
+  function setFieldErr(id, msg) {
+    var wrap = document.getElementById(id === 'username' ? 'f-username' : 'f-password');
+    var slot = document.getElementById('err-' + id);
+    slot.textContent = msg || '';
+    wrap.classList.toggle('has-err', !!msg);
+  }
+  uInput.addEventListener('input', function () { setFieldErr('username', ''); clearErr(); });
+  pInput.addEventListener('input', function () { setFieldErr('password', ''); clearErr(); });
+
+  /* ── 密码明文切换 ── */
+  eyeBtn.innerHTML = EYE_ON;
+  eyeBtn.addEventListener('click', function () {
+    var show = pInput.type === 'password';
+    pInput.type = show ? 'text' : 'password';
+    eyeBtn.innerHTML = show ? EYE_OFF : EYE_ON;
+    eyeBtn.setAttribute('aria-label', show ? '隐藏密码' : '显示密码');
+    eyeBtn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    pInput.focus();
+  });
+
+  /* ── 记住我 ── */
+  remember.addEventListener('change', function () {
+    rmHint.textContent = remember.checked ? '（7 天内免登录）' : '（本次有效 8 小时）';
+    rmHint.classList.toggle('on', remember.checked);
+  });
+
+  /* ── 忘记密码 ── */
+  function toggleForgot() { forgotTip.classList.toggle('show'); }
+  document.getElementById('forgotLink').addEventListener('click', toggleForgot);
+  document.getElementById('forgotLink').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleForgot(); }
+  });
+
+  /* ── CapsLock 探测（提示槽优先于忘记密码提示） ── */
+  function onCapsKey(e) {
+    if (typeof e.getModifierState !== 'function') return;
+    var on = e.getModifierState('CapsLock');
+    capsTip.classList.toggle('show', on);
+    if (on) forgotTip.classList.remove('show');
+  }
+  pInput.addEventListener('keydown', onCapsKey);
+  pInput.addEventListener('keyup', onCapsKey);
+  pInput.addEventListener('blur', function () { capsTip.classList.remove('show'); });
+
+  /* ── 提交 ── */
+  function setBusy(busy) {
+    btn.disabled = busy;
+    btn.innerHTML = busy ? '<span class="spin"></span>登录中…' : '登录';
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    if (btn.disabled) return;
+
+    var username = uInput.value.trim();
+    var password = pInput.value;
+    var ok = true;
+    if (!username) { setFieldErr('username', '请输入用户名'); ok = false; }
+    if (!password) { setFieldErr('password', '请输入密码'); ok = false; }
+    if (!ok) { (username ? pInput : uInput).focus(); return; }
+
+    clearErr();
+    setBusy(true);
+    fetch('/api/session/login', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password, remember: remember.checked })
+    })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (data) {
+        if (data && data.success) {
+          // 通知同源其他标签页：本标签刚登录，其他标签需重新验证身份
+          try {
+            if (typeof BroadcastChannel !== 'undefined') {
+              var bc = new BroadcastChannel('auth');
+              bc.postMessage({ type: 'logged_in', at: Date.now() });
+              bc.close();
+            }
+          } catch (e) {}
+          window.location.href = '/';
+          return;
+        }
+        showErr((data && data.error) || '登录失败');
+        setBusy(false);
+      })
+      .catch(function () {
+        showErr('网络异常，请重试');
+        setBusy(false);
+      });
+  });
+})();
 </script>
 </body>
 </html>

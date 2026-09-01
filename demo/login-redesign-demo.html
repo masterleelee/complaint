@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<!--
+  PROTOTYPE — 一次性原型，不要合并进主分支
+  问题：登录页（templates/login.html）应该长什么样？
+  方案：3 个结构性不同的变体，?variant=A|B|C 切换 + 底部切换条 + ← → 键循环
+  运行：双击本文件即可（无外部依赖，图标全部内联 SVG）
+  说明：登录页是 / 未登录时的独立模板，不属 Vue 应用，故用单文件原型（子形态 B）
+-->
+<html lang="zh-CN" data-page-node-id="oHVBfbn5F4HjKOHdwKrysQ">
+<head data-page-node-id="SI9R4eqfIMbobTQfjPZWeT">
+<meta charset="UTF-8" data-page-node-id="ZwULSQ7wlFBwBK8FDI2j5F">
+<meta name="viewport" content="width=device-width,initial-scale=1" data-page-node-id="fCwSTuOq2q5bQalviwZEHR">
+<title>登录页原型 · A/B/C 三方案</title>
+<style>
+/* ═══════════ 共享 Token（对齐 DESIGN.md 政务信赖蓝） ═══════════ */
+:root{
+  --pri:#2563EB; --pri-d:#1D4ED8; --pri-50:#EFF6FF;
+  --grad:linear-gradient(180deg,#1E3A8A,#2563EB);
+  --ok:#16A34A; --ok-50:#F0FDF4;
+  --warn:#D97706; --warn-50:#FFFBEB;
+  --danger:#DC2626; --danger-50:#FEF2F2;
+  --tx:#0F172A; --tx2:#475569; --tx3:#94A3B8;
+  --bd:#E2E8F0; --bd-strong:#CBD5E1; --s50:#F8FAFC; --bg:#EEF3F8; --surf:#FFFFFF;
+  --font:"PingFang SC","Microsoft YaHei",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  --r:8px; --r-lg:16px;
+  --sh:0 8px 24px rgba(15,23,42,.10),0 2px 6px rgba(15,23,42,.05);
+  --sh-lg:0 24px 64px rgba(15,23,42,.16);
+}
+html.dark{
+  --pri:#3B82F6; --pri-d:#2563EB; --pri-50:rgba(37,99,235,.18);
+  --grad:linear-gradient(180deg,#0F172A,#1E40AF);
+  --tx:#E2E8F0; --tx2:#94A3B8; --tx3:#64748B;
+  --bd:#1E293B; --bd-strong:#334155; --s50:#0F172A; --bg:#020617; --surf:#0B1220;
+  --danger-50:rgba(220,38,38,.16); --warn-50:rgba(217,119,6,.16); --ok-50:rgba(22,163,74,.16);
+  --sh:0 8px 24px rgba(0,0,0,.45); --sh-lg:0 24px 64px rgba(0,0,0,.55);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* 变体根节点用了 #id{display:grid/flex}，特异性高于 UA 的 [hidden]{display:none}，必须压过 */
+[hidden]{display:none !important}
+html,body{height:100%}
+body{font:400 14px/1.6 var(--font);color:var(--tx);background:var(--bg);-webkit-font-smoothing:antialiased}
+button{font-family:inherit}
+/* 自动填充去黄 */
+input:-webkit-autofill,input:-webkit-autofill:focus{
+  -webkit-text-fill-color:var(--tx);
+  -webkit-box-shadow:0 0 0 1000px var(--surf) inset;
+  transition:background-color 9999s ease-out 0s;
+}
+/* ═══════════ 原型外壳（不属于被评估的设计） ═══════════ */
+.proto-panel{position:fixed;top:12px;right:12px;z-index:9000;background:#0F172A;color:#E2E8F0;
+  border:1px solid #334155;border-radius:10px;padding:10px 12px;font-size:12px;box-shadow:0 12px 32px rgba(0,0,0,.4);width:208px}
+.proto-panel .t{font-size:10px;letter-spacing:1.4px;color:#94A3B8;text-transform:uppercase;margin-bottom:8px;
+  display:flex;justify-content:space-between;align-items:center}
+.proto-panel .t button{background:none;border:none;color:#94A3B8;cursor:pointer;font-size:14px;line-height:1;padding:0 2px}
+.proto-panel .t button:hover{color:#fff}
+.proto-panel button.act{display:block;width:100%;text-align:left;background:#1E293B;border:1px solid #334155;
+  color:#E2E8F0;border-radius:6px;padding:5px 8px;font-size:11.5px;cursor:pointer;margin-bottom:5px}
+.proto-panel button.act:hover{background:#334155}
+.proto-panel button.act.on{background:#1D4ED8;border-color:#2563EB;color:#fff}
+.proto-panel .note{color:#64748B;font-size:10.5px;line-height:1.5;margin-top:6px;border-top:1px solid #1E293B;padding-top:6px}
+.proto-bar{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:9000;
+  display:flex;align-items:center;gap:6px;background:#0F172A;color:#fff;border:1px solid #334155;
+  border-radius:999px;padding:6px 8px;box-shadow:0 14px 40px rgba(0,0,0,.45);font-size:12px;white-space:nowrap}
+.proto-bar .tag{font-size:9px;letter-spacing:1.2px;background:#2563EB;color:#fff;border-radius:4px;padding:2px 5px;font-weight:700}
+.proto-bar button{background:#1E293B;border:1px solid #334155;color:#E2E8F0;border-radius:6px;
+  width:26px;height:26px;cursor:pointer;font-size:13px;line-height:1;display:grid;place-items:center}
+.proto-bar button:hover{background:#334155}
+.proto-bar .lbl{min-width:186px;text-align:center;font-size:12px}
+.proto-bar .lbl b{color:#93C5FD}
+.proto-bar .sep{width:1px;height:18px;background:#334155;margin:0 2px}
+.proto-state{position:fixed;bottom:56px;left:50%;transform:translateX(-50%);z-index:9000;
+  background:rgba(15,23,42,.94);color:#A5B4FC;font-family:"SF Mono",Menlo,Consolas,monospace;
+  font-size:10.5px;padding:5px 10px;border-radius:6px;border:1px solid #334155;display:none;white-space:pre}
+body[data-inspect="1"] .proto-state{display:block}
+/* ═══════════ 变体通用件 ═══════════ */
+.eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;
+  color:var(--tx3);cursor:pointer;padding:4px;border-radius:5px;display:grid;place-items:center}
+.eye:hover{color:var(--tx2);background:var(--s50)}
+.eye svg{width:16px;height:16px}
+.spin{width:15px;height:15px;border:2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;
+  animation:sp .7s linear infinite;display:inline-block;vertical-align:-2px;margin-right:7px}
+@keyframes sp{to{transform:rotate(360deg)}}
+.fe{display:none;font-size:11.5px;color:var(--danger);margin-top:5px}
+.field.has-err .fe{display:block}
+.caps{display:none;align-items:center;gap:6px;font-size:11.5px;color:var(--warn);
+  background:var(--warn-50);border:1px solid rgba(217,119,6,.28);border-radius:6px;padding:6px 9px;margin-top:8px}
+body[data-caps="1"] .caps{display:flex}
+.done{display:none;text-align:center;padding:26px 8px}
+body[data-phase="success"] .done{display:block}
+body[data-phase="success"] .form-body{display:none}
+.done .ico{width:52px;height:52px;border-radius:50%;background:var(--ok-50);color:var(--ok);
+  display:grid;place-items:center;margin:0 auto 14px}
+.done .ico svg{width:26px;height:26px}
+.done h3{font-size:15px;font-weight:600;margin-bottom:4px}
+.done p{font-size:12.5px;color:var(--tx2)}
+.done button{margin-top:16px;background:none;border:1px solid var(--bd-strong);color:var(--tx2);
+  border-radius:6px;padding:6px 14px;font-size:12px;cursor:pointer}
+.done button:hover{border-color:var(--pri);color:var(--pri)}
+
+/* ══════════════════════════════════════════════════════════════
+   变体 A · 精致居中卡片（现状进化）
+   结构：全屏品牌渐变背景 + 单张居中白卡 + 浮动标签 + 卡片内页脚
+   ══════════════════════════════════════════════════════════════ */
+#vA{width:100%;min-height:100%;display:grid;place-items:center;padding:32px 16px;
+  background:
+    radial-gradient(1100px 560px at 82% -10%,rgba(59,130,246,.30),transparent 60%),
+    radial-gradient(880px 520px at 8% 108%,rgba(30,58,138,.34),transparent 62%),
+    linear-gradient(150deg,#0F1E4D 0%,#1E3A8A 48%,#2563EB 100%);
+  position:relative;overflow:hidden}
+html.dark #vA{background:
+    radial-gradient(1100px 560px at 82% -10%,rgba(37,99,235,.22),transparent 60%),
+    linear-gradient(150deg,#020617 0%,#0B1220 55%,#111C44 100%)}
+#vA::before{content:'';position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+  background-size:46px 46px;mask-image:radial-gradient(70% 60% at 50% 40%,#000,transparent)}
+.a-card{position:relative;width:100%;max-width:392px;background:var(--surf);border-radius:var(--r-lg);
+  box-shadow:var(--sh-lg);padding:32px 30px 22px;border:1px solid rgba(255,255,255,.06)}
+html.dark .a-card{border-color:var(--bd)}
+.a-head{display:flex;align-items:center;gap:11px;margin-bottom:24px}
+.a-mark{width:40px;height:40px;border-radius:11px;background:var(--grad);color:#fff;
+  display:grid;place-items:center;font-size:17px;font-weight:700;flex:none;
+  box-shadow:0 6px 16px rgba(37,99,235,.34)}
+.a-head h1{font-size:15.5px;font-weight:600;letter-spacing:.2px}
+.a-head .sub{font-size:11.5px;color:var(--tx2);margin-top:1px}
+.a-kick{display:none;align-items:flex-start;gap:8px;background:var(--warn-50);
+  border:1px solid rgba(217,119,6,.30);color:#874D00;border-radius:var(--r);padding:9px 11px;font-size:12px;margin-bottom:16px}
+html.dark .a-kick{color:#FCD34D}
+body[data-kick="1"] .a-kick{display:flex}
+.a-kick .x{margin-left:auto;background:none;border:none;color:inherit;opacity:.6;cursor:pointer;font-size:13px;padding:0 2px;flex:none}
+.a-kick .x:hover{opacity:1}
+.a-f{position:relative;margin-bottom:14px}
+.a-f input{width:100%;height:46px;padding:16px 38px 6px 34px;border:1px solid var(--bd);border-radius:var(--r);
+  background:var(--surf);color:var(--tx);font-size:14px;outline:none;transition:border-color .15s,box-shadow .15s}
+.a-f input:focus{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-50)}
+html.dark .a-f input{background:#0A1424}
+.a-f .ic{position:absolute;left:11px;top:14px;color:var(--tx3);pointer-events:none}
+.a-f .ic svg{width:15px;height:15px;display:block}
+.a-f label{position:absolute;left:34px;top:14px;font-size:13px;color:var(--tx3);pointer-events:none;
+  transition:all .15s ease;transform-origin:left top}
+.a-f input:focus + label,.a-f input:not(:placeholder-shown) + label{transform:translateY(-8px) scale(.82);color:var(--pri)}
+.a-f.has-err input{border-color:var(--danger)}
+.a-row{display:flex;align-items:center;justify-content:space-between;margin:2px 0 16px;font-size:12.5px}
+.a-row label{display:flex;align-items:center;gap:6px;color:var(--tx2);cursor:pointer;user-select:none}
+.a-row input[type=checkbox]{width:14px;height:14px;accent-color:var(--pri);cursor:pointer}
+.a-row a{color:var(--tx2);text-decoration:none}
+.a-row a:hover{color:var(--pri)}
+.a-err{display:none;align-items:center;gap:7px;background:var(--danger-50);color:var(--danger);
+  border-radius:var(--r);padding:9px 11px;font-size:12.5px;margin-bottom:12px}
+body[data-err="1"] .a-err{display:flex}
+.a-btn{width:100%;height:42px;border:none;border-radius:var(--r);background:var(--pri);color:#fff;
+  font-size:14px;font-weight:500;cursor:pointer;transition:background .15s;display:grid;place-items:center}
+.a-btn:hover{background:var(--pri-d)}
+.a-btn:disabled{background:var(--tx3);cursor:not-allowed}
+.a-foot{margin-top:18px;padding-top:14px;border-top:1px solid var(--bd);
+  display:flex;justify-content:space-between;font-size:11px;color:var(--tx3)}
+
+/* ══════════════════════════════════════════════════════════════
+   变体 B · 左品牌 / 右表单（分栏沉浸）
+   结构：无浮动卡片 —— 品牌侧讲能力，表单侧就是整块面板
+   ══════════════════════════════════════════════════════════════ */
+#vB{width:100%;min-height:100%;display:grid;grid-template-columns:44% 56%;background:var(--surf)}
+.b-brand{position:relative;overflow:hidden;background:var(--grad);color:#fff;
+  padding:44px 46px;display:flex;flex-direction:column}
+.b-brand::after{content:'';position:absolute;width:520px;height:520px;right:-220px;top:-190px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.16),transparent 66%);pointer-events:none}
+.b-brand::before{content:'';position:absolute;width:380px;height:380px;left:-150px;bottom:-210px;border-radius:50%;
+  background:radial-gradient(circle,rgba(96,165,250,.30),transparent 68%);pointer-events:none}
+.b-brand > *{position:relative;z-index:1}
+.b-top{display:flex;align-items:center;gap:11px;margin-bottom:auto}
+.b-top .mk{width:38px;height:38px;border-radius:10px;background:rgba(255,255,255,.16);
+  border:1px solid rgba(255,255,255,.26);display:grid;place-items:center;font-size:16px;font-weight:700;flex:none}
+.b-top h1{font-size:15px;font-weight:600;line-height:1.35}
+.b-top .sub{font-size:11.5px;opacity:.72;margin-top:1px}
+.b-mid{margin:34px 0 40px}
+.b-mid h2{font-size:27px;font-weight:600;line-height:1.35;letter-spacing:.5px;margin-bottom:12px}
+.b-mid p{font-size:13px;line-height:1.85;opacity:.78;max-width:330px}
+.b-list{list-style:none;margin:22px 0 0;display:flex;flex-direction:column;gap:11px}
+.b-list li{display:flex;align-items:flex-start;gap:10px;font-size:12.5px;opacity:.9}
+.b-list .dot{width:19px;height:19px;border-radius:5px;background:rgba(255,255,255,.16);
+  display:grid;place-items:center;flex:none;margin-top:1px}
+.b-list .dot svg{width:11px;height:11px}
+.b-list b{display:block;font-weight:600;font-size:12.5px}
+.b-list span{opacity:.66;font-size:11.5px}
+.b-foot{font-size:11px;opacity:.55;display:flex;align-items:center;gap:6px}
+.b-form{display:grid;place-items:center;padding:40px 32px;background:var(--surf);position:relative}
+.b-inner{width:100%;max-width:330px}
+.b-inner > h2{font-size:19px;font-weight:600;margin-bottom:6px}
+.b-inner > .tip{font-size:12.5px;color:var(--tx2);margin-bottom:26px}
+.b-kick{display:none;gap:8px;background:var(--warn-50);border:1px solid rgba(217,119,6,.30);
+  border-radius:var(--r);padding:10px 12px;font-size:12px;margin-bottom:18px;color:#874D00}
+html.dark .b-kick{color:#FCD34D}
+body[data-kick="1"] .b-kick{display:flex}
+.b-kick .x{margin-left:auto;background:none;border:none;color:inherit;opacity:.6;cursor:pointer;font-size:13px;flex:none}
+.b-f{margin-bottom:16px}
+.b-f label{display:block;font-size:12.5px;color:var(--tx2);margin-bottom:6px;font-weight:500}
+.b-f .box{position:relative}
+.b-f input{width:100%;height:40px;padding:0 38px 0 12px;border:1px solid var(--bd);border-radius:var(--r);
+  background:var(--surf);color:var(--tx);font-size:13.5px;outline:none;transition:border-color .15s,box-shadow .15s}
+.b-f input:focus{border-color:var(--pri);box-shadow:0 0 0 3px var(--pri-50)}
+html.dark .b-f input{background:#0A1424}
+.b-f.has-err input{border-color:var(--danger)}
+.b-err{display:none;gap:7px;background:var(--danger-50);color:var(--danger);border-radius:var(--r);
+  padding:9px 11px;font-size:12.5px;margin-bottom:14px}
+body[data-err="1"] .b-err{display:flex}
+.b-btn{width:100%;height:40px;border:none;border-radius:var(--r);background:var(--pri);color:#fff;
+  font-size:14px;font-weight:500;cursor:pointer;transition:background .15s;display:grid;place-items:center;margin-top:4px}
+.b-btn:hover{background:var(--pri-d)}
+.b-btn:disabled{background:var(--tx3);cursor:not-allowed}
+.b-help{margin-top:20px;padding-top:16px;border-top:1px solid var(--bd);font-size:11.5px;color:var(--tx3);line-height:1.8}
+.b-help b{color:var(--tx2);font-weight:500}
+@media (max-width:900px){
+  #vB{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+  .b-brand{padding:22px 24px}
+  .b-mid{display:none}
+  .b-top{margin-bottom:0}
+  .b-foot{display:none}
+  .b-form{padding:32px 24px;place-items:stretch}
+  .b-inner{max-width:none}
+}
+
+/* ══════════════════════════════════════════════════════════════
+   变体 C · 极简下划线（无卡片、无渐变、顶栏 + 底部元信息条）
+   结构：纯留白排版，输入框只有下划线，信息密度最低
+   ══════════════════════════════════════════════════════════════ */
+#vC{width:100%;min-height:100%;background:var(--s50);display:flex;flex-direction:column}
+html.dark #vC{background:#060B18}
+.c-bar{height:58px;flex:none;display:flex;align-items:center;justify-content:space-between;
+  padding:0 26px;border-bottom:1px solid var(--bd);background:var(--surf)}
+.c-bar .l{display:flex;align-items:center;gap:10px}
+.c-bar .mk{width:28px;height:28px;border-radius:8px;background:var(--grad);color:#fff;
+  display:grid;place-items:center;font-size:13px;font-weight:700;flex:none}
+.c-bar .nm{font-size:13.5px;font-weight:600}
+.c-bar .nm small{display:block;font-size:10.5px;color:var(--tx3);font-weight:400;margin-top:-1px}
+.c-bar .r{font-size:11.5px;color:var(--tx3)}
+.c-main{flex:1;display:grid;place-items:center;padding:36px 20px}
+.c-inner{width:100%;max-width:404px}
+.c-inner h2{font-size:26px;font-weight:600;letter-spacing:-.2px;margin-bottom:7px}
+.c-inner .tip{font-size:13px;color:var(--tx2);margin-bottom:34px}
+.c-kick{display:none;gap:9px;align-items:flex-start;background:var(--warn-50);border-left:3px solid var(--warn);
+  border-radius:0 6px 6px 0;padding:10px 12px;font-size:12px;margin-bottom:24px;color:#874D00}
+html.dark .c-kick{color:#FCD34D}
+body[data-kick="1"] .c-kick{display:flex}
+.c-kick .x{margin-left:auto;background:none;border:none;color:inherit;opacity:.6;cursor:pointer;font-size:13px;flex:none}
+.c-f{margin-bottom:26px}
+.c-f label{display:block;font-size:11px;letter-spacing:.9px;text-transform:uppercase;
+  color:var(--tx3);margin-bottom:7px;font-weight:600}
+.c-f .box{position:relative}
+.c-f input{width:100%;height:38px;padding:0 32px 0 0;border:none;border-bottom:1.5px solid var(--bd-strong);
+  background:transparent;color:var(--tx);font-size:15px;outline:none;transition:border-color .18s;border-radius:0}
+.c-f input:focus{border-bottom-color:var(--pri)}
+.c-f input::placeholder{color:var(--tx3);font-weight:400;letter-spacing:0;text-transform:none}
+.c-f.has-err input{border-bottom-color:var(--danger)}
+.c-err{display:none;align-items:center;gap:8px;color:var(--danger);font-size:12.5px;
+  border-left:3px solid var(--danger);padding:2px 0 2px 11px;margin:-8px 0 20px}
+body[data-err="1"] .c-err{display:flex}
+.c-btn{width:100%;height:44px;border:none;border-radius:999px;background:var(--tx);color:var(--surf);
+  font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:9px;
+  transition:opacity .15s}
+.c-btn:hover{opacity:.86}
+.c-btn:disabled{opacity:.45;cursor:not-allowed}
+html.dark .c-btn{background:#E2E8F0;color:#0B1220}
+.c-btn svg{width:15px;height:15px}
+.c-foot{flex:none;display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;
+  padding:14px 20px;border-top:1px solid var(--bd);background:var(--surf)}
+.c-chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--tx3);
+  border:1px solid var(--bd);border-radius:999px;padding:3px 10px;background:var(--s50)}
+.c-chip .d{width:5px;height:5px;border-radius:50%;background:var(--ok);flex:none}
+@media (max-width:560px){
+  .c-bar .r{display:none}
+  .c-inner h2{font-size:22px}
+}
+</style>
+</head>
+<body data-variant="A" data-phase="idle" data-err="0" data-kick="0" data-caps="0" data-inspect="0" data-page-node-id="raCt2hNcxZahfndPCuo3nB">
+
+<!-- ══════════ 变体 A ══════════ -->
+<section id="vA" data-page-node-id="oOirqroZ7OXHSOEl3UAlAv">
+  <div class="a-card" data-page-node-id="6Db2aLWpfchBj1f0LYADop">
+    <div class="a-head" data-page-node-id="8BaNWXNckWcOH8bmlEzGRb">
+      <div class="a-mark" data-page-node-id="GfJycif69mTL52ZTqUjsGL">快</div>
+      <div data-page-node-id="wfpnD3l4bGy6e41zOnSqDO"><h1 data-page-node-id="xDhttVWRYQlvAPAKbECzmx">投诉处理系统</h1><div class="sub" data-page-node-id="DeNSZCj527ydxy4PN58VBv">学员投诉自动处理工作台</div></div>
+    </div>
+    <div class="a-kick" data-role="kick" data-page-node-id="cJIuQACneUayirBSlvEHFA">
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="margin-top:2px;flex:none" data-page-node-id="YJKFWxmskfMC3UMYFWULHM"><path d="M7.13 1.6a1 1 0 0 1 1.74 0l6 10.5A1 1 0 0 1 14 13.6H2a1 1 0 0 1-.87-1.5l6-10.5ZM8 5a.6.6 0 0 0-.6.6v3.2a.6.6 0 0 0 1.2 0V5.6A.6.6 0 0 0 8 5Zm0 6.6a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" data-page-node-id="8CPGGlszFgaRfJcksSHjWc"/></svg>
+      <span data-role="kicktext" data-page-node-id="nJEhO7FRMsKvHJunMLw3BI">你在别处登录了，当前会话已失效</span>
+      <button class="x" type="button" data-act="dismiss-kick" data-page-node-id="PUfmKDq9YWEXSOof6S9lS7">✕</button>
+    </div>
+
+    <div class="form-body" data-page-node-id="Mti1n6sm6zfI8XXH5WSJWa">
+      <div class="a-f" data-role="field" data-field="username" data-page-node-id="7XcEqCr5afosC0lk2NZ537">
+        <span class="ic" data-page-node-id="LO8ijMTRKLGuIooYHRH1Ie"><svg viewBox="0 0 16 16" fill="currentColor" data-page-node-id="v0MJzUDAebvYoL7415K5Hw"><path d="M8 8a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 8 8Zm0 1.2c-2.9 0-5.2 1.6-5.2 3.5v.9c0 .4.3.7.7.7h9c.4 0 .7-.3.7-.7v-.9c0-1.9-2.3-3.5-5.2-3.5Z" data-page-node-id="tWO0DiQsYARw95zr6D5WaZ"/></svg></span>
+        <input type="text" data-role="username" placeholder=" " autocomplete="username" autofocus data-page-node-id="WCpD7G2Z4wk2pnVzW5LeL7">
+        <label data-page-node-id="TPQSySOJsfKkZOyzcW12xP">用户名</label>
+        <div class="fe" data-role="ferr-username" data-page-node-id="jTojPExsyCtBFeRkH4KZLF"></div>
+      </div>
+      <div class="a-f" data-role="field" data-field="password" data-page-node-id="LEZdDoWkO0gDSDLPYd3OH0">
+        <span class="ic" data-page-node-id="JLErzldHt4Bx3XGPzDNQgH"><svg viewBox="0 0 16 16" fill="currentColor" data-page-node-id="azUWCf4sjGyN1YFAOXU3zN"><path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V6H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 12 6h-.5V4.5A3.5 3.5 0 0 0 8 1Zm2 5H6V4.5a2 2 0 1 1 4 0V6Z" data-page-node-id="jQbn7S4DEKFr3ebLOd17ME"/></svg></span>
+        <input type="password" data-role="password" placeholder=" " autocomplete="current-password" data-page-node-id="mhWB7AHBIUuvrqaumC9IV3">
+        <label data-page-node-id="4XYQWpLl4NvBPrCN3VsBkR">密码</label>
+        <button class="eye" type="button" data-act="toggle-pwd" aria-label="显示密码" data-page-node-id="h5KI8V18Ppsnhwu5mcNOkq"></button>
+        <div class="fe" data-role="ferr-password" data-page-node-id="uN1d8Pwer0G0cc2rkKojUm"></div>
+      </div>
+
+      <div class="caps" data-page-node-id="aAOtgv8KSKnIbBjIBK2boS"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" data-page-node-id="RUkXYp1ZEFRWWZABRj90jE"><path d="M8 1.6 14 13H2L8 1.6Z" data-page-node-id="qTTRGVknxcESv6FJNIS51C"/></svg>大写锁定已开启</div>
+
+      <div class="a-row" data-page-node-id="v9FXdUg9thCMhFkBsukcfs">
+        <label data-page-node-id="wlBGmTgCxku1RHmIeijRi6"><input type="checkbox" data-role="remember" data-page-node-id="nSwl4GDExRHKTfhyVyfYcp">记住我 7 天</label>
+        <a href="#" onclick="return false" data-page-node-id="odQzDT9BNxrYHHxx7Rga8O">忘记密码？</a>
+      </div>
+
+      <div class="a-err" data-role="err" data-page-node-id="5scOH5KRJq3rQmRjMoKs5O"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="flex:none" data-page-node-id="4E9Kd3jDFCBPa6D4ave6fa"><path d="M8 1.2A6.8 6.8 0 1 0 8 14.8 6.8 6.8 0 0 0 8 1.2Zm.7 10.3H7.3v-1.4h1.4v1.4Zm0-2.6H7.3V4.5h1.4v4.4Z" data-page-node-id="W3UJeoNvE0LNHIyof25RmN"/></svg><span data-role="errtext" data-page-node-id="fLnlnXtHyQ0Gp1hu83IsAU"></span></div>
+
+      <button class="a-btn" type="button" data-act="submit" data-page-node-id="QoZzZyU7zZSBlQTGAFd47X">登录</button>
+      <div class="a-foot" data-page-node-id="SRi0ea1G1GCsF5tVkwmfPK"><span data-page-node-id="XU1Bw8yhFMDUiSKyJI93oH">v2 · build 0831</span><span data-page-node-id="qPOTarzElsGOdzvANaZodR">数据本地留存</span></div>
+    </div>
+
+    <div class="done" data-page-node-id="6xuuhEnQwmPVK2JGMbKNk3">
+      <div class="ico" data-page-node-id="aH5a4QbaGR5NqJKz30mR7E"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="8kRCuMWKC4OeslehHlBsql"><path d="M20 6 9 17l-5-5" data-page-node-id="uL0CKs96RK1E2s3k9KI7DX"/></svg></div>
+      <h3 data-page-node-id="IpDzVxuoxh45OyiiEqBpXw">登录成功</h3><p data-page-node-id="O3aHQHuoHULRouo4QAUHCc">正在进入工作台…</p>
+      <button type="button" data-act="reset" data-page-node-id="wJWSXcmwhKiBNLZhOteN22">返回登录页</button>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 变体 B ══════════ -->
+<section id="vB" hidden data-page-node-id="rouAl4FoQk7UVzEzsgMJVB">
+  <aside class="b-brand" data-page-node-id="8MQO8TgLvsK2Dy3VMb6LC5">
+    <div class="b-top" data-page-node-id="D5V09H5t4SjmfVc3BA7l0E">
+      <div class="mk" data-page-node-id="bmcVEwKV2JPZ27nuNjT3Uv">快</div>
+      <div data-page-node-id="W7lFXi15eqF5hCBBxKaW1C"><h1 data-page-node-id="EuP52RBOaww2Gxc3mkBhLe">投诉处理系统</h1><div class="sub" data-page-node-id="kXcQonwZRhdcfDmJogFjJt">学员投诉自动处理工作台</div></div>
+    </div>
+    <div class="b-mid" data-page-node-id="hZFwWalupr8tHAj9QTHHwu">
+      <h2 data-page-node-id="mCNGuTy5ZSJHF4tvCmXp8E">让每一条投诉<br data-page-node-id="BDRKX4Dl4NRnJ8ntPjiNh9">都有据可查</h2>
+      <p data-page-node-id="zIxVwCHpMvi9x9vK4dCAYX">一次登录，贯通内部学员档案、驾培平台合同与第三方登记信息。</p>
+      <ul class="b-list" data-page-node-id="zQ22f6ebmoD2eDeWQKeqrY">
+        <li data-page-node-id="mmjLN8aHc4NApWpSGC8bpS"><span class="dot" data-page-node-id="0Gys0lv9iONtqvh5AUCuh4"><svg viewBox="0 0 16 16" fill="currentColor" data-page-node-id="S84AjSuVRq3yRO1Oro32FJ"><path d="M6.2 11.6 3 8.4l1.1-1.1 2.1 2.1 5.7-5.7L13 4.8 6.2 11.6Z" data-page-node-id="yNBhc6PA5PDJuIFHDJpys2"/></svg></span>
+          <div data-page-node-id="F9flCm2ThHMQFBdhZCsaPv"><b data-page-node-id="C30P6Bzs1hsTPoIEoPDom1">三系统一键并查</b><span data-page-node-id="yYuiAmcBP2YiF2yaXmqi8W">学员身份、学时、合同自动对齐</span></div></li>
+        <li data-page-node-id="sMlwIgpkSBm4QDyHX9HAQU"><span class="dot" data-page-node-id="IBuu1tq2m1QuhUUHyKMVIz"><svg viewBox="0 0 16 16" fill="currentColor" data-page-node-id="U77NwcV9KLmw2BysnDmXMa"><path d="M6.2 11.6 3 8.4l1.1-1.1 2.1 2.1 5.7-5.7L13 4.8 6.2 11.6Z" data-page-node-id="u7BsVRGtHIajlnIBi6GcB9"/></svg></span>
+          <div data-page-node-id="kw9IPjlyX5gvOCBsX8pw0H"><b data-page-node-id="yocTUNiABNWWWcVTXEYivT">合同 AI 解析 + 退费试算</b><span data-page-node-id="xTJqTsmM5JW7Lg5OA7DJbj">扣费明细逐项可核对</span></div></li>
+        <li data-page-node-id="Caof14fFqdcp546mRpiY74"><span class="dot" data-page-node-id="4VY9o4GO8sOCvTwoiz7p7Q"><svg viewBox="0 0 16 16" fill="currentColor" data-page-node-id="ChZzjQLeRMRJGxYIvwVHPI"><path d="M6.2 11.6 3 8.4l1.1-1.1 2.1 2.1 5.7-5.7L13 4.8 6.2 11.6Z" data-page-node-id="Ffg3ruo0FODtcLj8xMmdj3"/></svg></span>
+          <div data-page-node-id="HQbF3acUcA1n16NN5kpUB0"><b data-page-node-id="049g9GpUwBqyJa1icuPYUA">登记表 / 回复函自动生成</b><span data-page-node-id="NciK99RL5PyJALOvHeXYIA">归档三闸自动校验</span></div></li>
+      </ul>
+    </div>
+    <div class="b-foot" data-page-node-id="2gS9bQa9hPQ17AleeRUxM2">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" data-page-node-id="9Sk6A7EHcbv5RuaYUpy8dy"><path d="M8 1 2.5 3.2v4.3c0 3.3 2.3 6.4 5.5 7.3 3.2-.9 5.5-4 5.5-7.3V3.2L8 1Z" data-page-node-id="v2LpXKPcDL5eAtjYCYV8Yh"/></svg>
+      内部系统 · 仅限授权人员使用
+    </div>
+  </aside>
+
+  <main class="b-form" data-page-node-id="uFFy1vffMedbSqWeplzTvZ">
+    <div class="b-inner" data-page-node-id="fTGmdqI24hYRSd7bHPYS4X">
+      <h2 data-page-node-id="tDZ5Ulvpc6kNkYaIZNzmgs">登录工作台</h2>
+      <div class="tip" data-page-node-id="DmAMSwMCH0JpbEM4THsAEt">请使用管理员分配的内部账号登录</div>
+      <div class="b-kick" data-role="kick" data-page-node-id="stHjxUWpd8XCa2LThboW8w">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="margin-top:2px;flex:none" data-page-node-id="M0RiM460V8vz0vzdOb9All"><path d="M7.13 1.6a1 1 0 0 1 1.74 0l6 10.5A1 1 0 0 1 14 13.6H2a1 1 0 0 1-.87-1.5l6-10.5ZM8 5a.6.6 0 0 0-.6.6v3.2a.6.6 0 0 0 1.2 0V5.6A.6.6 0 0 0 8 5Zm0 6.6a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" data-page-node-id="jlLsNwLEiTp52utIVawvCL"/></svg>
+        <span data-role="kicktext" data-page-node-id="mT00B9j4fsTRjdTFXTUnoV">你在别处登录了，当前会话已失效</span>
+        <button class="x" type="button" data-act="dismiss-kick" data-page-node-id="PVn1G9v3dnXVjWF60xlH4p">✕</button>
+      </div>
+      <div class="form-body" data-page-node-id="cLphjFhLODdYyyxQ8QEZWM">
+        <div class="b-f" data-role="field" data-field="username" data-page-node-id="QgCnDWVB2hwRbbageWeyHg">
+          <label data-page-node-id="xmo6EYO1G1iWAaU1iwua0n">用户名</label>
+          <div class="box" data-page-node-id="Fju0VH5elB79FD4MdFHUNw">
+            <input type="text" data-role="username" placeholder="请输入用户名" autocomplete="username" data-page-node-id="2ETaL8mGfVjOIixQH9H1jC">
+            <div class="fe" data-role="ferr-username" data-page-node-id="KTVJDBl4GxeiH3P6Dfg67F"></div>
+          </div>
+        </div>
+        <div class="b-f" data-role="field" data-field="password" data-page-node-id="QqvS838FBAPctvsSuLFB3i">
+          <label data-page-node-id="d8fM5dGVC65fWHEVO3SV4s">密码</label>
+          <div class="box" data-page-node-id="GYPtYC8j17UExAi50hfh2J">
+            <input type="password" data-role="password" placeholder="请输入密码" autocomplete="current-password" data-page-node-id="48wk9f6ZB4QfQyHYMqXrlt">
+            <button class="eye" type="button" data-act="toggle-pwd" aria-label="显示密码" data-page-node-id="HG7JbvTEQhZOKdyP8Palps"></button>
+            <div class="fe" data-role="ferr-password" data-page-node-id="zVlaUBCWP8MJuPCBS5ht3Z"></div>
+          </div>
+        </div>
+        <div class="caps" data-page-node-id="WV5EF9WDsvZ0d13EYRiirX"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" data-page-node-id="SvqAJiNtgYLu0OJQFT6MzC"><path d="M8 1.6 14 13H2L8 1.6Z" data-page-node-id="PCBBtejFuef3iRojh8qoMj"/></svg>大写锁定已开启</div>
+        <div class="b-err" data-role="err" data-page-node-id="Tn8YYRtyQ8B3Lugl7JAh3R"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="flex:none" data-page-node-id="gehqPQaFGlaLODG0B4lStY"><path d="M8 1.2A6.8 6.8 0 1 0 8 14.8 6.8 6.8 0 0 0 8 1.2Zm.7 10.3H7.3v-1.4h1.4v1.4Zm0-2.6H7.3V4.5h1.4v4.4Z" data-page-node-id="LoAZoOENUPeCh2q6goBlgf"/></svg><span data-role="errtext" data-page-node-id="oYKAMsvvPaKuolcPvjgBDs"></span></div>
+        <button class="b-btn" type="button" data-act="submit" data-page-node-id="R9sgdvcDSDLARthl4LnIFn">登录</button>
+      </div>
+      <div class="b-help" data-page-node-id="1jbmoYtx1CnIcwPWNihGda">
+        <b data-page-node-id="xaAWsXpUkzYDNHAAbRUxAr">忘记密码？</b>联系系统管理员重置<br data-page-node-id="qkJpLe4cEcPPsWmAeKEPkp">
+        <b data-page-node-id="w2XGT73s37EqiP6GQhwXEq">没有账号？</b>需由管理员在「系统设置」中开通
+      </div>
+      <div class="done" data-page-node-id="lMZLACOxESq5WzgBZ1eyFu">
+        <div class="ico" data-page-node-id="n5U9NVW1KuETtTQVSPgghe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="7XjLcY0QGtgWA76ustEi20"><path d="M20 6 9 17l-5-5" data-page-node-id="f9s6Iuu2ABNXpvRL0NOWXq"/></svg></div>
+        <h3 data-page-node-id="2CaCY1IGQWz27Cn02Qw5UV">登录成功</h3><p data-page-node-id="YRxHxsqAuU7J8HNztIJDeM">正在进入工作台…</p>
+        <button type="button" data-act="reset" data-page-node-id="HNMMvQJbeONzleDeDsXyyG">返回登录页</button>
+      </div>
+    </div>
+  </main>
+</section>
+
+<!-- ══════════ 变体 C ══════════ -->
+<section id="vC" hidden data-page-node-id="pYxr7shY0LxvdUBZ0rY0zJ">
+  <header class="c-bar" data-page-node-id="aoJ0dP267mcPtNM1zVqSoS">
+    <div class="l" data-page-node-id="U9yZKAddU50y0HadQYDqUH">
+      <div class="mk" data-page-node-id="SgwOYfFCxRr8iqBVtCGvAS">快</div>
+      <div class="nm" data-page-node-id="IASSrPvuZxexBtCtDJba1C">投诉系统<small data-page-node-id="uFaGAANDydFn97JUB9gMUt">v2 智能工作台</small></div>
+    </div>
+    <div class="r" data-page-node-id="HLb63oWXHjWjfdXQaCtei8">需要账号？联系系统管理员</div>
+  </header>
+
+  <main class="c-main" data-page-node-id="3TLSYwgrj2YGkmN4JqkmSW">
+    <div class="c-inner" data-page-node-id="Sl60zN55xRYXbM4Ao9vdtc">
+      <h2 data-page-node-id="2JEyZYdXp9ih5BCFyjTCs1">登录</h2>
+      <div class="tip" data-page-node-id="KaMKZ91LJFGUWyMZUjGKtF">使用内部账号进入投诉处理工作台</div>
+      <div class="c-kick" data-role="kick" data-page-node-id="5LXfXH4gmzW6ztiyLnIoUN">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" style="margin-top:2px;flex:none" data-page-node-id="ECNHuM9mBOOz0Uj0FpLHXs"><path d="M7.13 1.6a1 1 0 0 1 1.74 0l6 10.5A1 1 0 0 1 14 13.6H2a1 1 0 0 1-.87-1.5l6-10.5ZM8 5a.6.6 0 0 0-.6.6v3.2a.6.6 0 0 0 1.2 0V5.6A.6.6 0 0 0 8 5Zm0 6.6a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Z" data-page-node-id="reHW4E7qodIKqXpyhDHTzu"/></svg>
+        <span data-role="kicktext" data-page-node-id="Yw3Z76TjQaqOqcKuZCxcSb">你在别处登录了，当前会话已失效</span>
+        <button class="x" type="button" data-act="dismiss-kick" data-page-node-id="TEuRFjg7hyMcnZmHb2yvtU">✕</button>
+      </div>
+      <div class="form-body" data-page-node-id="ayIMddDCQ5Y1PEGrZpDSW1">
+        <div class="c-f" data-role="field" data-field="username" data-page-node-id="FoBubBNdzZRqCwYHX7Zwza">
+          <label data-page-node-id="Ts9VpQ48jpE0MQzgNqEkKh">用户名</label>
+          <div class="box" data-page-node-id="vDqQwu9XIRz9nHhPNOY0wR"><input type="text" data-role="username" placeholder="admin" autocomplete="username" data-page-node-id="EQBVo6aBC8CWewDrC6Yryr"></div>
+          <div class="fe" data-role="ferr-username" data-page-node-id="sgyYzTwkDvPbKnCSqvpX9t"></div>
+        </div>
+        <div class="c-f" data-role="field" data-field="password" data-page-node-id="3opsVNL1xfS3EoMI3KON5O">
+          <label data-page-node-id="gxoEyzEGbEvPTNwhgGUpn1">密码</label>
+          <div class="box" data-page-node-id="8dpDlpEDMHdznfNpmucPY0">
+            <input type="password" data-role="password" placeholder="••••••" autocomplete="current-password" data-page-node-id="n5rj7ganOUUvDTXDyL0EMY">
+            <button class="eye" type="button" data-act="toggle-pwd" aria-label="显示密码" data-page-node-id="kikIeYDFQxrC4MDWY8pErd"></button>
+          </div>
+          <div class="fe" data-role="ferr-password" data-page-node-id="c0uCkSypmkZd6cGP7RNQLA"></div>
+        </div>
+        <div class="caps" data-page-node-id="4XdJi4ljmiVB5jXeNwCpUI"><svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" data-page-node-id="SQs56yCRJH6ycT2pQ2ald7"><path d="M8 1.6 14 13H2L8 1.6Z" data-page-node-id="ejETmQUZ5QQoSG4xG3G1f3"/></svg>大写锁定已开启</div>
+        <div class="c-err" data-role="err" data-page-node-id="wckeGNyeKHpCHqiergfWRA"><span data-role="errtext" data-page-node-id="iUPqyvzdEul7Qmdh8e2dVW"></span></div>
+        <button class="c-btn" type="button" data-act="submit" data-page-node-id="YnNDUMRxjF1kC0rxUClbb6">
+          登录
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="ukuD0G73eHVWzH4ikV4RF0"><path d="M5 12h14M13 6l6 6-6 6" data-page-node-id="9P5LwQk3AcVeS6HbHafb9Z"/></svg>
+        </button>
+      </div>
+      <div class="done" data-page-node-id="dx1RDV6FPWomeLx0UkbuBa">
+        <div class="ico" data-page-node-id="cuEE1TOYzrfrfgBRr2Ddwe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="5MmIBomWNSVFLs03WwKUOy"><path d="M20 6 9 17l-5-5" data-page-node-id="3ArleU4f4CDFHlBCzy4Dr6"/></svg></div>
+        <h3 data-page-node-id="LDuwEL7Vh3yqRm4VDypiPI">登录成功</h3><p data-page-node-id="cILpLF2NsSvYlqYHkSiAl9">正在进入工作台…</p>
+        <button type="button" data-act="reset" data-page-node-id="MuiES65eh2ehmwGhr7kzjT">返回登录页</button>
+      </div>
+    </div>
+  </main>
+
+  <footer class="c-foot" data-page-node-id="x0n1KrNTIQplBSHqQ1JBBB">
+    <span class="c-chip" data-page-node-id="uwCBYHdKrjH9ShgKkFtD7p"><span class="d" data-page-node-id="ynaEg09WyyowdYz54o0BLH"></span>服务正常</span>
+    <span class="c-chip" data-page-node-id="G69Mwuym6vyYnYDyCCbOnf">v2 · build 0831-1605</span>
+    <span class="c-chip" data-page-node-id="VmN1JqVuJ5dPU8xehoJP52">数据本地留存</span>
+    <span class="c-chip" data-page-node-id="iHI5P3XZGD7NtEcJ7VFa8h">仅限授权人员</span>
+  </footer>
+</section>
+
+<!-- ══════════ 原型外壳：状态模拟面板 ══════════ -->
+<div class="proto-panel" id="protoPanel" data-page-node-id="jy0QbDk4nIehjNfQf1nf3n">
+  <div class="t" data-page-node-id="WFbEIdD26aWp9rFSHEuu5T"><span data-page-node-id="MyJCymUEOmU3ESHzCDzohi">Prototype · 状态模拟</span><button id="panelToggle" title="折叠" data-page-node-id="Z7zpDer5hqdDueZiqBeztE">−</button></div>
+  <div id="panelBody" data-page-node-id="0T7ANS4YiOP2VBiMSEvX6U">
+    <button class="act" data-sim="success" data-page-node-id="XhQGXzR4S5zAAJGXHiI7LA">① 模拟登录成功</button>
+    <button class="act" data-sim="badpwd" data-page-node-id="8Ju5p2Z8XfuwrW6N7Pm10s">② 模拟密码错误</button>
+    <button class="act" data-sim="kick" data-page-node-id="RpPNSZuCOGBqWUBAnPKYLP">③ 踢线提示（切换）</button>
+    <button class="act" data-sim="caps" data-page-node-id="NWAr2CzSRdCcOu7l3HD2kN">④ 大写锁定（切换）</button>
+    <button class="act" data-sim="inspect" data-page-node-id="XS4ic3oJShz3bkP9xmLVkO">⑤ 显示 state JSON</button>
+    <div class="note" data-page-node-id="ScRAAX9WxQnmJtPrprY2Uy">真实交互：输入 <b data-page-node-id="CoFRHZBZe1zvu1eRvnNsOd">admin / admin</b> → 成功；其他 → 密码错误；留空 → 字段级校验</div>
+  </div>
+</div>
+
+<!-- ══════════ 原型外壳：底部切换条 ══════════ -->
+<div class="proto-bar" data-page-node-id="k54J7wd4pDY6WgSj6oVoo7">
+  <span class="tag" data-page-node-id="SaEXHcc8jkyPdxkoXT6vzx">PROTOTYPE</span>
+  <button id="prev" title="上一个变体（←）" data-page-node-id="6Y9vuDr1krP2402gCP5dr6">◀</button>
+  <span class="lbl" id="vlabel" data-page-node-id="tEP9DnC8QaWYnCG3U2ft1t">A · 精致居中卡片</span>
+  <button id="next" title="下一个变体（→）" data-page-node-id="l3cjRJMOlVj89jXoBYJASG">▶</button>
+  <span class="sep" data-page-node-id="jYGMWIjhL7PrTYVYsRUMMW"></span>
+  <button id="themeBtn" title="切换明暗主题" data-page-node-id="XTA1sKcKTxU22sbMeCQqab">☾</button>
+</div>
+<pre class="proto-state" id="stateBox" data-page-node-id="b0IdCoVZY32i4KwCWbNM1I"></pre>
+
+<script>
+const VARIANTS = [
+  {key:'A', name:'精致居中卡片', desc:'现状进化 · 居中白卡 + 浮动标签'},
+  {key:'B', name:'左品牌右表单', desc:'分栏沉浸 · 品牌侧讲能力，表单无卡片'},
+  {key:'C', name:'极简下划线',   desc:'无卡片无渐变 · 顶栏 + 下划线输入 + 底部元信息'},
+];
+
+const state = {
+  variant: 'A', theme: 'light',
+  phase: 'idle',            // idle | submitting | success
+  username: '', password: '',
+  fieldErrors: {username:'', password:''},
+  error: '', kick: false, caps: false, showPwd: false, remember: false,
+};
+
+const $  = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+const EYE_ON  = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 3C4.4 3 1.6 5.7 1 8c.6 2.3 3.4 5 7 5s6.4-2.7 7-5c-.6-2.3-3.4-5-7-5Zm0 8.2A3.2 3.2 0 1 1 8 4.8a3.2 3.2 0 0 1 0 6.4Zm0-1.6a1.6 1.6 0 1 0 0-3.2 1.6 1.6 0 0 0 0 3.2Z"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M2.1 2.1 1 3.2l2.4 2.4C2.2 6.5 1.3 7.6 1 8c.6 2.3 3.4 5 7 5 1.2 0 2.3-.3 3.3-.8l2.4 2.4 1.1-1.1L2.1 2.1Zm5.9 9.1c-2 0-3.7-1.1-4.6-2.7.3-.6.9-1.4 1.8-2l.9.9A3.2 3.2 0 0 0 9.7 11c-.5.1-1.1.2-1.7.2Zm5.9-1.5c.3-.5.6-1 .8-1.5-.6-2.3-3.4-5-7-5-.4 0-.8 0-1.2.1l1.3 1.3c2.3.1 4.2 2 4.2 4.3 0 .3 0 .6-.1.8l2 2Z"/></svg>';
+
+/* ── 渲染：变体切换后重放全部状态 ── */
+function render(){
+  const i = VARIANTS.findIndex(v => v.key === state.variant);
+  document.documentElement.classList.toggle('dark', state.theme === 'dark');
+  document.body.dataset.variant = state.variant;
+  document.body.dataset.phase   = state.phase;
+  document.body.dataset.err     = state.error ? '1' : '0';
+  document.body.dataset.kick    = state.kick ? '1' : '0';
+  document.body.dataset.caps    = state.caps ? '1' : '0';
+
+  VARIANTS.forEach(v => { $('#v' + v.key).hidden = (v.key !== state.variant); });
+
+  // 把 state 写回所有变体的 DOM（切变体时表单内容不丢）
+  $$('[data-role="username"]').forEach(el => { el.value = state.username; });
+  $$('[data-role="password"]').forEach(el => {
+    el.value = state.password;
+    el.type  = state.showPwd ? 'text' : 'password';
+  });
+  $$('[data-act="toggle-pwd"]').forEach(el => {
+    el.innerHTML = state.showPwd ? EYE_OFF : EYE_ON;
+    el.title = state.showPwd ? '隐藏密码' : '显示密码';
+  });
+  $$('[data-role="remember"]').forEach(el => { el.checked = state.remember; });
+
+  ['username','password'].forEach(f => {
+    const msg = state.fieldErrors[f] || '';
+    $$(`[data-role="field"][data-field="${f}"]`).forEach(w => w.classList.toggle('has-err', !!msg));
+    $$(`[data-role="ferr-${f}"]`).forEach(el => { el.textContent = msg; });
+  });
+  $$('[data-role="errtext"]').forEach(el => { el.textContent = state.error; });
+
+  const busy = state.phase === 'submitting';
+  $$('[data-act="submit"]').forEach(b => {
+    b.disabled = busy;
+    b.innerHTML = busy ? '<span class="spin"></span>登录中…' : (state.variant === 'C'
+      ? '登录<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>'
+      : '登录');
+  });
+
+  $('#vlabel').innerHTML = `<b>${VARIANTS[i].key}</b> · ${VARIANTS[i].name}`;
+  $('#themeBtn').textContent = state.theme === 'dark' ? '☀' : '☾';
+  $$('[data-sim="kick"]').forEach(b => b.classList.toggle('on', state.kick));
+  $$('[data-sim="caps"]').forEach(b => b.classList.toggle('on', state.caps));
+  $$('[data-sim="inspect"]').forEach(b => b.classList.toggle('on', state.inspect));
+
+  const shown = Object.assign({}, state);
+  $('#stateBox').textContent = 'state = ' + JSON.stringify(shown, null, 1);
+}
+
+/* ── 变体切换（URL 可分享、刷新稳定） ── */
+function goVariant(key){
+  state.variant = key;
+  const u = new URL(location.href);
+  u.searchParams.set('variant', key);
+  history.replaceState(null, '', u);
+  render();
+}
+function cycle(dir){
+  const i = VARIANTS.findIndex(v => v.key === state.variant);
+  goVariant(VARIANTS[(i + dir + VARIANTS.length) % VARIANTS.length].key);
+}
+
+/* ── 登录（桩：不碰后端，只回答"长什么样"） ── */
+function submit(){
+  if (state.phase === 'submitting') return;
+  state.fieldErrors = {username:'', password:''};
+  state.error = '';
+  if (!state.username.trim()) state.fieldErrors.username = '请输入用户名';
+  if (!state.password)        state.fieldErrors.password = '请输入密码';
+  if (state.fieldErrors.username || state.fieldErrors.password){ render(); return; }
+
+  state.phase = 'submitting'; render();
+  setTimeout(() => {
+    if (state.username === 'admin' && state.password === 'admin'){
+      state.phase = 'success'; state.error = '';
+    } else {
+      state.phase = 'idle'; state.error = '用户名或密码错误';
+    }
+    render();
+  }, 900);
+}
+function reset(){
+  state.phase = 'idle'; state.error = '';
+  state.fieldErrors = {username:'', password:''};
+  render();
+}
+
+/* ── 事件：委托，跨变体通用 ── */
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (t.matches('[data-role="username"]')){ state.username = t.value; state.fieldErrors.username=''; }
+  if (t.matches('[data-role="password"]')){ state.password = t.value; state.fieldErrors.password=''; }
+  if (t.matches('[data-role="remember"]')){ state.remember = t.checked; }
+  if (t.matches('[data-role="username"],[data-role="password"]')){ state.error=''; }
+  render();
+});
+document.addEventListener('click', e => {
+  const b = e.target.closest('[data-act],[data-sim]');
+  if (!b) return;
+  const act = b.dataset.act;
+  if (act === 'toggle-pwd'){ state.showPwd = !state.showPwd; render(); }
+  if (act === 'submit') submit();
+  if (act === 'reset') reset();
+  if (act === 'dismiss-kick'){ state.kick = false; render(); }
+  const sim = b.dataset.sim;
+  if (sim === 'success'){ state.username='admin'; state.password='admin'; submit(); }
+  if (sim === 'badpwd'){ state.phase='idle'; state.error='用户名或密码错误'; render(); }
+  if (sim === 'kick'){ state.kick = !state.kick; render(); }
+  if (sim === 'caps'){ state.caps = !state.caps; render(); }
+  if (sim === 'inspect'){
+    state.inspect = !state.inspect;
+    document.body.dataset.inspect = state.inspect ? '1' : '0';
+    render();
+  }
+});
+// 回车提交
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.matches('[data-role="username"],[data-role="password"]')){
+    e.preventDefault(); submit(); return;
+  }
+  // CapsLock 探测
+  if (e.target.matches('[data-role="password"]') && typeof e.getModifierState === 'function'){
+    const c = e.getModifierState('CapsLock');
+    if (c !== state.caps){ state.caps = c; render(); }
+  }
+  // ← → 循环变体（输入框聚焦时不拦截）
+  const focused = document.activeElement || {};
+  if (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' || focused.isContentEditable) return;
+  if (e.key === 'ArrowLeft')  cycle(-1);
+  if (e.key === 'ArrowRight') cycle(1);
+});
+$('#prev').addEventListener('click', () => cycle(-1));
+$('#next').addEventListener('click', () => cycle(1));
+$('#themeBtn').addEventListener('click', () => {
+  state.theme = state.theme === 'dark' ? 'light' : 'dark'; render();
+});
+$('#panelToggle').addEventListener('click', () => {
+  const body = $('#panelBody'), hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  $('#panelToggle').textContent = hidden ? '−' : '+';
+});
+
+// 初始：读 URL
+const q = new URLSearchParams(location.search).get('variant');
+if (q && VARIANTS.some(v => v.key === q.toUpperCase())) state.variant = q.toUpperCase();
+state.inspect = false;
+render();
+</script>
+</body>
+</html>
