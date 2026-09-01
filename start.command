@@ -1,66 +1,98 @@
 #!/bin/bash
-# 驾校投诉处理系统 一键启动脚本
-# 双击运行即可，服务后台常驻，关闭窗口不影响服务
+# 驾校投诉处理系统 - 启动入口
+# 双击运行即可，三级策略依次降级：
+#   策略 1  端口已在监听   → 服务本来就在跑，直接开浏览器
+#   策略 2  launchd 接管   → 开机自启 + 崩溃自愈（最理想）
+#   策略 3  nohup 兜底     → launchd 不可用时直接起进程
+#
+# 手动停止：
+#   lsof -ti :5003 | xargs kill
+# 若服务由 launchd 托管（策略 2），需先卸载再停：
+#   launchctl unload ~/Library/LaunchAgents/com.complaint.system.plist
 
 cd "$(dirname "$0")"
 
 PORT=5003
-PID_FILE="/tmp/complaint_system.pid"
+PLABEL="com.complaint.system"
+PLIST_PATH="$HOME/Library/LaunchAgents/$PLABEL.plist"
+LOG="/tmp/complaint_system.log"
+PYTHON="./venv/bin/python3"
 
 echo "========================================"
 echo "  驾校投诉处理系统"
 echo "========================================"
 echo ""
 
-# 检查端口是否已被占用（服务已在运行）
-if lsof -i :$PORT &>/dev/null; then
-    echo "✅ 服务已在运行: http://127.0.0.1:$PORT"
-    echo "   如需停止: kill \$(cat $PID_FILE)"
+port_up() { lsof -nP -iTCP:"$PORT" -sTCP:LISTEN &>/dev/null; }
+
+show_url() {
+    LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "")
+    echo "   本机访问: http://127.0.0.1:$PORT"
+    [ -n "$LAN_IP" ] && echo "   局域网访问: http://$LAN_IP:$PORT"
+}
+
+# ---- 策略 1：端口已在监听，说明服务本来就在跑 ----
+# 注意：端口被占用是"服务已就绪"的正常状态，不是错误。
+if port_up; then
+    echo "ℹ️  端口 $PORT 已在监听，服务已在运行"
+    if launchctl list 2>/dev/null | grep -q "$PLABEL"; then
+        echo "   当前由 launchd 托管（开机自启 + 崩溃自愈）"
+    fi
+    show_url
     open "http://127.0.0.1:$PORT"
     exit 0
 fi
 
-# 检查 Python
-if ! command -v python3 &> /dev/null; then
-    echo "❌ 未找到 Python3，请先安装 Python 3.10+"
-    exit 1
-fi
+# ---- 策略 2：交给 launchd（开机自启 + 崩溃自愈）----
+if [ -f "$PLIST_PATH" ]; then
+    if launchctl list 2>/dev/null | grep -q "$PLABEL"; then
+        echo "ℹ️  launchd 任务已注册，触发重启..."
+        launchctl kickstart -k "gui/$(id -u)/$PLABEL" 2>/dev/null
+    else
+        echo "ℹ️  尝试用 launchd 启动（开机自启 + 崩溃自愈）..."
+        launchctl load -w "$PLIST_PATH" 2>/dev/null
+    fi
 
-echo "✅ Python: $(python3 --version)"
+    echo "   等待服务就绪（最多 40 秒）..."
+    for _ in $(seq 1 40); do
+        port_up && break
+        sleep 1
+    done
 
-# 检查并安装依赖
-if [ ! -d "venv" ]; then
-    echo "📦 创建虚拟环境..."
-    python3 -m venv venv
-fi
+    if port_up; then
+        echo "✅ launchd 已接管服务"
+        show_url
+        open "http://127.0.0.1:$PORT"
+        exit 0
+    fi
 
-source venv/bin/activate
-
-if [ ! -f "venv/.deps_installed" ]; then
-    echo "📦 安装依赖..."
-    pip install -r requirements.txt -q
-    touch venv/.deps_installed
-    echo "✅ 依赖安装完成"
+    # launchd 起不来时务必卸载，否则 KeepAlive 会每 10 秒崩溃重启一次，
+    # 既刷日志又会和策略 3 抢端口。
+    echo "⚠️  launchd 未能启动服务，卸载任务，改用直接启动..."
+    launchctl unload "$PLIST_PATH" 2>/dev/null
 else
-    echo "✅ 依赖已就绪"
+    echo "ℹ️  未找到 launchd 配置（$PLIST_PATH），使用直接启动方式"
 fi
 
-echo ""
-echo "🚀 后台启动服务..."
-echo "   访问地址: http://127.0.0.1:$PORT"
-echo "   关闭本窗口不影响服务运行"
-echo "   如需停止: kill \$(cat $PID_FILE)"
-echo ""
+# ---- 策略 3：nohup 兜底 ----
+# env -u PYTHONPATH 不可省略：某些终端环境注入的 PYTHONPATH 会劫持
+# pathlib.Path.mkdir，导致进程崩在 config.py 的 _ensure_dirs()。
+echo "ℹ️  直接启动服务（nohup 后台，关闭终端不受影响）..."
+nohup env -u PYTHONPATH "$PYTHON" app.py >> "$LOG" 2>&1 &
+NEW_PID=$!
+echo "   PID=$NEW_PID，等待服务就绪（torch 加载较慢，最多 90 秒）..."
 
-# nohup 后台启动，关闭终端窗口不会中断服务
-nohup python3 app.py >> /tmp/complaint_system.log 2>&1 &
-echo $! > "$PID_FILE"
+for _ in $(seq 1 90); do
+    port_up && break
+    sleep 1
+done
 
-sleep 2
-if lsof -i :$PORT &>/dev/null; then
-    echo "✅ 服务启动成功"
+if port_up; then
+    echo "✅ 服务已启动（PID=$NEW_PID）"
+    show_url
     open "http://127.0.0.1:$PORT"
 else
-    echo "❌ 启动失败，查看日志: /tmp/complaint_system.log"
-    tail -20 /tmp/complaint_system.log
+    echo "❌ 启动失败，日志尾部如下："
+    tail -30 "$LOG" 2>/dev/null
+    exit 1
 fi

@@ -167,6 +167,7 @@ def init_db():
                 unit_code TEXT PRIMARY KEY,
                 unit_name TEXT NOT NULL DEFAULT '',
                 vehicle_count INTEGER NOT NULL DEFAULT 0,
+                is_active INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL DEFAULT ''
             );
 
@@ -325,6 +326,18 @@ def init_db():
                 system_logger.info("[数据库] 已迁移: org_vehicle_counts 增加 unit_type 列")
             except Exception:
                 pass
+        if "is_active" not in vc_columns:
+            try:
+                conn.execute("ALTER TABLE org_vehicle_counts ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1")
+                system_logger.info("[数据库] 已迁移: org_vehicle_counts 增加 is_active 列")
+            except Exception:
+                pass
+        # 同步字典中的 active 状态到车辆表（初始回填/字典变更时保持一致）
+        for u in ORGANIZATION_UNITS:
+            conn.execute(
+                "UPDATE org_vehicle_counts SET is_active=? WHERE unit_code=?",
+                (1 if u.get("active", True) else 0, u["code"]),
+            )
         for u in ORGANIZATION_UNITS:
             conn.execute(
                 "UPDATE org_vehicle_counts SET unit_type=? WHERE unit_code=? AND unit_type=''",
@@ -334,9 +347,9 @@ def init_db():
         if vc_cnt == 0:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             conn.executemany(
-                "INSERT OR IGNORE INTO org_vehicle_counts (unit_code, unit_name, unit_type, updated_at)"
-                " VALUES (?, ?, ?, ?)",
-                [(u["code"], u["name"], u["type"], now) for u in ORGANIZATION_UNITS],
+                "INSERT OR IGNORE INTO org_vehicle_counts (unit_code, unit_name, unit_type, is_active, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                [(u["code"], u["name"], u["type"], 1 if u.get("active", True) else 0, now) for u in ORGANIZATION_UNITS],
             )
             system_logger.info("[数据库] 已初始化: org_vehicle_counts 载入 %d 个网点", len(ORGANIZATION_UNITS))
 
@@ -534,6 +547,46 @@ def find_same_day_ticket(id_card: str, complaint_date: str) -> dict | None:
         row = conn.execute(
             "SELECT * FROM complaint_tickets WHERE id_card=? AND date(complaint_date)=? ORDER BY created_at ASC LIMIT 1",
             (id_card, complaint_date),
+        ).fetchone()
+    return _row_to_dict_ticket(row) if row else None
+
+
+def find_open_ticket_by_idcard(id_card: str) -> dict | None:
+    """按身份证号反查「未结案」工单（最早的），供受理页跨日并入预检。
+
+    业务语义：投诉处理是长期过程，学员一周前的工单今天仍可能在处理；
+    只要该工单尚未完结、未撤诉、未归档，就视为同一件事的延续。
+    返回最早创建的一条（created_at ASC），保证多人接手时仍是同一个工单。
+    """
+    id_card = (id_card or "").strip()
+    if not id_card:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM complaint_tickets
+            WHERE id_card=?
+              AND COALESCE(handle_status,'') != '已完结'
+              AND COALESCE(withdraw_status,'') != '已撤诉'
+              AND COALESCE(archive_status,'') != '已归档'
+            ORDER BY created_at ASC LIMIT 1
+            """,
+            (id_card,),
+        ).fetchone()
+    return _row_to_dict_ticket(row) if row else None
+
+
+def find_latest_ticket_by_id_card(id_card: str) -> dict | None:
+    """按身份证号反查最近一条工单（不受日期限制），用于 download/upload 等
+    路径补全：前端未带 ticket_id 时，仍能拿到真实单位字段，避免归档目录退化
+    为「未归属/未归属-未归属/...」。"""
+    id_card = (id_card or "").strip()
+    if not id_card:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM complaint_tickets WHERE id_card=? ORDER BY created_at DESC LIMIT 1",
+            (id_card,),
         ).fetchone()
     return _row_to_dict_ticket(row) if row else None
 
@@ -855,11 +908,11 @@ def get_org_vehicle_counts() -> dict[str, int]:
 
 
 def get_org_vehicle_count_items() -> list[dict]:
-    """获取所有网点的车辆数配置列表（类型/名称/代号/车辆数）"""
+    """获取所有网点的车辆数配置列表（类型/名称/代号/车辆数/状态）"""
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT unit_code, unit_name, unit_type, vehicle_count FROM org_vehicle_counts"
-            " ORDER BY unit_type DESC, unit_code"
+            "SELECT unit_code, unit_name, unit_type, vehicle_count, is_active FROM org_vehicle_counts"
+            " ORDER BY is_active DESC, unit_type DESC, unit_code"
         ).fetchall()
         return [
             {
@@ -867,26 +920,34 @@ def get_org_vehicle_count_items() -> list[dict]:
                 "unit_name": r["unit_name"],
                 "unit_type": r["unit_type"],
                 "vehicle_count": r["vehicle_count"] or 0,
+                "is_active": 1 if r["is_active"] else 0,
             }
             for r in rows
         ]
 
 
-def save_org_vehicle_count(unit_code: str, unit_name: str = "", unit_type: str = "", vehicle_count: int = 0) -> bool:
+def save_org_vehicle_count(
+    unit_code: str,
+    unit_name: str = "",
+    unit_type: str = "",
+    vehicle_count: int = 0,
+    is_active: int = 1,
+) -> bool:
     """保存单个网点车辆数（upsert）"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO org_vehicle_counts (unit_code, unit_name, unit_type, vehicle_count, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO org_vehicle_counts (unit_code, unit_name, unit_type, vehicle_count, is_active, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(unit_code) DO UPDATE SET
                 unit_name=excluded.unit_name,
                 unit_type=excluded.unit_type,
                 vehicle_count=excluded.vehicle_count,
+                is_active=excluded.is_active,
                 updated_at=excluded.updated_at
             """,
-            (unit_code, unit_name, unit_type, int(vehicle_count or 0), now),
+            (unit_code, unit_name, unit_type, int(vehicle_count or 0), 1 if is_active else 0, now),
         )
         return True
 
@@ -905,6 +966,7 @@ def save_org_vehicle_counts(items: list[dict]) -> int:
             str(item.get("unit_name") or ""),
             str(item.get("unit_type") or ""),
             int(item.get("vehicle_count") or 0),
+            1 if item.get("is_active", True) else 0,
         )
         saved += 1
     with get_db() as conn:

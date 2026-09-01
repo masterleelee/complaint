@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import re
+import shutil
 import traceback
 import mimetypes
 import certifi
@@ -66,6 +67,24 @@ app.config["TEMPLATES_AUTO_RELOAD"] = True  # 禁用模板缓存
 # 账号体系：session/cookie 配置
 from core.auth import configure_session
 configure_session(app)
+
+
+@app.after_request
+def _no_cache_html(resp):
+    """HTML 页面禁用浏览器启发式缓存：无 Cache-Control 时浏览器会自行缓存页面，
+    导致模板更新后用户强刷仍见旧界面（2026-08-31 实证）。静态资源带 ?v= 版本号不受影响。"""
+    if resp.content_type and resp.content_type.startswith("text/html"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.before_request
+def _log_page_visit():
+    """页面级访问日志（含 UA）：用于诊断客户端浏览器类型与缓存行为（2026-08-31 缓存回退事件）。"""
+    if request.path in ("/", "/app"):
+        system_logger.info(
+            "[页面访问] %s UA=%s" % (request.remote_addr, request.headers.get("User-Agent", "")[:200])
+        )
 
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -508,6 +527,11 @@ def _start_background_services():
 # ═══════════════════════════════════════════════════════════════
 #  页面路由
 # ═══════════════════════════════════════════════════════════════
+
+@app.route("/app")  # 「/」的别名：全新路径，供顽固缓存环境下强制进入最新页面（2026-08-31）
+def app_alias():
+    return index()
+
 
 @app.route("/")
 def index():
@@ -3039,6 +3063,23 @@ def api_templates_delete(template_id):
 #  API: 回访管理 + 文档生成
 # ═══════════════════════════════════════════════════════════════
 
+def _clean_overrides(raw):
+    """预览纸面编辑的覆盖值：仅接收 {标签 / 标签:行号 / __title__ / __no_line__ → 文本}。
+
+    空值（用户清空单元格）保留，以便让 docx 与纸面一致；非法结构与超长内容丢弃。
+    """
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for k, v in raw.items():
+        key = str(k).strip()
+        val = str(v)
+        if not key or len(key) > 40 or len(val) > 4000:
+            continue
+        out[key] = val.replace("\r", "").strip()
+    return out or None
+
+
 @app.route("/api/tickets/<ticket_id>/register-form", methods=["POST"])
 @login_required
 def api_tickets_register_form(ticket_id):
@@ -3931,4 +3972,4 @@ if __name__ == "__main__":
     print(f"  访问地址: http://127.0.0.1:5003")
     print(f"  项目目录: {PROJECT_DIR}")
     print("=" * 50)
-    app.run(host="127.0.0.1", port=5003)
+    app.run(host="0.0.0.0", port=5003)

@@ -81,7 +81,8 @@ DEFAULT_CONFIG = {
         "contract_dir": os.getenv("CONTRACT_DIR", str(BASE_DIR / "合同文件")),
         "upload_dir": os.getenv("UPLOAD_DIR", str(BASE_DIR / "uploads")),
     },
-    "archive_root": os.getenv("ARCHIVE_ROOT", "案件归档"),
+    # 绝对路径默认值：避免相对路径按服务进程 CWD 解析导致落盘位置漂移
+    "archive_root": os.getenv("ARCHIVE_ROOT", str(BASE_DIR / "案件归档")),
 }
 
 
