@@ -4409,7 +4409,8 @@ NOTES_POLISH_PROMPT = """你是驾校投诉处理专员。工作人员用随手�
 1. 只能使用原文提供的信息，严禁编造或补充原文没有的姓名、金额、日期、承诺等事实
 2. 保留全部关键信息：联系对象、沟通内容、协商结果、后续安排
 3. 按逻辑分条陈述（如「1）……；2）……」），语言正式、规范、简洁
-4. 只输出整理后的文字，不要任何解释、前缀或后缀
+4. 全文控制在 120 字以内（该段将写入登记表「投诉处理」栏，空间有限，严禁扩写）
+5. 只输出整理后的文字本身，不要任何解释、前缀、后缀或括号补充说明
 
 处理情况原文：
 """
@@ -4435,11 +4436,16 @@ def api_notes_polish():
             json={
                 "model": llm["model"],
                 "messages": [{"role": "user", "content": NOTES_POLISH_PROMPT + text}],
-                "max_tokens": 1024,
+                # 120 字润色输出约 200 token；实测 thinking_budget=256 时思考约 380 字、
+                # 全程 ~6s（不限预算 17.8s），仍能识别错别字/口语（如"鞋套"→"协调"）；
+                # 128 会截断思考导致输出附加「（注：…）」等杂质，勿再调小
+                "max_tokens": 768,
                 "temperature": 0.3,
                 # qwen3 系列文字润色场景需要先"想清楚"才能识别错别字（如"鞋套"→"协调"）、补全上下文；
                 # 关闭思考会让模型走短路径直接复述，无法处理拼音错别字与口语化输入
                 "enable_thinking": True,
+                # DashScope thinking_budget 默认=模型最大思维链长度（数千 token），不限则每次都等很久
+                "thinking_budget": 256,
             },
             timeout=60,
         )
@@ -4455,24 +4461,106 @@ def api_notes_polish():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  API: ④卡片 投诉内容/诉求 AI 提取
+# ═══════════════════════════════════════════════════════════════
+
+COMPLAINT_EXTRACT_PROMPT = """你是驾校投诉登记表撰写助手。工作人员记录了一段学员投诉的描述，请从中提取登记表的两个栏目，只输出 JSON，不要输出任何其他文字：
+{"complaint_content": "投诉内容", "complaint_demands": "投诉诉求"}
+规则：
+1. complaint_content：客观陈述投诉事实（何时报名、缴了多少费、发生了什么、向谁投诉），不超过120字；只能使用描述中出现的信息，缺细节时按投诉类型的常见情形概括，不得编造具体金额、日期、人名。
+2. complaint_demands：学员核心诉求一句话，不超过40字；描述未体现时按投诉类型写通用诉求。
+3. 全部使用陈述句，不加评价性用语。
+
+投诉类型：%s
+各投诉类型通用诉求参考：%s
+学员描述：
+%s
+
+"""
+
+
+@app.route("/api/complaint/extract", methods=["POST"])
+@login_required
+def api_complaint_extract():
+    """④卡片 AI 提取：从用户输入的投诉描述中提取登记表的 投诉内容/投诉诉求。
+
+    结果仅返回前端预览，由用户点「保存进度」经 PUT /api/tickets/<id> 落库；
+    描述原文不保存。保留思考模式（识别口语化/错别字描述），thinking_budget 限长提速。
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        text = (body.get("text") or "").strip()
+        complaint_type = str(body.get("complaint_type") or "").strip()
+        if len(text) < 10:
+            return _err("请先粘贴/输入完整的投诉描述（至少 10 个字）", 400)
+        from services.intake_service import TYPE_LABELS, _parse_llm_json
+        from services.visit_service import GENERIC_DEMANDS
+        type_label = TYPE_LABELS.get(complaint_type, "其他")
+        ref = "；".join(
+            f"{TYPE_LABELS.get(k, k)}：{GENERIC_DEMANDS[k]}"
+            for k in ("A", "B", "C", "D", "E") if GENERIC_DEMANDS.get(k)
+        )
+        import requests as _requests
+        llm = _llm_config("llm")
+        if not llm.get("api_url") or not llm.get("api_key") or not llm.get("model"):
+            return _err("未配置大模型接口，请在系统设置中填写后重试", 400)
+        resp = _requests.post(
+            llm["api_url"],
+            headers={"Authorization": f"Bearer {llm['api_key']}", "Content-Type": "application/json"},
+            json={
+                "model": llm["model"],
+                "messages": [{"role": "user", "content": COMPLAINT_EXTRACT_PROMPT % (type_label, ref, text)}],
+                "max_tokens": 768,
+                "temperature": 0.2,
+                "enable_thinking": True,
+                # 与 /api/notes/polish 同口径：保留思考模式 + 256 预算（实测 ~6s，不限 ~18s）
+                "thinking_budget": 256,
+            },
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return _err(_format_llm_error(resp), 400)
+        content = ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        data = _parse_llm_json(content)
+        if not data:
+            return _err("AI 未返回有效结果，请重试", 400)
+        return _ok({
+            "complaint_content": str(data.get("complaint_content") or "").strip(),
+            "complaint_demands": str(data.get("complaint_demands") or "").strip(),
+        })
+    except Exception as e:
+        return _err(f"AI 提取失败：{e}", 500)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  API: 回复函 AI 润色
 # ═══════════════════════════════════════════════════════════════
 
-REPLY_POLISH_PROMPT = """你是驾校投诉回复函的公文润色助手。下面按顺序给出回复函的各段文字，请逐段润色。
+REPLY_POLISH_PROMPT = """你是驾校投诉回复函的文书润色助手。下面按顺序给出回复函中的叙述性段落（固定格式段落已剔除），请逐段润色。
+定位：这些段落已有固定话术骨架，你的任务是在原句基础上让语句通顺、逻辑连贯、符合公文文书体；是顺句子，不是重写、不是扩写。
 要求：
-1. 只优化语言表达：修正错别字、病句、口语化表述，统一标点与公文排版规范，语气正式、得体、专业
-2. 严禁改动任何数字、金额、身份证号、日期、合同编码等事实信息，严禁新增或删除任何事实内容
-3. 保持段落顺序不变，润色后的段落数量必须与输入完全一致
-4. 输出时，各段落之间用单独一行的 <PARA> 分隔；不要输出编号、解释或任何其他文字
+1. 尽量保留原有句式骨架与语序，只修正错别字、病句、口语化表述，统一标点与公文用语；能不改就不改
+2. 严禁改动任何数字、金额、身份证号、日期、合同编码、机构与合同名称等事实信息
+3. 严禁新增或删除任何事实内容；原文没有的信息一律不写
+4. 每段润色后长度与原文相当：不得明显加长（回复函须保持一页 A4），也不得丢失原文信息
+5. 保持段落顺序与数量不变，各段之间用单独一行 <PARA> 分隔；不要输出编号、解释或任何其他文字
 
-回复函原文：
+回复函段落：
 """
+
+
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _facts_intact(src: str, out: str) -> bool:
+    """润色前后数字序列（顺序+数值）完全一致，防止金额/证件号/日期被改动。"""
+    return _NUM_RE.findall(src) == _NUM_RE.findall(out)
 
 
 @app.route("/api/reply/polish", methods=["POST"])
 @login_required
 def api_reply_polish():
-    """回复函 AI 润色：逐段润色函件正文，忠实事实，保留段落结构。"""
+    """回复函 AI 润色：只收叙述性段落，逐段润色并逐段校验，失控段落回填原文。"""
     try:
         body = request.get_json(force=True, silent=True) or {}
         paragraphs = body.get("paragraphs") or []
@@ -4495,10 +4583,12 @@ def api_reply_polish():
                 }],
                 "max_tokens": 2048,
                 "temperature": 0.3,
-                # 思考模式：润色需要模型先通读全文再改写，关闭思考会导致逐句机械复述
+                # 思考模式：润色需要模型先通读全文再改写，关闭思考会导致逐句机械复述；
+                # thinking_budget 截短推理链（约 500 token），保住质量的同时砍掉大半等待
                 "enable_thinking": True,
+                "thinking_budget": 512,
             },
-            timeout=60,
+            timeout=90,
         )
         if resp.status_code != 200:
             return _err(_format_llm_error(resp), 400)
@@ -4506,7 +4596,15 @@ def api_reply_polish():
         polished = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", polished.strip()).strip()
         if not polished:
             return _err("AI 未返回有效内容，请重试", 400)
-        return _ok({"polished": polished})
+        # 后端逐段校验：段落数不吻合或单段数字被改/长度失控 → 该段回填原文，绝不破坏内容
+        parts = [p.strip() for p in polished.split("<PARA>") if p.strip()]
+        if len(parts) != len(paragraphs):
+            parts = list(paragraphs)
+        else:
+            for i, (src, out) in enumerate(zip(paragraphs, parts)):
+                if not _facts_intact(src, out) or len(out) < len(src) * 0.5 or len(out) > len(src) + 40:
+                    parts[i] = src
+        return _ok({"polished": "\n<PARA>\n".join(parts)})
     except Exception as e:
         return _err(f"AI 润色失败：{e}", 500)
 

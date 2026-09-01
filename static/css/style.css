@@ -1154,6 +1154,42 @@ tbody tr:hover { background: #f8fafc; }
   letter-spacing: -0.3px;
 }
 
+/* ── 系统设置页：双栏响应式布局（左高频配置 / 右管理类） ── */
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) minmax(560px, 1.55fr);
+  gap: 20px;
+  align-items: start;
+}
+
+/* 非管理员看不到右栏，左栏独占整行 */
+.settings-layout.is-single {
+  grid-template-columns: minmax(0, 900px);
+}
+
+.settings-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0; /* 允许 grid 子项收缩，避免表格撑破布局 */
+}
+
+/* 卡片间距由 .settings-col 的 gap 控制，去掉卡片自身的 margin */
+.settings-layout .card {
+  margin-bottom: 0;
+}
+
+/* 管理类表格：横向滚动，列多时不折行 */
+.settings-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.settings-table-wrap table {
+  min-width: 100%;
+  white-space: nowrap;
+}
+
 /* ── Settings system cards ── */
 .sys-config-grid {
   display: grid;
@@ -1187,6 +1223,14 @@ tbody tr:hover { background: #f8fafc; }
   flex-direction: column;
   gap: 6px;
   margin-bottom: 8px;
+}
+
+/* 窄屏回退单列，避免两栏被挤压 */
+@media (max-width: 1180px) {
+  .settings-layout,
+  .settings-layout.is-single {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Responsive adjustments ── */
@@ -1749,6 +1793,7 @@ tbody tr:hover { background: #f8fafc; }
 /* 错误 / 提醒 / 成功条 */
 .uc-bar { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; padding: 10px 14px; border-radius: var(--radius); margin-top: 12px; }
 .uc-warn { background: var(--warning-50); color: var(--warning); border: 1px solid #fde68a; }
+.uc-danger { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
 .uc-ok { background: var(--success-50); color: var(--success); border: 1px solid var(--success-border); }
 
 /* 候选学员列表 */

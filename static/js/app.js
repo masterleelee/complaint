@@ -8,6 +8,7 @@ import { useWorkbench } from "useWorkbench";
 import { stBadge, getTrainingTime, getEventType, getDrivingFeeBreakdown, todayStr } from "helpers";
 import { getJ } from "api";
 import { postJ } from "api";
+import { startAuthWatch } from "auth";
 
 // 从 reason 中提取违约金计算公式（如 "3180×20%=636"）
 function extractFormula(reason) {
@@ -89,7 +90,7 @@ try {
       queryAll, restore: restoreComplaint, reset: resetComplaint,
       assignableUsers, loadAssignableUsers,
       studentName, schoolShort, regStart, regEnd,
-      candidates, candWrapRef, searching, candEmpty, searchSource, selectedCand,
+      candidates, candWrapRef, searching, candEmpty, searchSource, selectedCand, queryTarget,
       candTotal, candPage, candTotalPages, gotoCandPage, orgFallback, orgOptions,
       phoneMismatch, residencyTip, nameMismatch, phoneCandidates, successBar,
       clearTransient, examStageClass,
@@ -263,8 +264,10 @@ try {
       allTickets, ticketsOpen, ticketsArchived, ticketsWithdrawn, ticketsLoading,
       selectedTicketId, selectedTicket, selectedLoading,
       handlingNotes, branchCooperation, coopOptions, feeUnlocked, studentNameEdit,
-      previewFormOpen, previewFormData, previewFormLoading, previewRegistrationForm,
-      listFilter, railOpen, profileOpen, timelineOpen, contractModalOpen,
+      requeryIdCard, requerying, requerySkipped, requerySources, requeryMsg, requeryWithIdCard,
+      extractInput, extractContent, extractDemands, extracting, extractDirty, aiExtractComplaint,
+      previewFormOpen, previewFormData, previewFormLoading, previewRegistrationForm, formOverrides,
+      listFilter, railOpen, profileOpen, timelineOpen, contractModalOpen, toggleRailPanel,
       loadTickets, openTicket, refreshAfterIntake, saveProgress,
       unlockFee, doWithdraw, doCancelWithdraw, doArchive, archiveGates, gateErrors, canArchive, archiveRoot,
       clFocusId, focusArchivedTicket,
@@ -275,13 +278,15 @@ try {
       clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
       clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
       handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
-      clPageSize, pagedGroups, clSetPage,
+      clPageSize, pagedGroups, clSetPage, batchBarVisible,
       daysOpen, isOverdue, feeState, maskPhone,
       clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
       batchExportSelected,
-      transferModalOpen, transferTarget, transferSaving, askBatchTransfer, confirmBatchTransfer,
+      clExpandedIds, clToggleExpand, copyPhone,
+      transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
       deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
       handlerLabel,
+      actionAt,
     } = useWorkbench(toast, restoreComplaint, restoreWorkflow, () => qr.value, loadStats, assignableUsers);
 
     // ── 学员信息标签页（左栏三系统查询） ──
@@ -484,19 +489,28 @@ try {
         toast("请先完成费用分析或填写回复内容再润色", "", "warning");
         return;
       }
+      // 只润色叙述性段落：标题/称谓/落款（样式类）与扣费明细行、合计段（固定话术+纯数字）一律跳过，AI 不碰
+      const isFixed = p => (p.cls && /ltr-title|noind|sig/.test(p.cls))
+        || !p.text || /^\d+、/.test(p.text) || /^总扣费/.test(p.text);
+      const targets = paras.map((p, i) => ({ p, i })).filter(x => !isFixed(x.p));
+      if (!targets.length) {
+        toast("无需润色", "标题、明细与落款为固定格式，可润色的正文段落为空", "info");
+        return;
+      }
       replyPolishing.value = true;
       try {
-        const d = await postJ("/api/reply/polish", { paragraphs: paras.map(p => p.text) });
+        const d = await postJ("/api/reply/polish", { paragraphs: targets.map(x => x.p.text) });
         if (!d.success) throw new Error(d.error || "AI 润色失败");
         const raw = String(d.data?.polished || "");
         let parts = raw.split(/<PARA>/i).map(s => s.trim()).filter(Boolean);
-        if (parts.length !== paras.length) {
+        if (parts.length !== targets.length) {
           // 兜底：模型未按 <PARA> 分段时按行尝试；仍不吻合则缺失段回填原文，绝不破坏已有内容
           const byLine = raw.split("\n").map(s => s.trim()).filter(Boolean);
-          parts = paras.map((p, i) => (parts[i] ?? byLine[i] ?? p.text).replace(/\s*\n+\s*/g, " "));
+          parts = targets.map((t, i) => (parts[i] ?? byLine[i] ?? t.p.text).replace(/\s*\n+\s*/g, " "));
         }
         el.innerHTML = paras.map((p, i) => {
-          const html = esc(parts[i] ?? p.text).replace(/\n/g, "<br>");
+          const k = targets.findIndex(t => t.i === i);
+          const html = esc(String(k >= 0 ? (parts[k] ?? p.text) : p.text)).replace(/\n/g, "<br>");
           return `<p${p.cls ? ` class="${p.cls}"` : ""}>${html}</p>`;
         }).join("");
         replyHtml.value = el.innerHTML;
@@ -568,12 +582,41 @@ try {
       ["理论培训", ["理论培训费"]],
       ["理论费", ["理论培训费"]],
       ["违约金", ["违约金"]],
-      ["合同总额", ["培训服务费合计"]],
+      ["合同总额", ["培训费用合计", "培训服务费合计"]],
     ];
+    // 标签 → 合同原文短语：直接在条款正文里检索费用原文（如"科目二实际操作培训费人民币 1200 元"），
+    // 不再假设费用一定写在"第二部分/第三部分"条款里。自上而下首个命中的标签类别生效。
+    const LABEL_TEXT_PHRASES = [
+      ["科目二实操培训费", ["科目二实际操作培训费", "科目二实操培训费"]],
+      ["科目二学时单价", ["科目二实际操作培训费", "科目二实操培训费"]],
+      ["科目二实操费", ["科目二实际操作培训费", "科目二实操培训费"]],
+      ["科目三实操培训费", ["科目三实际操作培训费", "科目三实操培训费"]],
+      ["科目三学时单价", ["科目三实际操作培训费", "科目三实操培训费"]],
+      ["科目三实操费", ["科目三实际操作培训费", "科目三实操培训费"]],
+      ["科目二补训", ["科目二补训费", "科目二补训"]],
+      ["科目三补训", ["科目三补训费", "科目三补训"]],
+      ["平台备案", ["补训", "接送服务"]],
+      ["接送", ["接送服务费用", "接送服务费", "接送"]],
+    ];
+    // 条款全文（标题+正文），去空白后比对，规避 PDF 提取时插入的空格
+    function clauseFullText(c) {
+      return String((c.title || "") + "\n" + (c.body || "")).replace(/\s+/g, "");
+    }
     function clauseNosForLabel(label) {
       const clauses = (cmpData.value && cmpData.value.clauses) || [];
       if (!clauses.length) return [];
       const text = String(label || "");
+      // ① 优先按标签对应的合同原文短语在条款正文中直接检索（最可靠）
+      for (const [k, phrases] of LABEL_TEXT_PHRASES) {
+        if (!text.includes(k)) continue;
+        const nos = clauses
+          .filter(c => { const t = clauseFullText(c); return phrases.some(p => t.includes(p.replace(/\s+/g, ""))); })
+          .map(c => c.no)
+          .filter(Boolean);
+        if (nos.length) return nos;
+        break; // 该类标签未命中原文短语时，再走条款标题关键词兜底
+      }
+      // ② 兜底：按条款标题/正文关键词（如"第二部分""基础和场地驾驶培训"）定位
       const kws = [];
       for (const [k, ws] of FEE_CLAUSE_KEYWORDS) if (text.includes(k)) kws.push(...ws);
       if (!kws.length) return [];
@@ -632,12 +675,21 @@ try {
     const cmpActive = ref({ nos: [], kws: [], locked: false });
     function feeKeywordsOf(label) {
       const t = String(label || "");
+      // 优先用合同原文短语做高亮（如"科目二实际操作培训费…学时单价…"整句命中）
+      if (t.includes("科目二实操培训费") || t.includes("科目二学时单价")) return ["科目二实际操作培训费", "科目二实操培训费", "科目二"];
+      if (t.includes("科目二实操费")) return ["科目二实际操作培训费", "科目二实操培训费", "科目二实操费"];
+      if (t.includes("科目三实操培训费") || t.includes("科目三学时单价")) return ["科目三实际操作培训费", "科目三实操培训费", "科目三"];
+      if (t.includes("科目三实操费")) return ["科目三实际操作培训费", "科目三实操培训费", "科目三实操费"];
+      if (t.includes("科目二补训")) return ["科目二补训"];
+      if (t.includes("科目三补训")) return ["科目三补训"];
+      if (t.includes("平台备案")) return ["补训", "接送"];
+      if (t.includes("接送")) return ["接送"];
       if (t.includes("科目二")) return ["第二部分", "科目二"];
       if (t.includes("科目三")) return ["第三部分", "科目三"];
       if (t.includes("综合服务费")) return ["综合服务费"];
       if (t.includes("理论")) return ["理论培训费", "理论费"];
       if (t.includes("违约金")) return ["违约金为"];
-      if (t.includes("合同总额")) return ["培训服务费合计", "培训服务费总额", "总金额"];
+      if (t.includes("合同总额")) return ["培训费用合计", "培训服务费合计", "培训服务费总额", "总金额"];
       return [];
     }
     function clauseNosForItem(label, reason) {
@@ -654,9 +706,10 @@ try {
       const kws = cmpActive.value.nos.includes(cl.no) ? cmpActive.value.kws : [];
       if (!kws.length) return escHtml(body);
       const parts = body.split(/(。|；|\n)/);
+      const norm = s => String(s).replace(/\s+/g, "");
       let html = "";
       for (const p of parts) {
-        html += (p.trim() && kws.some(kw => p.includes(kw)))
+        html += (p.trim() && kws.some(kw => norm(p).includes(norm(kw))))
           ? `<mark class="clause-mark">${escHtml(p)}</mark>`
           : escHtml(p);
       }
@@ -733,12 +786,46 @@ try {
       await genRegistrationForm(id, {
         handling_notes: handlingNotes.value,
         student_name: studentNameEdit.value.trim(),
+        overrides: formOverrides.value,     // 纸面上改过的内容，生成即所见
       });
       if (formResult.value && formResult.value.filepath) {
         if (selectedTicket.value) selectedTicket.value.registration_form_path = formResult.value.filepath;
         previewFormOpen.value = false;
       }
     }
+
+    // ── 登记表预览：A4 纸版式辅助（与 services/visit_service 的 docx 版式一一对应） ──
+    // 信息区六元组行 / 分区行分别渲染
+    const regInfoRows = Vue.computed(() => (previewFormData.value?.fields || []).filter(r => r.length === 6));
+    const regSectionRows = Vue.computed(() => (previewFormData.value?.fields || []).filter(r => r.length !== 6));
+    // 分区值按 \n 拆行：首行与加粗小标题同段，其余各自成段
+    function regSecLines(v) { return String(v ?? "").split("\n"); }
+    // 分区行高 = docx SECTION_HEIGHTS_CM（services/visit_service.py），cm → px，96dpi：1cm = 37.795px
+    // ⚠️ 改 docx 侧定高必须同步改这里，否则预览与实际生成的 Word 版式不一致
+    const REG_SEC_H_CM = { "投诉内容": 6.2, "投诉诉求": 2.2, "费用核算": 1.4, "投诉处理": 7.2, "回访记录": 2.4 };
+    function regSecStyle(label) {
+      const cm = REG_SEC_H_CM[label];
+      return cm ? { height: Math.round(cm * 37.795) + "px" } : {};
+    }
+    // 纸面编辑收集：键为 标签 / 标签:行号 / __title__ / __no_line__
+    function onFormValEdit(key, e) {
+      // nbsp → 普通空格（contenteditable 常插入 \u00a0），再收尾空白
+      const v = String(e.target.innerText || "").replace(/\u00a0/g, " ").trim();
+      formOverrides.value = Object.assign({}, formOverrides.value, { [key]: v });
+    }
+    // 纸面整体等比缩放，保证弹窗内始终看到完整 A4 版面
+    function fitRegPaper() {
+      const body = document.getElementById("rfBody");
+      const wrap = document.getElementById("rfWrap");
+      const paper = document.getElementById("rfPaper");
+      if (!wrap || !paper) return;
+      const avail = body ? body.clientWidth - 4 : 794;
+      const s = Math.min(1, avail / 794);
+      paper.style.transform = "scale(" + s + ")";
+      wrap.style.height = (paper.offsetHeight * s) + "px";
+    }
+    watch(previewFormOpen, (v) => { if (v) nextTick(fitRegPaper); });
+    window.addEventListener("resize", fitRegPaper);
     // 切换视图即清掉聚焦状态（覆盖 goView 与 intakeComplete 的直接赋值两种路径），并回到页面顶部
     watch(view, () => { focusZone.value = null; flashTarget.value = ""; nextTick(() => window.scrollTo(0, 0)); });
 
@@ -758,7 +845,7 @@ try {
       focusZone, flashTarget, leftDim, registerDim, filledCount, undoDim, stpDone, stpState, jumpTo,
       // 统一智能查询
       studentName, schoolShort, regStart, regEnd,
-      candidates, candWrapRef, searching, candEmpty, searchSource, selectedCand,
+      candidates, candWrapRef, searching, candEmpty, searchSource, selectedCand, queryTarget,
       candTotal, candPage, candTotalPages, gotoCandPage, orgFallback, orgOptions,
       phoneMismatch, residencyTip, nameMismatch, phoneCandidates, successBar,
       clearTransient, examStageClass,
@@ -801,8 +888,11 @@ try {
       allTickets, ticketsOpen, ticketsArchived, ticketsWithdrawn, ticketsLoading,
       selectedTicketId, selectedTicket, selectedLoading, openCase, aiOptimizeNotes, notesPolishing,
       handlingNotes, branchCooperation, coopOptions, feeUnlocked, studentNameEdit,
-      previewFormOpen, previewFormData, previewFormLoading, previewRegistrationForm,
-      listFilter, railOpen, profileOpen, timelineOpen, contractModalOpen, loadTickets, openTicket, saveProgress,
+      requeryIdCard, requerying, requerySkipped, requerySources, requeryMsg, requeryWithIdCard,
+      extractInput, extractContent, extractDemands, extracting, extractDirty, aiExtractComplaint,
+      previewFormOpen, previewFormData, previewFormLoading, previewRegistrationForm, formOverrides,
+      regInfoRows, regSectionRows, regSecLines, regSecStyle, onFormValEdit, fitRegPaper,
+      listFilter, railOpen, profileOpen, timelineOpen, contractModalOpen, toggleRailPanel, loadTickets, openTicket, saveProgress,
       unlockFee, doWithdraw, doArchive, archiveGates, gateErrors, canArchive, archiveRoot,
       folderModalOpen, fbPath, fbParent, fbDirs, fbLoading, fbErr, openFolderPicker, fbLoad, fbEnter, fbUp, fbConfirm,
       // 投诉列表页重设计
@@ -810,11 +900,12 @@ try {
       clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
       clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
       handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
-      clPageSize, pagedGroups, clSetPage,
-      daysOpen, isOverdue, feeState, maskPhone,
+      clPageSize, pagedGroups, clSetPage, batchBarVisible,
+      daysOpen, isOverdue, feeState, maskPhone, actionAt,
       clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
       batchExportSelected,
-      transferModalOpen, transferTarget, transferSaving, askBatchTransfer, confirmBatchTransfer,
+      clExpandedIds, clToggleExpand, copyPhone,
+      transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
       deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
       // 回复函
       replyPolished, replyEdited, replySaved, replyHtml, replyCollapsed, replyPolishing, fmt, buildLetter, syncLetter, aiPolishReply, generateReply,
@@ -833,6 +924,9 @@ try {
 });
   __app.config.compilerOptions.delimiters = ["[[", "]]"];
   __app.mount("#app");
+
+  // 启动跨标签页登录态同步 + 30s 心跳兜底
+  startAuthWatch();
 } catch (e) {
   console.error("Vue mount failed:", e);
   const appEl = document.getElementById("app");

@@ -1,9 +1,29 @@
 // API 请求工具
+
+// 把"被踢原因"暂存到 sessionStorage，供 login.html 展示横幅
+export function _recordKickReason(code) {
+  try {
+    sessionStorage.setItem(
+      "kick_reason",
+      JSON.stringify({ code: code || "unauthorized", ts: Date.now(), from: location.pathname })
+    );
+  } catch (e) { /* sessionStorage 不可用就静默 */ }
+  // 通知同源其他标签页：本标签已确认被踢
+  try {
+    if (typeof BroadcastChannel !== "undefined") {
+      const bc = new BroadcastChannel("auth");
+      bc.postMessage({ type: "kicked", code: code || "unauthorized", at: Date.now() });
+      bc.close();
+    }
+  } catch (e) { /* BroadcastChannel 不可用就静默 */ }
+}
+
 async function _fetch(url, options = {}) {
   try {
     const resp = await fetch(url, options);
-    // 未登录 / 被踢 → 跳登录页（但放过登录接口本身的 401 提示）
+    // 未登录 / 被踢 → 存原因 + 跳登录页（但放过登录接口本身的 401 提示）
     if (resp.status === 401 && !url.includes("/api/session/login")) {
+      _recordKickReason("unauthorized");
       if (window.location.pathname !== "/login") {
         window.location.href = "/";
       }

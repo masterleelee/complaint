@@ -32,10 +32,40 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   // 学员姓名手动补录（三系统未命中时工作台内直接编辑）· ISS-UJ-01
   const studentNameEdit = Vue.ref("");
 
-  // 登记表预览弹窗（归档前确认内容，文档在归档时才生成）
+  // 投诉内容/诉求 AI 提取（④卡片）：输入描述 → LLM 提取 → 预览 → 「保存进度」落库
+  const extractInput = Vue.ref("");     // 投诉描述原文（仅作提取原料，不落库）
+  const extractContent = Vue.ref("");   // 投诉内容（预览值，初始=库内值，归档登记表引用）
+  const extractDemands = Vue.ref("");   // 投诉诉求（预览值）
+  const extracting = Vue.ref(false);
+  const extractDirty = Vue.ref(false);  // 提取结果尚未保存到工单
+  async function aiExtractComplaint() {
+    if (extracting.value) return;
+    const raw = (extractInput.value || "").trim();
+    if (raw.length < 10) { toast("描述太短", "请粘贴完整的投诉描述（至少 10 个字）", "warning"); return; }
+    extracting.value = true;
+    try {
+      const d = await postJ("/api/complaint/extract", {
+        text: raw,
+        complaint_type: selectedTicket.value?.complaint_type || "",
+      });
+      if (!d.success) throw new Error(d.error || "AI 提取失败");
+      extractContent.value = d.data?.complaint_content || "";
+      extractDemands.value = d.data?.complaint_demands || "";
+      extractDirty.value = true;
+      toast("AI 已提取", "点「保存进度」把投诉内容/诉求写入工单", "success");
+    } catch (e) {
+      toast("AI 提取失败", e.message, "danger");
+    } finally {
+      extracting.value = false;
+    }
+  }
+
+  // 登记表预览弹窗（纸面 1:1 还原 docx，可直接在纸上修改，生成即为所见）
   const previewFormOpen = Vue.ref(false);
   const previewFormData = Vue.ref(null);
   const previewFormLoading = Vue.ref(false);
+  // 纸面编辑覆盖值：{ "投诉日期": "...", "投诉处理:1": "...", "__title__": "..." }
+  const formOverrides = Vue.ref({});
 
   async function previewRegistrationForm() {
     const id = selectedTicketId.value;
@@ -47,6 +77,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
         student_name: studentNameEdit.value.trim(),
       });
       if (!d.success) throw new Error(d.error || "预览失败");
+      formOverrides.value = {};   // 每次重新预览都从库内数据出发，不残留上次编辑
       previewFormData.value = d.data;
       previewFormOpen.value = true;
     } catch (e) {
@@ -58,9 +89,41 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
 
   // 归档根目录（可编辑，默认沿用上次归档路径，持久化于 config.archive_root）
   const archiveRoot = Vue.ref("");
+  let lastSavedArchiveRoot = ""; // 最近一次服务端确认持久化的值（用于失败回滚，保证 UI=实际生效）
   getJ("/api/config").then((d) => {
-    if (d && typeof d.archive_root === "string" && d.archive_root) archiveRoot.value = d.archive_root;
+    if (d && typeof d.archive_root === "string" && d.archive_root) {
+      lastSavedArchiveRoot = d.archive_root;
+      archiveRoot.value = d.archive_root;
+    }
   }).catch(() => {});
+
+  // 归档路径改完即持久化（600ms 防抖）：保证合同下载/上传、登记表/回复函生成
+  // 立即按页面所见路径落盘，不再等点「归档按钮」才生效。
+  // 保存失败必须回滚输入框 + 醒目报错：否则 UI 显示用户所选路径、实际落盘仍是旧路径（所见非所得）。
+  let archiveRootSaveTimer = null;
+  Vue.watch(archiveRoot, (val) => {
+    const cur = (val || "").trim();
+    if (!cur || cur === lastSavedArchiveRoot) return;
+    clearTimeout(archiveRootSaveTimer);
+    archiveRootSaveTimer = setTimeout(() => {
+      postJ("/api/config/archive-root", { archive_root: cur })
+        .then((d) => {
+          if (d && d.success === false) {
+            toast("归档路径保存失败，已回滚为上次生效路径", d.error || "", "danger");
+            archiveRoot.value = lastSavedArchiveRoot;
+          } else if (d && d.success) {
+            lastSavedArchiveRoot = cur;
+            // 以服务端规范化后的绝对路径回写（自动展开 ~ / 补绝对路径），保持所见即所存
+            const normalized = d.data && d.data.normalized;
+            if (normalized && normalized !== cur) archiveRoot.value = normalized;
+          }
+        })
+        .catch(() => {
+          toast("归档路径保存失败（网络异常），已回滚为上次生效路径", "", "danger");
+          archiveRoot.value = lastSavedArchiveRoot;
+        });
+    }, 600);
+  });
 
   // 归档根目录选择弹框（服务端列目录 + 前端浏览，替代手填路径）
   const folderModalOpen = Vue.ref(false);
@@ -128,6 +191,17 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const profileOpen = Vue.ref(true);
   const timelineOpen = Vue.ref(true);
 
+  // 右栏手风琴：展开任一块，其余两块自动折叠（右栏限高，避免三块同时撑开后互相挤压）
+  const RAIL_PANELS = { profile: profileOpen, timeline: timelineOpen, rail: railOpen };
+  function toggleRailPanel(name) {
+    const cur = RAIL_PANELS[name];
+    if (!cur) return;
+    const willOpen = !cur.value;
+    for (const k of Object.keys(RAIL_PANELS)) {
+      RAIL_PANELS[k].value = k === name ? willOpen : false;
+    }
+  }
+
   // 合同预览（前端硬编码常见条款，高亮当前扣费依据条款）
   const contractModalOpen = Vue.ref(false);
 
@@ -175,7 +249,12 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const clOnlyOverdue = Vue.ref(false);
   const clOnlyManual = Vue.ref(false);   // 仅看三系统无信息（人工建案）工单
   const clGroup = Vue.ref("all");     // KPI 过滤：all / open / archived / withdrawn
-  const clSort = Vue.ref({ key: "", dir: -1 });
+  // 默认按「最近操作」倒序（最近被编辑/沟通/撤诉/归档的排前面），贴合处理员日常扫单习惯。
+  // 口径：
+  //   - 在途：updated_at（任意编辑都会刷；新单 updated_at=created_at）
+  //   - 已归档：completed_at（归档时刻），缺失则退 updated_at
+  //   - 已撤诉：withdrawn_at（撤诉时刻），缺失则退 updated_at
+  const clSort = Vue.ref({ key: "action", dir: -1 });
   const clCollapsed = Vue.ref({ withdrawn: true });
   const clSelectedIds = Vue.ref([]);
 
@@ -299,10 +378,22 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
   }
 
+  // "最近操作" 取值：按工单所属分组在途/已归档/已撤诉走不同字段
+  function actionAt(t) {
+    if (t.withdraw_status === "已撤诉") {
+      return String(t.withdrawn_at || t.updated_at || t.created_at || "");
+    }
+    if (t.archive_status === "已归档") {
+      return String(t.completed_at || t.updated_at || t.created_at || "");
+    }
+    return String(t.updated_at || t.created_at || "");
+  }
+
   function _cmp(a, b, key) {
     let va, vb;
     if (key === "days") { va = daysOpen(a); vb = daysOpen(b); }
     else if (key === "refund") { va = a.refund_fee == null ? -1 : Number(a.refund_fee); vb = b.refund_fee == null ? -1 : Number(b.refund_fee); }
+    else if (key === "action") { va = actionAt(a); vb = actionAt(b); }
     else { va = normDate(a.complaint_date); vb = normDate(b.complaint_date); }
     return va < vb ? -1 : va > vb ? 1 : 0;
   }
@@ -320,7 +411,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     const sortFn = sortKey ? (a, b) => _cmp(a, b, sortKey) * dir : null;
     for (const arr of [open, archived, withdrawn]) {
       if (sortFn) arr.sort(sortFn);
-      else arr.sort((a, b) => _cmp(a, b, "date"));   // 默认按受理日期倒序
+      else arr.sort((a, b) => _cmp(a, b, "action"));   // 默认按最近操作倒序
     }
     return [
       mk("open", "在途", open),
@@ -354,6 +445,28 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     });
   });
   function clSetPage(key, n) { clPage.value[key] = Math.max(1, n); }
+
+  // 批量操作条显隐：仅当「选中的 id 里有至少一条落在当前筛选结果中」才显示。
+  // 否则切换筛选后会出现"页面上没有任何勾选、底部却挂着『已选 N 条』"的幽灵状态。
+  const batchBarVisible = Vue.computed(() => {
+    const sel = clSelectedIds.value;
+    if (!sel.length) return false;
+    const set = new Set(sel);
+    for (const g of listGroups.value) {
+      for (const t of g.items) if (set.has(t.id)) return true;
+    }
+    return false;
+  });
+
+  // 筛选条件变化后，把已不在当前结果中的选中 id 一并清掉，
+  // 让内存选中态与页面所见严格一致（避免"我以为没选，实际后台还选着"）。
+  Vue.watch(listGroups, (groups) => {
+    if (!clSelectedIds.value.length) return;
+    const visible = new Set();
+    for (const g of groups) for (const t of g.items) visible.add(t.id);
+    const kept = clSelectedIds.value.filter(id => visible.has(id));
+    if (kept.length !== clSelectedIds.value.length) clSelectedIds.value = kept;
+  }, { flush: "post" });
 
   function clToggleRow(id) {
     const i = clSelectedIds.value.indexOf(id);
@@ -411,6 +524,41 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     if (!clSelectedIds.value.length) return;
     transferTarget.value = null;
     transferModalOpen.value = true;
+  }
+  // 单行转办（列表行内详情用）：复用批量转办弹窗与确认逻辑
+  function askTransferRow(t) {
+    if (!t || !t.id) return;
+    clSelectedIds.value = [t.id];
+    transferTarget.value = null;
+    transferModalOpen.value = true;
+  }
+
+  // 行内详情展开状态（方案B：低频字段折叠进展开行，不记忆、不跨页）
+  const clExpandedIds = Vue.ref([]);
+  function clToggleExpand(id) {
+    const i = clExpandedIds.value.indexOf(id);
+    if (i >= 0) clExpandedIds.value.splice(i, 1);
+    else clExpandedIds.value.push(id);
+  }
+
+  // 复制手机号（http 非安全上下文下回退 execCommand）
+  async function copyPhone(t) {
+    const p = String((t && t.phone) || "").trim();
+    if (!p) { toast("该案件没有手机号", "", "warning"); return; }
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(p);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = p; ta.setAttribute("readonly", "");
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        document.execCommand("copy"); ta.remove();
+      }
+      toast("已复制手机号 " + p, "", "success");
+    } catch (e) {
+      toast("复制失败，请手动选择", p, "warning");
+    }
   }
   async function confirmBatchTransfer() {
     const targetId = transferTarget.value;
@@ -492,6 +640,10 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       handlingNotes.value = detail.ticket.handling_notes || "";
       branchCooperation.value = detail.ticket.branch_cooperation || "";
       studentNameEdit.value = detail.ticket.student_name || "";
+      extractInput.value = "";
+      extractContent.value = detail.ticket.complaint_content || "";
+      extractDemands.value = detail.ticket.complaint_demands || "";
+      extractDirty.value = false;
       feeUnlocked.value = false;
     } catch (e) {
       toast("打开工单失败", e.message, "danger");
@@ -514,6 +666,8 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       const payload = {
         handling_notes: handlingNotes.value,
         branch_cooperation: branchCooperation.value,
+        complaint_content: (extractContent.value || "").trim(),
+        complaint_demands: (extractDemands.value || "").trim(),
       };
       const name = studentNameEdit.value.trim();
       if (name && name !== (selectedTicket.value?.student_name || "")) {
@@ -521,6 +675,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       }
       const d = await putJ(`/api/tickets/${id}`, payload);
       if (!d.success) throw new Error(d.error || "保存失败");
+      extractDirty.value = false;
       if (selectedTicket.value && payload.student_name) {
         selectedTicket.value.student_name = payload.student_name;
         await loadTickets();
@@ -530,6 +685,73 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       toast("保存失败", e.message, "danger");
     }
   }
+
+  // ── 人工回填证件号 → 重查三系统（批次 2 · D5/D6/D7）──
+  // 场景：内部系统查无该学员，但操作员已从第三系统等途径确认了身份证号。
+  // 服务端约束：只补空字段（不覆盖人工录入内容）、查无也如实落库查询状态、
+  // 已归档工单直接拒绝；已生成的回复函会自动标记过期。
+  const requeryIdCard = Vue.ref("");
+  const requerying = Vue.ref(false);
+  const requerySkipped = Vue.ref([]);   // 因库内已有值而未覆盖的字段（差异提示）
+  const requerySources = Vue.ref({});
+  const requeryMsg = Vue.ref("");
+
+  async function requeryWithIdCard() {
+    const id = selectedTicketId.value;
+    const idCard = (requeryIdCard.value || "").trim();
+    if (!id || requerying.value) return;
+    if (!idCard) { toast("请填写证件号", "填入学员身份证号后再重查", "warning"); return; }
+
+    requerying.value = true;
+    requeryMsg.value = "正在重查三系统…";
+    requerySkipped.value = [];
+    requerySources.value = {};
+    try {
+      const started = await postJ(`/api/tickets/${id}/requery`, { id_card: idCard });
+      if (!started.success) throw new Error(started.error || "启动重查失败");
+
+      let done = null;
+      for (let i = 0; i < 120; i++) {
+        const st = await getJ(`/api/query/status/${started.job_id}`);
+        if (!st.success) throw new Error(st.error || "读取重查进度失败");
+        if (st.sources) requerySources.value = st.sources;
+        if (st.status === "failed") {
+          requeryMsg.value = "";
+          toast("重查失败", st.error || "三系统查询失败", "danger");
+          return;
+        }
+        if (st.status === "done") { done = st.result || {}; break; }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (!done) { toast("重查超时", "请稍后重试", "warning"); return; }
+
+      requerySkipped.value = done.skipped_fields || [];
+      requeryMsg.value = done.name
+        ? `已重查到「${done.name}」，身份与档案字段已回填`
+        : "三系统均未命中，已如实记录各系统查询状态";
+      requeryIdCard.value = "";
+      await openTicket(id);
+      await loadTickets();
+      _refreshStats();
+      toast(done.name ? "重查完成" : "重查完成（未命中）", requeryMsg.value,
+        done.name ? "success" : "warning");
+    } catch (e) {
+      requeryMsg.value = "";
+      toast("重查失败", e.message, "danger");
+    } finally {
+      requerying.value = false;
+    }
+  }
+
+  // 切换工单时清空上一单的重查结果，避免跨单串味。
+  // 注意：不能放在 openTicket 里清空 —— requeryWithIdCard 在设置 requeryMsg 之后
+  // 还要调用 openTicket 重新拉取详情，那里清空会把本轮的结论抹掉。
+  Vue.watch(selectedTicketId, () => {
+    requeryIdCard.value = "";
+    requeryMsg.value = "";
+    requerySkipped.value = [];
+    requerySources.value = {};
+  });
 
   // 费用解锁：POST /api/tickets/<id>/fee-unlock（无 body）→ 明细改回可编辑
   async function unlockFee() {
@@ -613,10 +835,12 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       return false;
     }
     try {
-      // 1) 落盘处理情况 + 配合度（含未保存的姓名补录，避免归档夹沿用旧名）
+      // 1) 落盘处理情况 + 配合度 + AI 提取的投诉内容/诉求（含未保存的姓名补录，避免归档夹沿用旧名）
       const savePayload = {
         handling_notes: handlingNotes.value,
         branch_cooperation: branchCooperation.value,
+        complaint_content: (extractContent.value || "").trim(),
+        complaint_demands: (extractDemands.value || "").trim(),
       };
       const name = studentNameEdit.value.trim();
       if (name && name !== (selectedTicket.value?.student_name || "")) {
@@ -668,8 +892,11 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     selectedTicketId, selectedTicket, selectedLoading,
     handlingNotes, branchCooperation, coopOptions, feeUnlocked,
     studentNameEdit,
-    previewFormOpen, previewFormData, previewFormLoading, previewRegistrationForm,
-    listFilter, railOpen, profileOpen, timelineOpen, contractModalOpen,
+    // 人工回填证件号 → 重查三系统
+    requeryIdCard, requerying, requerySkipped, requerySources, requeryMsg, requeryWithIdCard,
+    extractInput, extractContent, extractDemands, extracting, extractDirty, aiExtractComplaint,
+    previewFormOpen, previewFormData, previewFormLoading, previewRegistrationForm, formOverrides,
+    listFilter, railOpen, profileOpen, timelineOpen, contractModalOpen, toggleRailPanel,
     loadTickets, openTicket, refreshAfterIntake, saveProgress,
     unlockFee, doWithdraw, doCancelWithdraw, doArchive,
     archiveGates, gateErrors, canArchive, archiveRoot,
@@ -681,11 +908,13 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
     clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
     handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
-    clPageSize, pagedGroups, clSetPage,
+    clPageSize, pagedGroups, clSetPage, batchBarVisible,
     daysOpen, isOverdue, feeState, maskPhone,
+    actionAt,
     clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
     batchExportSelected,
-    transferModalOpen, transferTarget, transferSaving, askBatchTransfer, confirmBatchTransfer,
+    clExpandedIds, clToggleExpand, copyPhone,
+    transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
     deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
     // 账号体系：处理人下拉 + 真实姓名解析（assignableUsers 从 useComplaint 共享）
     assignableUsers, handlerLabel,

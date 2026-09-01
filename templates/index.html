@@ -6,7 +6,7 @@
   <title>投诉处理系统 · v2 工作台</title>
   <script>try{if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-  <link rel="stylesheet" href="/static/css/style.css?v=14">
+  <link rel="stylesheet" href="/static/css/style.css?v=16">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4/dist/echarts.min.js"></script>
   <script>window.__CURRENT_USER__ = {{ current_user | tojson }};</script>
   <style>
@@ -338,15 +338,28 @@
   .modal-content .m-body{padding:18px;overflow:auto}
   .modal-content .m-body.contract-body{overflow:hidden;display:flex;padding:0}
 
-  /* 登记表预览：dl 风格 — 标签右对齐 + 值左对齐，值不强制换行（长值横向滚动） */
-  .reg-form-list{display:flex;flex-direction:column;gap:6px;margin:0;padding:0}
-  .reg-form-row{display:grid;grid-template-columns:120px minmax(0,1fr);gap:4px 16px;padding:10px 14px;border-radius:6px;background:var(--color-surface-50);align-items:start}
-  .reg-form-row.row-pair{grid-template-columns:120px minmax(0,1fr) 120px minmax(0,1fr)}
-  .reg-form-row .k{text-align:right;font-weight:600;color:var(--color-text);font-size:13.5px;line-height:1.7;padding-top:1px}
-  .reg-form-row .v{text-align:left;color:var(--color-text);line-height:1.7;white-space:nowrap;overflow-x:auto;overflow-y:hidden;min-width:0}
-  .reg-form-block{padding:10px 14px;border-radius:6px;background:var(--color-surface-50)}
-  .reg-form-block .reg-section-label{font-weight:600;margin-right:4px}
-  .reg-form-block .reg-section-value{white-space:pre-line;word-break:break-all;line-height:1.7}
+  /* 登记表预览：A4 纸 1:1 还原 docx 版式（services/visit_service.generate_registration_form）
+     纸面 contenteditable 直接修改（同回复函交互）；灰底标签列与签名行锁定不可改
+     换算基准 96dpi：页面 794×1123px；标签 10pt≈13.3px；值统一 9pt（小五）≈12px；分区行高同 docx cm 值 */
+  .rf-modal{width:min(880px,96vw)}
+  .rf-body{background:var(--color-surface-50,#f7f8fb);padding:14px 18px}
+  .rf-wrap{overflow:hidden}
+  .rf-paper{width:794px;min-height:1123px;background:#fff;box-shadow:0 2px 14px rgba(15,23,42,.16);
+    padding:45px 72px 38px;transform-origin:top left;
+    font-family:"Songti SC","SimSun","宋体",serif;font-size:12px;line-height:1.5;color:#000}
+  .rf-paper [contenteditable="true"]:hover{background:#fafcff;box-shadow:inset 0 0 0 1px #b9cdf5}
+  .rf-paper [contenteditable="true"]:focus{outline:1.5px dashed #2563eb;outline-offset:1px;background:#f6f9ff}
+  .rf-title{text-align:center;font-size:21px;font-weight:700;letter-spacing:2px;margin-bottom:5px}
+  .rf-no{text-align:right;font-size:12px;margin-bottom:3px}
+  .rf-reg{width:100%;border-collapse:collapse;table-layout:fixed;border:1.5px solid #000}
+  .rf-reg td{border:0.7px solid #000;padding:3px 7px;vertical-align:middle}
+  .rf-k{background:#F2F2F2;text-align:center;font-weight:700;font-size:13.3px;white-space:nowrap}
+  .rf-v{text-align:center;white-space:pre-line;font-size:12px;word-break:break-all}
+  .rf-sec{vertical-align:top;position:relative;padding:6px 8px}
+  .rf-sec p{margin:0;text-align:left;text-indent:2em}
+  .rf-hd{font-weight:700}
+  .rf-sign{position:absolute;right:8px;bottom:4px;text-align:right;text-indent:0;margin:0}
+  .rf-note{font-size:12px;color:#595959;margin-top:8px}
 
   /* 合同对照双栏 */
   .cmp-left{flex:1.5;min-width:0;overflow:auto;padding:16px 20px;background:#fff}
@@ -695,7 +708,7 @@
     <div class="app-shell">
       <!-- ═══ 左侧导航栏 ═══ -->
       <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
-        <div class="brand"><span class="brand-txt">投诉系统<small>v2 智能工作台</small></span></div>
+        <div class="brand"><span class="brand-txt">投诉系统<small>v2 智能工作台 · build 0831-1605</small></span></div>
         <div class="nav-section">工单处理</div>
         <button class="nav-link" :class="{active: view==='intake'}" @click="goView('intake')" :title="sidebarCollapsed ? '新增投诉' : ''"><i class="bi bi-plus-circle"></i> <span class="txt">新增投诉</span></button>
         <button class="nav-link" :class="{active: view==='workbench'}" @click="goView('workbench')" :title="sidebarCollapsed ? '学员信息' : ''"><i class="bi bi-person-badge"></i> <span class="txt">学员信息</span></button>
@@ -1772,23 +1785,52 @@
           <div class="modal-content">
             <div class="m-head"><i class="bi bi-truck"></i> 网点车辆数维护 <span class="hint" style="font-weight:400">车辆数为「每百车投诉率」的分母，请与各网点实际在册车辆保持一致</span><button class="m-close" @click="vehicleModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
             <div class="m-body">
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+                <div style="position:relative;flex:0 0 300px">
+                  <i class="bi bi-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--color-text-disabled);font-size:13px;pointer-events:none"></i>
+                  <input class="form-control" style="padding:7px 30px 7px 30px" v-model="vehicleKeyword" placeholder="搜索代号或网点名称…" aria-label="搜索网点">
+                  <button v-if="vehicleKeyword" @click="vehicleKeyword=''" style="position:absolute;right:4px;top:50%;transform:translateY(-50%);border:none;background:transparent;cursor:pointer;color:var(--color-text-disabled);font-size:15px;line-height:1;padding:4px 6px" title="清空搜索" aria-label="清空搜索"><i class="bi bi-x"></i></button>
+                </div>
+                <span class="hint" v-if="vehicleKeyword">匹配 [[ vehicleActiveItems.length + vehicleInactiveItems.length ]] / [[ vehicleItems.length ]] 个网点</span>
+                <span style="flex:1"></span>
+                <button class="btn btn-secondary btn-sm" @click="addVehicleRow()"><i class="bi bi-plus-lg"></i> 新增网点</button>
+              </div>
+
+              <h4 style="margin:0 0 10px;font-size:15px;font-weight:600">正常网点 <span class="hint" style="font-weight:400">[[ vehicleActiveItems.length ]] 个<span v-if="vehicleKeyword">（共 [[ vehicleItems.filter(x => x.is_active !== 0).length ]] 个）</span></span></h4>
               <table class="table veh-table">
-                <thead><tr><th style="width:90px">类型</th><th style="width:130px">代号</th><th>网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
+                <thead><tr><th style="width:90px">状态</th><th style="width:90px">类型</th><th style="width:130px">代号</th><th>网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
                 <tbody>
-                  <tr v-for="(v,i) in vehicleItems" :key="i">
+                  <tr v-for="v in vehicleActiveItems" :key="v.unit_code + v.unit_name">
+                    <td><select class="form-control" style="padding:5px 8px" v-model.number="v.is_active"><option :value="1">正常</option><option :value="0">已注销</option></select></td>
                     <td><select class="form-control" style="padding:5px 8px" v-model="v.unit_type"><option>分校</option><option>分店</option></select></td>
                     <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_code" placeholder="如 DC-04"></td>
                     <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_name" placeholder="网点名称"></td>
                     <td><input class="form-control" style="padding:5px 8px" type="number" min="0" v-model.number="v.vehicle_count"></td>
-                    <td><button class="btn btn-secondary btn-sm" style="color:var(--color-danger)" @click="removeVehicleRow(i)" title="删除该网点"><i class="bi bi-trash3"></i></button></td>
+                    <td><button class="btn btn-secondary btn-sm" style="color:var(--color-danger)" @click="removeVehicleRow(v)" title="删除该网点"><i class="bi bi-trash3"></i></button></td>
                   </tr>
-                  <tr v-if="!vehicleItems.length"><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-disabled)">暂无网点，点击下方「新增网点」</td></tr>
+                  <tr v-if="!vehicleActiveItems.length"><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-disabled)">[[ vehicleKeyword ? '没有匹配的正常网点' : '暂无正常网点' ]]</td></tr>
                 </tbody>
               </table>
-              <button class="btn btn-secondary btn-sm" @click="addVehicleRow()"><i class="bi bi-plus-lg"></i> 新增网点</button>
+
+              <h4 style="margin:24px 0 10px;font-size:15px;font-weight:600">已注销网点 <span class="hint" style="font-weight:400">[[ vehicleInactiveItems.length ]] 个<span v-if="vehicleKeyword">（共 [[ vehicleItems.filter(x => x.is_active === 0).length ]] 个）</span></span></h4>
+              <table class="table veh-table">
+                <thead><tr><th style="width:90px">状态</th><th style="width:90px">类型</th><th style="width:130px">代号</th><th>网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
+                <tbody>
+                  <tr v-for="v in vehicleInactiveItems" :key="v.unit_code + v.unit_name">
+                    <td><select class="form-control" style="padding:5px 8px" v-model.number="v.is_active"><option :value="1">正常</option><option :value="0">已注销</option></select></td>
+                    <td><select class="form-control" style="padding:5px 8px" v-model="v.unit_type"><option>分校</option><option>分店</option></select></td>
+                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_code" placeholder="如 DC-04"></td>
+                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_name" placeholder="网点名称"></td>
+                    <td><input class="form-control" style="padding:5px 8px" type="number" min="0" v-model.number="v.vehicle_count"></td>
+                    <td><button class="btn btn-secondary btn-sm" style="color:var(--color-danger)" @click="removeVehicleRow(v)" title="删除该网点"><i class="bi bi-trash3"></i></button></td>
+                  </tr>
+                  <tr v-if="!vehicleInactiveItems.length"><td colspan="6" style="text-align:center;padding:24px;color:var(--color-text-disabled)">[[ vehicleKeyword ? '没有匹配的已注销网点' : '暂无已注销网点' ]]</td></tr>
+                </tbody>
+              </table>
+
             </div>
             <div class="m-foot">
-              <span class="hint">合计 [[ vehicleItems.reduce((a,v)=>a+(Number(v.vehicle_count)||0),0) ]] 台车 · [[ vehicleItems.length ]] 个网点　保存后「每百车投诉率」按新分母重算</span>
+              <span class="hint">正常 [[ vehicleItems.filter(x => x.is_active !== 0).length ]] 个网点 · 已注销 [[ vehicleItems.filter(x => x.is_active === 0).length ]] 个网点 · 合计 [[ vehicleItems.reduce((a,v)=>a+(Number(v.vehicle_count)||0),0) ]] 台车　保存后「每百车投诉率」按新分母重算</span>
               <span style="flex:1"></span>
               <button class="btn btn-secondary" @click="vehicleModalOpen=false">取消</button>
               <button class="btn btn-primary" @click="saveVehicleCounts()"><i class="bi bi-check2"></i> 保存</button>
@@ -2083,38 +2125,51 @@
       </div>
     </div>
 
-    <!-- ═══ 登记表预览弹窗 ═══ -->
+    <!-- ═══ 登记表预览弹窗：A4 纸 1:1 还原 docx 版式，纸面可直接修改（同回复函交互） ═══ -->
     <div class="modal-overlay" v-cloak v-if="previewFormOpen" @click.self="previewFormOpen=false">
-      <div class="modal-content" style="width:min(1500px,98vw)">
+      <div class="modal-content rf-modal">
         <div class="m-head"><i class="bi bi-file-earmark-text"></i> [[ previewFormData?.title || '学员投诉登记表' ]] · 预览<button class="m-close" @click="previewFormOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
-        <div class="m-body">
-          <div style="margin-bottom:10px">
-            <label class="form-label" for="pf_handling_notes">处理情况<span class="hint" style="font-weight:400;margin-left:4px">（可在线修改，失焦后预览自动刷新）</span></label>
-            <textarea id="pf_handling_notes" class="form-control" rows="3" v-model="handlingNotes" @change="previewRegistrationForm()"></textarea>
-          </div>
-          <p v-if="previewFormData?.no_line" class="hint" style="text-align:right;margin-bottom:6px">[[ previewFormData.no_line ]]</p>
-          <div class="reg-form-list">
-            <template v-for="(row,i) in (previewFormData?.fields || [])" :key="i">
-              <div v-if="row.length === 6" class="reg-form-row row-pair">
-                <span class="k">[[ row[0] ]]</span><span class="v">[[ row[1] ]]</span>
-                <span class="k">[[ row[2] ]]</span><span class="v">[[ row[3] ]]</span>
-              </div>
-              <div v-else-if="row.length === 2" class="reg-form-row">
-                <span class="k">[[ row[0] ]]</span><span class="v" style="white-space:pre-wrap">[[ row[1] ]]</span>
-              </div>
-              <div v-else class="reg-form-block">
-                <span class="reg-section-label">[[ row[0] ]]：</span><span class="reg-section-value">[[ row[1] ]]</span>
-              </div>
-            </template>
+        <div class="m-body rf-body" id="rfBody">
+          <div class="rf-wrap" id="rfWrap">
+            <div class="rf-paper" id="rfPaper" spellcheck="false">
+              <div class="rf-title" contenteditable="true" @blur="onFormValEdit('__title__', $event)">[[ previewFormData?.title || '学员投诉登记表' ]]</div>
+              <div class="rf-no" contenteditable="true" @blur="onFormValEdit('__no_line__', $event)">[[ previewFormData?.no_line || '' ]]</div>
+              <table class="rf-reg">
+                <colgroup>
+                  <!-- 列宽与 docx col_tw 严格对应（总 9750 twips）：标签 1400 / 值 1815、1875、1860；字号标签 10pt、值统一 9pt（小五） -->
+                  <col style="width:14.36%"><col style="width:18.61%">
+                  <col style="width:14.36%"><col style="width:19.23%">
+                  <col style="width:14.36%"><col style="width:19.08%">
+                </colgroup>
+                <!-- 信息区：居中对齐，值可点击修改，标签锁定 -->
+                <tr v-for="(row,i) in regInfoRows" :key="'rf-i-'+i" style="height:32px">
+                  <td class="rf-k" contenteditable="false">[[ row[0] ]]</td>
+                  <td class="rf-v" contenteditable="true" @blur="onFormValEdit(row[0], $event)">[[ row[1] ]]</td>
+                  <td class="rf-k" contenteditable="false">[[ row[2] ]]</td>
+                  <td class="rf-v" contenteditable="true" @blur="onFormValEdit(row[2], $event)">[[ row[3] ]]</td>
+                  <td class="rf-k" contenteditable="false">[[ row[4] ]]</td>
+                  <td class="rf-v" contenteditable="true" @blur="onFormValEdit(row[4], $event)">[[ row[5] ]]</td>
+                </tr>
+                <!-- 分区行：左上对齐 + 首行缩进；签名钉在框内右下 -->
+                <tr v-for="(row,i) in regSectionRows" :key="'rf-s-'+i">
+                  <td class="rf-sec" colspan="6" :style="regSecStyle(row[0])">
+                    <p><span class="rf-hd" contenteditable="false">[[ row[0] ]]：</span><span contenteditable="true" @blur="onFormValEdit(row[0] + ':0', $event)">[[ regSecLines(row[1])[0] ]]</span></p>
+                    <p v-for="(ln,j) in regSecLines(row[1]).slice(1)" :key="'rf-l-'+j"><span contenteditable="true" @blur="onFormValEdit(row[0] + ':' + (j + 1), $event)">[[ ln ]]</span></p>
+                    <p v-if="row[0] === '投诉处理'" class="rf-sign" contenteditable="false">处理人签名：[[ previewFormData?.handler || '' ]]　　日期：[[ previewFormData?.today_cn || '' ]]</p>
+                    <p v-else-if="row[0] === '回访记录'" class="rf-sign" contenteditable="false">回访人：____________　　______年____月____日</p>
+                  </td>
+                </tr>
+              </table>
+              <div class="rf-note">备注：一般投诉事项应在 3 日内处理完毕并填写本表；重大投诉事项需及时报上级部门处理。</div>
+            </div>
           </div>
         </div>
         <div class="m-foot">
-          <span class="hint" style="margin-right:auto;font-weight:400">确认无误点「生成登记表」落盘；生成后可在⑤归档到案件夹</span>
+          <button class="btn" @click="previewFormOpen=false">关闭</button>
           <button class="btn btn-primary" @click="confirmGenerateForm()" :disabled="formLoading">[[ formLoading ? '登记表生成中…' : '生成登记表' ]]</button>
         </div>
       </div>
     </div>
-
     <!-- ═══ 撤诉弹窗 ═══ -->
     <div class="modal-overlay" v-cloak v-if="withdrawModalOpen" @click.self="withdrawModalOpen=false">
       <div class="modal-content" style="width:min(480px,92vw)">
@@ -2356,17 +2411,18 @@
   <script type="importmap">
   {
     "imports": {
-      "api": "/static/js/utils/api.js?v=15",
-      "helpers": "/static/js/utils/helpers.js?v=14",
-      "useToast": "/static/js/composables/useToast.js?v=14",
-      "useComplaint": "/static/js/composables/useComplaint.js?v=16",
-      "useWorkflow": "/static/js/composables/useWorkflow.js?v=14",
-      "useSettings": "/static/js/composables/useSettings.js?v=20",
-      "useHistory": "/static/js/composables/useHistory.js?v=14",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=23"
+      "api": "/static/js/utils/api.js?v=19",
+      "auth": "/static/js/utils/auth.js?v=3",
+      "helpers": "/static/js/utils/helpers.js?v=16",
+      "useToast": "/static/js/composables/useToast.js?v=16",
+      "useComplaint": "/static/js/composables/useComplaint.js?v=20",
+      "useWorkflow": "/static/js/composables/useWorkflow.js?v=19",
+      "useSettings": "/static/js/composables/useSettings.js?v=22",
+      "useHistory": "/static/js/composables/useHistory.js?v=19",
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=28"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=32"></script>
+  <script type="module" src="/static/js/app.js?v=36"></script>
 </body>
 </html>

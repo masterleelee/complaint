@@ -1228,13 +1228,18 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
 
   // ── 投诉登记表 ──
 
-  async function genRegistrationForm(ticketId, overrides = {}) {
+  // pageEdits：{ handling_notes, student_name, overrides }
+  // overrides 为预览纸面上的编辑覆盖值（键：标签 / 标签:行号 / __title__ / __no_line__）
+  async function genRegistrationForm(ticketId, pageEdits = {}) {
     formLoading.value = true;
     formResult.value = null;
     try {
       const body = {};
-      if (overrides.handling_notes) body.handling_notes = overrides.handling_notes;
-      if (overrides.student_name) body.student_name = overrides.student_name;
+      if (pageEdits.handling_notes) body.handling_notes = pageEdits.handling_notes;
+      if (pageEdits.student_name) body.student_name = pageEdits.student_name;
+      if (pageEdits.overrides && Object.keys(pageEdits.overrides).length) {
+        body.overrides = pageEdits.overrides;
+      }
       const d = await postJ(`/api/tickets/${ticketId}/register-form`, body);
       if (d.success) {
         formResult.value = d.data;

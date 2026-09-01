@@ -107,6 +107,8 @@ export function useComplaint(onAutoQueryDone = null) {
   const searchSource = Vue.ref("");
   const candEmpty = Vue.ref(false);
   const selectedCand = Vue.ref(null);
+  // 三系统进度卡右上角「选中：姓名（报名点）」——记录当前查询对象。
+  const queryTarget = Vue.ref(null);  // { name, school_short } 或 null
   const candTotal = Vue.ref(0);
   const candPage = Vue.ref(1);
   const CAND_PAGE_SIZE = 10;
@@ -214,6 +216,7 @@ export function useComplaint(onAutoQueryDone = null) {
     phoneMismatch.value = "";
     residencyTip.value = "";
     selectedCand.value = null;
+    queryTarget.value = null;
     const t0 = Date.now();
     try {
       const d = await postJ("/api/students/search", {
@@ -222,6 +225,9 @@ export function useComplaint(onAutoQueryDone = null) {
         start_date: regStart.value,
         end_date: regEnd.value,
         page,
+        // 内部系统 0 命中时，回落到第三系统按姓名检索（弥补「内部无档案但第三系统有」的缺口）。
+        // 服务端仅在内部系统 0 结果时才真正发请求，正常情况下不增加第三系统负载。
+        include_third: true,
       });
       if (!d.success) {
         qErr.value = d.error || "搜索失败";
@@ -236,6 +242,14 @@ export function useComplaint(onAutoQueryDone = null) {
       searchSource.value = `内部系统 · ${searchElapsed.value}ms`;
       candEmpty.value = list.length === 0;
       successBar.value = false;
+      // 候选若来自第三系统（内部系统 0 命中后的回落），在来源标签上如实标注来源。
+      const ti = (d.data && d.data.third) || {};
+      if (ti.queried && ti.found) {
+        const srcs = Array.from(new Set(list.map((s) => s.source).filter(Boolean)));
+        searchSource.value = `${srcs.join(" + ")} · ${searchElapsed.value}ms`;
+      } else if (ti.queried && ti.error) {
+        searchSource.value = `内部系统 · 第三系统不可用（${ti.error}）`;
+      }
       // 查到结果后自动跳转到结果列表，避免列表被悬浮操作栏遮挡或留在首屏之外
       if (list.length) {
         Vue.nextTick(() => {
@@ -265,6 +279,7 @@ export function useComplaint(onAutoQueryDone = null) {
     form.id_card = c.id_card || "";
     form.phone = c.phone || "";
     studentName.value = c.student_name || "";
+    queryTarget.value = { name: c.student_name || c.name || "", school_short: c.school_short || "" };
     runExactQuery();
   }
 
@@ -308,9 +323,55 @@ export function useComplaint(onAutoQueryDone = null) {
   }
 
   async function chooseMergeExisting() {
+    const hit = sameDayTicket.value;
     sameDayTicket.value = null;
-    // 跳过客户端同日预检：服务端保存时按同日口径并入既有工单（merged_into_existing）
-    await runExactQuery(false, true);
+    // 兜底：预检横幅缺失或无工单ID时，回退到原有全量查询路径
+    if (!hit || !hit.id) {
+      await runExactQuery(false, true);
+      return;
+    }
+    const concreteChannel = form.source_channel === "其他途径"
+      ? form.other_channel.trim()
+      : form.source_channel;
+    if (!concreteChannel) {
+      qErr.value = "请填写具体投诉渠道";
+      return;
+    }
+    // 快路径：复用既有工单的三系统查询档案（同日学员信息不会变化），不重查三系统
+    querying.value = true;
+    qErr.value = "";
+    qr.value = null;
+    try {
+      const payload = {
+        ticket_id: hit.id,
+        id_card: (form.id_card || "").trim(),
+        complaint_date: form.complaint_date,
+        complaint_type: form.complaint_type,
+        source_channel: concreteChannel,
+        handler_name: form.handler_name.trim(),
+        handler_user_id: form.handler_user_id || null,
+        complaint_desc: (intakeText.value || "").trim(),
+        complaint_summary: (intakeResult.value && intakeResult.value.complaint_summary) || "",
+        complaint_demands: (intakeResult.value && intakeResult.value.complaint_demands) || "",
+        attachments: intakeResult.value?._filepath ? [{
+          _filepath: intakeResult.value._filepath,
+          _filename: intakeResult.value._filename || "",
+        }] : [],
+      };
+      const d = await postJ("/api/tickets/merge-existing", payload);
+      if (!d.success) throw new Error(d.error || "并入失败");
+      qr.value = d.data;
+      currentTicketId.value = (d.data && d.data.ticket_id) || hit.id;
+      successBar.value = true;
+      setTimeout(() => {
+        if (onAutoQueryDone) onAutoQueryDone();
+      }, 1500);
+    } catch (e) {
+      // 并入失败（档案缺失/校验不一致等）：回退到原有三系统全量查询路径，行为与旧版一致
+      await runExactQuery(false, true);
+    } finally {
+      querying.value = false;
+    }
   }
   async function createNewAnyway() {
     sameDayTicket.value = null;
@@ -324,8 +385,17 @@ export function useComplaint(onAutoQueryDone = null) {
     clearTransient();
     const m = routeMode();
     if (m === "id" || m === "phone") {
+      // 手动按证件号/手机号查询：记录查询对象供三系统进度卡展示「选中：姓名（报名点）」。
+      queryTarget.value = {
+        name: studentName.value.trim(),
+        school_short: schoolShort.value === "全部" ? "" : schoolShort.value,
+      };
       await runExactQuery();
-    } else if (m === "name") { resetQueryProgress();
+    } else if (m === "name") {
+      // 姓名候选检索不是三系统查询：不显示三系统进度卡，避免「候选学员」与
+      // 「三系统进度」两个横条同时出现（demo 优化方案）。
+      queryProgress.show = false;
+      if (queryProgress._timer) { clearInterval(queryProgress._timer); queryProgress._timer = null; }
       await searchStudents();
     } else {
       qErr.value = "请填写查询条件";
@@ -553,6 +623,7 @@ export function useComplaint(onAutoQueryDone = null) {
     // 重新提取新材料时，清掉上一位学员的候选列表与提示，避免旧数据残留误导
     candidates.value = [];
     selectedCand.value = null;
+    queryTarget.value = null;
     candTotal.value = 0;
     candPage.value = 1;
     candEmpty.value = false;
@@ -570,7 +641,12 @@ export function useComplaint(onAutoQueryDone = null) {
         await queryAll();
         if (onAutoQueryDone) onAutoQueryDone();
       }, 500);
-    } else if (data.student_name) { resetQueryProgress(); searchStudents(); } else {
+    } else if (data.student_name) {
+      // AI 仅识别到姓名（无证件号/手机号）→ 姓名候选检索，不弹三系统进度卡。
+      queryProgress.show = false;
+      if (queryProgress._timer) { clearInterval(queryProgress._timer); queryProgress._timer = null; }
+      searchStudents();
+    } else {
       intakeErr.value = data.ai_error
         ? `AI 提取失败：${data.ai_error}，请手动填写姓名或证件号`
         : "未能自动识别证件号和手机号，请手动填写后再查询";
@@ -786,30 +862,51 @@ export function useComplaint(onAutoQueryDone = null) {
           currentTicketId.value = status.result.ticket_id || currentTicketId.value;
         }
         if (status.status === "failed") {
-          // 三系统均查无：置引导状态供受理页展示「转人工建案」入口
-          //（eligible=false 表示存在超时/异常，前端只提示重新查询，不给入口）
+          // 后端按 sources 状态给出 outcome：no_match（明确查无）/ undetermined（含失败、超时、未查询）
+          // 前端唯一通道原则：明确查无只展示黄色引导条；无法判定只展示红色错误条，两者互斥。
           if (status.no_match) {
+            const outcome = status.match_outcome || "no_match";
             const cleanedSources = Object.fromEntries(
               Object.entries(status.sources || {}).filter(([, v]) => v && v !== "pending")
             );
-            noMatchInfo.value = {
-              eligible: !!status.manual_intake_eligible,
-              sources: cleanedSources,
-            };
-            qErr.value = status.error || "未匹配到学员档案";
-            queryProgress.message = "未匹配到学员档案";
-            // 自动降级到姓名模糊搜索：
-            // 条件：1) 本轮走的是手机号精确查询  2) 三系统都明确查无（无超时/异常）
-            //       3) 已有 studentName（来自粘贴文本/AI 提取/手动填写）
-            // 避免：本单「蔡振华+手机号无记录」这种 case 直接卡死转人工
             const hasName = (studentName.value || "").trim();
             const isPhonePath = (form.phone || "").replace(/\D/g, "").length >= 11;
-            if (hasName && isPhonePath && status.manual_intake_eligible) {
-              qErr.value = "";
-              queryProgress.message = "";
+            // phone_not_found：后端确认「手机号这条路径查过了、确实没查到」。
+            // 此时 third/driving 因缺证号被记为 not_queried，outcome 判为 undetermined，
+            // 语义上是对的（不能说查无此人），但姓名降级分支此前卡在 outcome==="no_match"
+            // 上永远进不去。改用这个独立信号驱动降级。
+            const phoneNotFound = !!status.phone_not_found;
+
+            // 姓名降级：手机号查无 + 有姓名 → 用姓名到内部系统 + 第三系统找候选
+            const degradeToNameSearch = () => {
               noMatchInfo.value = null;
               queryProgress.show = false;
+              qErr.value = "";
+              queryProgress.message = "手机号未查到，已改用姓名检索内部系统与第三系统…";
               searchStudents();
+            };
+
+            if (outcome === "no_match") {
+              noMatchInfo.value = {
+                eligible: !!status.manual_intake_eligible,
+                sources: cleanedSources,
+              };
+              qErr.value = "";
+              queryProgress.message = status.error || "未匹配到学员档案";
+              // 手机号路径 + 有姓名 + 明确查无：自动降级到姓名搜索
+              if (hasName && isPhonePath) {
+                degradeToNameSearch();
+              }
+            } else if (phoneNotFound && hasName && isPhonePath) {
+              // 已确认手机号查无，但第三系统/驾培因无身份证号未查询 —— 此时不能直接判
+              // 「查无此人」（测试学员甲就是典型：内部与驾培均无，仅第三系统可查），
+              // 改用姓名回落到第三系统检索。
+              degradeToNameSearch();
+            } else {
+              // undetermined / ambiguous：红色错误，不展示「转人工建案」
+              noMatchInfo.value = null;
+              qErr.value = status.error || "未能确定学员身份，请重新查询";
+              queryProgress.message = status.error || "查询失败";
             }
             return;
           }
@@ -953,6 +1050,7 @@ export function useComplaint(onAutoQueryDone = null) {
     candidates.value = [];
     candEmpty.value = false;
     selectedCand.value = null;
+    queryTarget.value = null;
     candTotal.value = 0;
     candPage.value = 1;
     orgFallback.value = false;
@@ -1007,6 +1105,7 @@ export function useComplaint(onAutoQueryDone = null) {
     candidates.value = [];
     candEmpty.value = false;
     selectedCand.value = null;
+    queryTarget.value = null;
     candTotal.value = 0;
     candPage.value = 1;
     orgFallback.value = false;
@@ -1081,6 +1180,7 @@ export function useComplaint(onAutoQueryDone = null) {
     candEmpty,
     searchSource,
     selectedCand,
+    queryTarget,
     candTotal,
     candPage,
     candTotalPages,

@@ -46,6 +46,26 @@ export function useHistory(toast) {
   // 车辆数维护
   const vehicleModalOpen = Vue.ref(false);
   const vehicleItems = Vue.ref([]);
+  // 车辆数维护弹窗的搜索关键词（匹配 代号 / 网点名称 / 类型）
+  const vehicleKeyword = Vue.ref("");
+
+  // 按关键词过滤后的列表；无关键词时返回全量，避免无谓重算
+  const vehicleFiltered = Vue.computed(() => {
+    const kw = String(vehicleKeyword.value || "").trim().toLowerCase();
+    if (!kw) return vehicleItems.value;
+    return vehicleItems.value.filter((x) =>
+      String(x.unit_code || "").toLowerCase().includes(kw) ||
+      String(x.unit_name || "").toLowerCase().includes(kw) ||
+      String(x.unit_type || "").toLowerCase().includes(kw)
+    );
+  });
+  // 正常栏 / 已注销栏
+  const vehicleActiveItems = Vue.computed(() =>
+    vehicleFiltered.value.filter((x) => x.is_active !== 0)
+  );
+  const vehicleInactiveItems = Vue.computed(() =>
+    vehicleFiltered.value.filter((x) => x.is_active === 0)
+  );
   const vehicleLoading = Vue.ref(false);
   const vehicleSaving = Vue.ref(false);
   const chartDateStart = Vue.ref("");
@@ -53,7 +73,7 @@ export function useHistory(toast) {
   // 看板时间周期 tab：week / month / year / all / custom
   const chartPeriod = Vue.ref("all");
   // 身份证脱敏显示（明细表默认打码，可一键切换）
-  const masked = Vue.ref(true);
+  const masked = Vue.ref(false);
   // 只看重复投诉（同身份证多条记录）
   const repeatOnly = Vue.ref(false);
   // 单位排行维度：count=按数量 / rate=按每百车率
@@ -367,11 +387,14 @@ export function useHistory(toast) {
   }
 
   function addVehicleRow() {
-    vehicleItems.value.push({ unit_code: "", unit_name: "", unit_type: "分校", vehicle_count: 0 });
+    vehicleItems.value.push({ unit_code: "", unit_name: "", unit_type: "分校", vehicle_count: 0, is_active: 1 });
+    // 新行默认落在正常栏，清空搜索词以免被过滤掉看不见
+    vehicleKeyword.value = "";
   }
 
-  function removeVehicleRow(index) {
-    vehicleItems.value.splice(index, 1);
+  function removeVehicleRow(item) {
+    const idx = vehicleItems.value.indexOf(item);
+    if (idx > -1) vehicleItems.value.splice(idx, 1);
   }
 
   async function saveVehicleCounts() {
@@ -703,6 +726,7 @@ export function useHistory(toast) {
     drill, drillCode, onDrillSelect, onDateChange, boardComplaintRate,
     drillInto, closeDrill,
     vehicleItems, vehicleLoading, vehicleSaving,
+    vehicleKeyword, vehicleActiveItems, vehicleInactiveItems,
     vehicleModalOpen,
     loadVehicleCounts, saveVehicleCounts,
     addVehicleRow, removeVehicleRow,
