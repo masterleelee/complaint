@@ -124,3 +124,12 @@
 | ISS-UJ-07 | 归档Toast虚称"两件套" | P2 | ✅ 已修复（改为如实的"案件已归档"） |
 
 证据：test-evidence/user-journey/final4-01~07.png · 测试工单 e4be4325 已清场，基线158 ✓
+
+## 登记表单页自适应（2026-09-01 · Agent-B · diagnosing-bugs 收尾）
+
+### ISS-C-01 ｜ P1 ｜ 投诉登记表内容超长会生成 2 页 A4【已修复 2026-09-01】
+- **现象**：投诉内容/处理经过超长的工单（如梁思念 498 字投诉内容）生成的 docx 登记表撑破固定定高、掉到第 2 页，不符合「单页 A4 登记表」交付要求；用户现场反馈梁思念旧文件为 2 页。
+- **根因**：分区行高采用固定定高（SECTION_HEIGHTS_CM），生成前未做页面垂直预算；内容超过定高时 AT_LEAST 行高规则把单元格撑高 → 整表超 27.5cm → 翻页。早期版本还叠加 `_spacer_count` 往已撑破的行里塞空段（张玉富 363 字→9 空段→行高 9.25cm/定高 7.0cm）。
+- **修复**：`services/visit_service.py` 新增 `_fit_section_heights` 压缩链（档位 L0→L4：页边距→行距→字号→信息行高→标题字号），生成前按与 `_section_cell` 完全一致的渲染口径预算 Σ高度，超可用预算逐级收紧直到装下；返回 `page_fit:{level, used_cm, budget_cm}`。固定定高改为「理想上限」——内容不超时用理想定高，超则降到 need 下限；真实工单全 L0 单页，超长触发压缩兜底。
+- **证据**：`tests/test_registration_form_onepage.py`（4 passed）；全量 86 工单生成 level 0、0 溢出、max_used 24.70/27.10cm；超长/极端模拟触发 L1~L4 且不抛异常。`tmp/diag_reg_pagefit.py` 单一真源校验。
+- **遗留**：极端超长（>约 1200 字组合）物理上 1 页塞不下，降到 L4 仍可能 2 页——属内容超限非 bug，page_fit 已暴露 used>budget 供上层告警；app.js 预览在 L0 与 docx 一致，超长档为 L0 近似（预览为 HTML 浏览器分页，不影响生成的 docx 单页性）。

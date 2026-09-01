@@ -1,6 +1,8 @@
 """投诉登记表生成服务（数据源统一为工单处理情况 + 已确认费用核算）"""
+import math
 import os
 import re
+import unicodedata
 from datetime import datetime
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
@@ -9,10 +11,46 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from config import load_config
+from services.archive_service import build_archive_dir
 
 LABEL_FILL = "F2F2F2"
 NOTE_GRAY = RGBColor(0x59, 0x59, 0x59)
 SIGN_BLANK = "____________"
+
+# ── 分区版式常量（docx 与前端预览 app.js regSecStyle 必须同步）─────────────
+# 分区定高（cm）。投诉内容/投诉处理按库内最长真实文本留足，避免文字撑破定高；
+# 回访记录/投诉诉求/费用核算压缩，腾出的空间补给长文本区。
+# ⚠️ 改这里必须同步改 static/js/app.js 的 regSecStyle（cm → px，96dpi：1cm≈37.8px）。
+SECTION_HEIGHTS_CM = {
+    "投诉内容": 6.2,
+    "投诉诉求": 2.2,
+    "费用核算": 1.4,
+    "投诉处理": 7.2,
+    "回访记录": 2.4,
+}
+_SEC_TEXT_W_CM = 16.8   # 分区单元格可用文本宽度（A4 17.2cm − 单元格左右内边距 0.38cm）
+_SEC_INDENT_CM = 0.74   # 正文首行缩进 2 字符（21pt，level-0 默认字号 10.5pt 下）
+_SEC_MARGIN_CM = 0.50   # 单元格上下内边距 + 段尾余量 + 版式估算安全余量
+_EMPTY_LINE_CM = 0.42   # 空段占位高度（10.5pt 宋体单行 ≈ 12pt）
+_PT_TO_CM = 0.0352778   # 1pt → cm
+
+# ── 单页 A4 自适应预算（内容超量时按压缩链逐级收紧，保证 1 页）──────────────
+# 设计：生成前先按「与 _section_cell 一致的渲染口径」预算每个分区高度，
+# 若 Σ分区高 + 固定占位 ≤ 页面可用高则保持 level-0 美观版式；否则逐级收紧
+# （页边距 → 行距 → 字号 → 信息行高 → 标题字号），直到装下为止。
+PAGE_W_CM = 21.0
+_CELL_LR_PAD_CM = 0.38        # 分区单元格左右内边距合计（216 twips）
+PAGE_H_CM = 29.7
+_SEC_BUDGET_SAFE_CM = 0.40   # 安全余量：避免 Word 取整导致临界翻页
+# 压缩链（lvl 升序 = 越紧）。mlr/top/bot=页边距；ls_head/ls_body=分区行距；
+# font=分区正文/签名字号；info=信息区行高；title=标题字号。
+_FIT_STEPS = [
+    {"lvl": 0, "mlr": 1.9, "m_top": 1.2, "m_bot": 1.0, "ls_head": 1.25, "ls_body": 1.30, "font": 10.5, "info": 0.85, "title": 16},
+    {"lvl": 1, "mlr": 0.9, "m_top": 0.9, "m_bot": 0.7, "ls_head": 1.25, "ls_body": 1.30, "font": 10.5, "info": 0.85, "title": 16},
+    {"lvl": 2, "mlr": 0.9, "m_top": 0.9, "m_bot": 0.7, "ls_head": 1.12, "ls_body": 1.15, "font": 10.5, "info": 0.85, "title": 16},
+    {"lvl": 3, "mlr": 0.9, "m_top": 0.9, "m_bot": 0.7, "ls_head": 1.12, "ls_body": 1.15, "font": 9.5,  "info": 0.72, "title": 14},
+    {"lvl": 4, "mlr": 0.7, "m_top": 0.7, "m_bot": 0.5, "ls_head": 1.12, "ls_body": 1.15, "font": 9.0,  "info": 0.72, "title": 14},
+]
 
 # 投诉类型 → 通用诉求文案（学员未填诉求、AI 摘要缺失时的兜底）
 GENERIC_DEMANDS = {
@@ -94,7 +132,8 @@ def _build_outcome_text(final_outcome: str) -> str:
         return "学员选择继续培训或转校，按相关流程办理。"
     if final_outcome:
         return f"经核实，该学员投诉事宜已按「{final_outcome}」处理完毕。"
-    return "经核实，该学员投诉事宜已按合同约定处理。"
+    # 未定最终投诉结果时留空，由处理人在纸面/预览上人工填写，不再自动兜底话术
+    return ""
 
 
 def _build_fee_text(total_fee: float, refund: float, deductions: list) -> str:
@@ -123,6 +162,7 @@ def build_registration_form_data(
     refund: float = 0,
     deductions: list = None,
     ai_sections: dict = None,
+    overrides: dict = None,
 ) -> dict:
     """构建登记表内容数据（docx 生成与页面预览共用的唯一数据源）。
 
@@ -130,14 +170,19 @@ def build_registration_form_data(
     由调用方（预览/归档前）统一生成传入；缺失时按 原文 → 摘要 → 类型话术 逐级兜底。
     fields 前 4 行为六元组 (标签,值,标签,值,标签,值)，其余为四元组 (标签,值,"","")，
     四元组表示该行值独占整行。
+
+    overrides：预览纸面上用户编辑后的覆盖值（所见即所得）。两种键形：
+      - "标签" → 整体覆盖该标签的值（信息区单值字段、单行分区）
+      - "标签:行号" → 覆盖分区值中的某一行（如 "投诉处理:1"）
+      - "__title__" / "__no_line__" → 覆盖标题 / 编号行
     """
     ai_sections = ai_sections or {}
     complaint_type = str(ticket_data.get("complaint_type") or "").strip()
 
-    # 科目二/三学时（来自第三系统审核有效学时，未产生则为空）
+    # 科目二/三学时（来自第三系统审核有效学时，未产生则为空 → 按业务口径填 0）
     hours = ticket_data.get("training_hours") if isinstance(ticket_data.get("training_hours"), dict) else {}
-    hours_sub2 = str(hours.get("科目二") or "").strip()
-    hours_sub3 = str(hours.get("科目三") or "").strip()
+    hours_sub2 = str(hours.get("科目二") or "").strip() or "0"
+    hours_sub3 = str(hours.get("科目三") or "").strip() or "0"
 
     # 投诉内容/诉求兜底链：AI 整理 → 材料原文 → 摘要 → 类型话术
     summary = str(ticket_data.get("complaint_summary") or "").strip()
@@ -161,19 +206,21 @@ def build_registration_form_data(
 
     # 投诉处理：AI 归纳 → 处理情况原文 → 类型话术，作为「处理经过」行
     proc_lines = []
-    # 处理经过：AI 归纳 → ④处理情况原文 → 类型话术
+    # 处理经过：AI 归纳 → ④处理情况原文 → 类型话术；文本内换行拍平，整段连排不分行
     notes = str(ai_sections.get("handling_summary") or "").strip() \
         or str(handling_notes or "").strip() \
         or HANDLING_FALLBACKS.get(complaint_type, "")
+    notes = re.sub(r"\s*\n+\s*", "", notes)
     if notes:
         proc_lines.append(f"处理经过：{notes}")
-    opinion = str(negotiation_outcome or "").strip()
+    opinion = re.sub(r"\s*\n+\s*", "", str(negotiation_outcome or "").strip())
     if opinion:
         proc_lines.append(f"学员意见：{opinion}")
     conclusion = _build_outcome_text(final_outcome)
     if final_outcome:
         conclusion = f"最终投诉结果：{final_outcome}。" + conclusion
-    proc_lines.append(f"处理结论：{conclusion}")
+    if conclusion:
+        proc_lines.append(f"处理结论：{conclusion}")
 
     if (ticket_data.get("fee_plan_status") or "") != "confirmed":
         # 未确认但已有草稿数据 → 如实展示并标注待确认；完全无数据才用占位文案
@@ -206,14 +253,74 @@ def build_registration_form_data(
         ("投诉处理", "\n".join(proc_lines), "", ""),
         ("回访记录", "", "", ""),
     ]
-    return {
+    # 纸面编辑覆盖（所见即所得）：按 标签 / 标签:行号 回填用户在预览纸面上的修改
+    fields = _apply_overrides(fields, overrides)
+
+    data = {
         "title": "学员投诉登记表",
         "no_line": f"编号：{_ticket_no(ticket_data)} 号",
         "fields": fields,
-        "visit_summary": notes or "经核实，该学员投诉事宜已按合同约定处理。",
+        "visit_summary": notes,
         "handler": handler,
         "today_cn": today_cn,
     }
+    if overrides:
+        t = str(overrides.get("__title__") or "").strip()
+        if t:
+            data["title"] = t
+        n = str(overrides.get("__no_line__") or "").strip()
+        if n:
+            data["no_line"] = n
+    return data
+
+
+def _apply_overrides(fields: list, overrides: dict) -> list:
+    """把预览纸面上的编辑覆盖到 fields。
+
+    覆盖规则：
+      - "标签" → 整体替换该标签的值（信息区标签在各行内唯一定位；分区为整值替换）
+      - "标签:行号" → 替换分区值按 \\n 拆行后的指定行（行号越界时自动补空行）
+      - "__title__" / "__no_line__" 不属于 fields，由调用方按需读取
+    空值覆盖（用户清空单元格）同样生效；非法键形忽略。
+    """
+    if not overrides:
+        return fields
+    plain: dict = {}
+    lines: dict = {}
+    for k, v in (overrides or {}).items():
+        k = str(k).strip()
+        if k in ("__title__", "__no_line__"):
+            plain[k] = str(v)
+            continue
+        lab, sep, idx = k.rpartition(":")
+        if sep and idx.isdigit():
+            lines.setdefault(lab, {})[int(idx)] = str(v)
+        else:
+            plain[lab or k] = str(v)
+
+    out = []
+    for row in fields:
+        if len(row) == 6:
+            # 六元组信息行：三对 (标签,值) 逐一检查覆盖
+            k1, v1, k2, v2, k3, v3 = row
+            v1 = plain.get(k1, v1)
+            v2 = plain.get(k2, v2)
+            v3 = plain.get(k3, v3)
+            out.append((k1, v1, k2, v2, k3, v3))
+            continue
+        label, value = row[0], row[1]
+        if label in lines:
+            parts = str(value or "").split("\n")
+            for idx, v in lines[label].items():
+                while len(parts) <= idx:
+                    parts.append("")
+                parts[idx] = v
+            out.append((label, "\n".join(parts), row[2], row[3]))
+        elif label in plain:
+            out.append((label, plain[label], row[2], row[3]))
+        else:
+            out.append(row)
+    return out
 
 
 # ── docx 版式辅助 ──────────────────────────────────────────────
@@ -285,42 +392,164 @@ def _table_borders(table):
     tbl_pr.append(layout)
 
 
-def _spacer_count(row_h_cm: float, used_lines: int) -> int:
-    """估算固定行高内可容纳的行槽数，返回签名前需插入的空段数。"""
-    avail = int((row_h_cm - 0.35) / 0.5)
-    return max(0, avail - used_lines)
+def _text_em(text: str) -> float:
+    """文本折算为全角字符数（全角/中日韩 = 1.0，半角 = 0.5），用于宋体排版宽度估算。"""
+    return sum(1.0 if unicodedata.east_asian_width(c) in ("W", "F") else 0.5
+               for c in str(text or ""))
 
 
-def _section_cell(cell, header, body_lines, sign_line="", row_h_cm=0.0):
-    """全宽分区单元格：加粗小标题与正文首行同段；签名行置于右下角。"""
+def _rendered_lines(text: str, font_pt: float = 10.5, indent_cm: float = 0.0,
+                    text_w_cm: float = None) -> int:
+    """估算一段宋体文本在分区单元格内折行后的渲染行数。"""
+    if not str(text or "").strip():
+        return 1
+    text_w = text_w_cm if text_w_cm is not None else _SEC_TEXT_W_CM
+    char_cm = font_pt * _PT_TO_CM
+    cap_first = max(1.0, (text_w - indent_cm) / char_cm)   # 首行受缩进影响
+    cap_rest = max(1.0, text_w / char_cm)
+    n = _text_em(text)
+    if n <= cap_first:
+        return 1
+    return 1 + math.ceil((n - cap_first) / cap_rest)
+
+
+def _para_height_cm(text: str, font_pt: float = 10.5, line_spacing: float = 1.25,
+                    indent_cm: float = 0.0, space_after_pt: float = 0.0,
+                    text_w_cm: float = None) -> float:
+    """段落渲染高度（cm）：行数 × 字号 × 行距 + 段后距。"""
+    lines = _rendered_lines(text, font_pt, indent_cm=indent_cm, text_w_cm=text_w_cm)
+    return (lines * font_pt * line_spacing + space_after_pt) * _PT_TO_CM
+
+
+def _spacer_count(row_h_cm: float, used_cm: float) -> int:
+    """固定行高内剩余空间可容纳的空段数，用于把签名行顶到单元格底部。
+
+    旧实现按「逻辑行数」估算占用：长文本换行后实际占用远大于估算值，会在本已
+    撑破定高的行里再塞入空段（张玉富 363 字处理经过 → 9 个空段，行高 9.25cm
+    / 定高 7.0cm）。现改为按内容实际渲染高度计算，长文本时空段自动归零。
+    """
+    return int(max(0.0, row_h_cm - _SEC_MARGIN_CM - used_cm) / _EMPTY_LINE_CM)
+
+
+def _sec_text_w_cm(mlr_cm: float) -> float:
+    """分区单元格可用文本宽（cm）：A4 文本宽 − 单元格左右内边距。随页边距变化。"""
+    return PAGE_W_CM - 2 * mlr_cm - _CELL_LR_PAD_CM
+
+
+def _sec_indent_cm(font_pt: float) -> float:
+    """正文首行缩进 2 字符（cm），随字号等比。"""
+    return font_pt * 2 * _PT_TO_CM
+
+
+def _section_need_cm(label: str, value: str, sign_line: str, step: dict) -> float:
+    """分区单元格真实渲染高度（cm），口径必须与 _section_cell 完全一致。
+
+    口径：投诉内容/投诉诉求/费用核算 → 整体单段 [value]（内部 \\n 不拆段）；
+         投诉处理 → value.split('\\n') 拆多段；回访记录 → 无正文段，仅签名行。
+    否则会与真实 docx 渲染高度漂移（梁思念曾因此被高估 4.5cm）。
+    """
+    text_w = _sec_text_w_cm(step["mlr"])
+    indent = _sec_indent_cm(step["font"])
+    header = label + "："
+    body_lines = [ln for ln in (str(value or "").split("\n") if label == "投诉处理"
+                                else [str(value or "")]) if ln.strip()]
+    first = body_lines[0] if body_lines else ""
+    used = _para_height_cm(header + first, font_pt=step["font"], line_spacing=step["ls_head"],
+                           indent_cm=indent, space_after_pt=4, text_w_cm=text_w)
+    for ln in body_lines[1:]:
+        used += _para_height_cm(ln, font_pt=step["font"], line_spacing=step["ls_body"],
+                                indent_cm=indent, space_after_pt=2, text_w_cm=text_w)
+    if sign_line:
+        used += _para_height_cm(sign_line, font_pt=step["font"], line_spacing=step["ls_body"],
+                                indent_cm=0.0, text_w_cm=text_w)
+    return used + _SEC_MARGIN_CM
+
+
+def _non_table_cm(step: dict) -> float:
+    """表格外固定占位（cm）：标题 + 编号行 + 底部备注，随标题字号变化。"""
+    title = step["title"] * 1.15 + 4
+    no = 10.5 * 1.15 + 3
+    note = 6 + 9 * 1.15
+    return (title + no + note) * _PT_TO_CM
+
+
+def _fit_section_heights(fields: list, handler: str, today: str):
+    """单页 A4 自适应：返回 (alloc{label:行高cm}, step, used_cm, budget_cm)。
+
+    alloc 为各分区实际行高——内容不超定高时用理想定高，超则用 need 下限；
+    若 Σ高度超页面预算，逐级收紧 _FIT_STEPS（页边距→行距→字号→信息行高→标题字号）
+    直到装下；极端超长则降到末档按 need 兜底，绝不强行撑破翻页。
+    """
+    signs = {
+        "投诉处理": f"处理人签名：{handler}　　日期：{today}",
+        "回访记录": f"回访人：{SIGN_BLANK}　　______年____月____日",
+    }
+    secs = [(label, str(value or ""), signs.get(label, ""))
+            for label, value, _, _ in fields[_INFO_ROWS:]]
+    for step in _FIT_STEPS:
+        needs = {lbl: _section_need_cm(lbl, val, sign, step) for lbl, val, sign in secs}
+        alloc = {lbl: max(needs[lbl], SECTION_HEIGHTS_CM.get(lbl, 1.5)) for lbl, _, _ in secs}
+        used = step["info"] * _INFO_ROWS + sum(alloc.values()) + _non_table_cm(step)
+        budget = PAGE_H_CM - step["m_top"] - step["m_bot"] - _SEC_BUDGET_SAFE_CM
+        if used <= budget:
+            return alloc, step, used, budget
+    # 极端超长：末档按 need 下限兜底（不撑破）
+    step = _FIT_STEPS[-1]
+    needs = {lbl: _section_need_cm(lbl, val, sign, step) for lbl, val, sign in secs}
+    alloc = {lbl: needs[lbl] for lbl, _, _ in secs}
+    used = step["info"] * _INFO_ROWS + sum(alloc.values()) + _non_table_cm(step)
+    budget = PAGE_H_CM - step["m_top"] - step["m_bot"] - _SEC_BUDGET_SAFE_CM
+    return alloc, step, used, budget
+
+
+def _section_cell(cell, header, body_lines, sign_line="", row_h_cm=0.0,
+                  font_pt: float = 10.5, ls_head: float = 1.25, ls_body: float = 1.30,
+                  indent_cm: float = None, text_w_cm: float = None):
+    """全宽分区单元格：加粗小标题与正文首行同段；正文段落首行缩进 2 字符；
+    签名行置于右下角（右对齐、不缩进）。
+
+    font_pt/ls_*/text_w_cm 由压缩链档位驱动，必须与 _section_need_cm 预算口径一致；
+    text_w_cm 必须随页边距传入——否则渲染用默认宽会算出比预算更多的行 → 高度虚高翻页。
+    """
     cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+    indent = indent_cm if indent_cm is not None else _sec_indent_cm(font_pt)
     body_lines = [str(ln).strip() for ln in body_lines if str(ln or "").strip()]
 
     head_p = cell.paragraphs[0]
     head_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    head_p.paragraph_format.line_spacing = 1.25
+    head_p.paragraph_format.line_spacing = ls_head
     head_p.paragraph_format.space_after = Pt(4)
-    _style_run(head_p.add_run(header), size=10.5, bold=True)
-    if body_lines:
-        _style_run(head_p.add_run(body_lines[0]), size=10.5)
+    head_p.paragraph_format.first_line_indent = Pt(round(font_pt * 2))   # 首行缩进 2 字符
+    _style_run(head_p.add_run(header), size=font_pt, bold=True)
+    first_line = body_lines[0] if body_lines else ""
+    if first_line:
+        _style_run(head_p.add_run(first_line), size=font_pt)
+    used_cm = _para_height_cm(header + first_line, font_pt=font_pt, line_spacing=ls_head,
+                              indent_cm=indent, space_after_pt=4, text_w_cm=text_w_cm)
 
     for line in body_lines[1:]:
         bp = cell.add_paragraph()
         bp.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        bp.paragraph_format.line_spacing = 1.3
+        bp.paragraph_format.line_spacing = ls_body
         bp.paragraph_format.space_after = Pt(2)
-        _style_run(bp.add_run(line), size=10.5)
+        bp.paragraph_format.first_line_indent = Pt(round(font_pt * 2))
+        _style_run(bp.add_run(line), size=font_pt)
+        used_cm += _para_height_cm(line, font_pt=font_pt, line_spacing=ls_body,
+                                   indent_cm=indent, space_after_pt=2, text_w_cm=text_w_cm)
 
     if sign_line:
-        used = 1 + len(body_lines) + 1
-        for _ in range(_spacer_count(row_h_cm, used)):
+        # 签名行自身占位也要计入，否则长文本时空段会把签名顶出单元格
+        used_cm += _para_height_cm(sign_line, font_pt=font_pt, line_spacing=ls_body,
+                                   indent_cm=0.0, text_w_cm=text_w_cm)
+        for _ in range(_spacer_count(row_h_cm, used_cm)):
             sp = cell.add_paragraph()
             sp.paragraph_format.line_spacing = 1.0
             sp.paragraph_format.space_after = Pt(0)
         sp = cell.add_paragraph()
         sp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        sp.paragraph_format.line_spacing = 1.3
-        _style_run(sp.add_run(sign_line), size=10.5)
+        sp.paragraph_format.line_spacing = ls_body
+        sp.paragraph_format.first_line_indent = Pt(0)    # 签名行右下对齐，不随正文缩进
+        _style_run(sp.add_run(sign_line), size=font_pt)
 
 
 def generate_registration_form(
@@ -337,6 +566,7 @@ def generate_registration_form(
     special_warnings: list = None,
     exam_stage: str = "",
     ai_sections: dict = None,
+    overrides: dict = None,
 ) -> dict:
     """
     生成学员投诉登记表（DRD 附件 2），单页 A4 表格式版面。
@@ -356,6 +586,7 @@ def generate_registration_form(
             refund=refund,
             deductions=deductions,
             ai_sections=ai_sections,
+            overrides=overrides,
         )
         handler = data["handler"]
         today_cn = data["today_cn"]
@@ -366,20 +597,24 @@ def generate_registration_form(
         style.font.size = Pt(10.5)
         style.element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
 
+        # 单页 A4 自适应：生成前按内容预算分区行高与压缩档（保证 1 页）
+        alloc, fit_step, fit_used, fit_budget = _fit_section_heights(
+            data["fields"], data["handler"], data["today_cn"])
+
         section = doc.sections[0]
         section.page_width = Cm(21)
         section.page_height = Cm(29.7)
-        section.top_margin = Cm(1.2)
-        section.bottom_margin = Cm(1.0)
-        section.left_margin = Cm(1.9)
-        section.right_margin = Cm(1.9)
+        section.top_margin = Cm(fit_step["m_top"])
+        section.bottom_margin = Cm(fit_step["m_bot"])
+        section.left_margin = Cm(fit_step["mlr"])
+        section.right_margin = Cm(fit_step["mlr"])
 
         # 标题（加字距）
         title = doc.add_paragraph()
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         title.paragraph_format.space_after = Pt(4)
         run = title.add_run(data["title"])
-        _style_run(run, size=16, bold=True)
+        _style_run(run, size=fit_step["title"], bold=True)
         char_spacing = OxmlElement("w:spacing")
         char_spacing.set(qn("w:val"), "40")
         run._element.get_or_add_rPr().append(char_spacing)
@@ -395,9 +630,16 @@ def generate_registration_form(
         table.autofit = False
         _table_borders(table)
 
-        # A4 文本宽 = 21cm − 1.9cm×2 = 17.2cm ≈ 9752 twips，六列：标签 1300 / 值约 1950
-        # （标签需容纳「科目二学时」5 字，值列保证 18 位身份证号 9pt 单行）
-        col_tw = [1300, 1951, 1300, 1951, 1300, 1950]
+        # A4 文本宽 = 21cm − 1.9cm×2 = 17.2cm ≈ 9752 twips
+        # 列宽分配：每个单元格内容都要单行不换行；标签 10pt / 值统一 9pt（小五） 视觉整齐
+        # 列内容宽 = 列宽 − 左右内边距 216 twips (10.8pt)，最长值实测：
+        #   标签 1400 twips (2.47cm → 内容 59.2pt)：容纳「科目二学时」5 字 10pt = 50pt ✓
+        #   v1 1815 twips (3.20cm → 内容 79.95pt)：投诉日期「2026年8月3日」6 em = 54pt / 手机号 11 位 = 49.5pt ✓
+        #   v2 1875 twips (3.31cm → 内容 82.95pt)：身份证号 18 位 9pt 数字 = 81pt ✓（余 2pt）
+        #   v3 1860 twips (3.28cm → 内容 82.2pt)：投诉对象最长「厚街科技工业园分校」9 字 = 81pt ✓（余 1.2pt）
+        #     ↑ 旧值 1825 内容仅 80.4pt，9 字网点名（如阳金林工单）会折成两行把信息行撑高
+        #   总宽 3×1400 + 1815 + 1875 + 1860 = 9750 twips（贴满文本宽，仅留 2 twips 舍入余量）
+        col_tw = [1400, 1815, 1400, 1875, 1400, 1860]
         for i, col in enumerate(table.columns):
             col.width = Cm(col_tw[i] / 567.0)
         for row in table.rows:
@@ -416,43 +658,52 @@ def generate_registration_form(
         for i in range(_INFO_ROWS):
             k1, v1, k2, v2, k3, v3 = data["fields"][i]
             row = table.rows[i]
-            row.height = Cm(0.85)
+            row.height = Cm(fit_step["info"])
             cells = row.cells
+            # 标签列 1400 twips (2.47cm) 容纳 5 字 10pt + padding；值列 1825/1870 twips 容纳 9pt 内容
             for c, label in ((cells[0], k1), (cells[2], k2), (cells[4], k3)):
                 _set_cell_shading(c, LABEL_FILL)
-                _cell_write(c, [(label, WD_ALIGN_PARAGRAPH.CENTER, 10.5, True, 1.15, 0)],
+                _cell_write(c, [(label, WD_ALIGN_PARAGRAPH.CENTER, 10, True, 1.15, 0)],
                             valign=center_valign)
-            # 18 位身份证号在值列宽内需缩小字号才能单行显示
+            # 值列字号统一 9pt（小五），身份证号不再单独缩小——9pt 18 位数字在 1870 twips 列内单行可放
             for c, label, val in ((cells[1], k1, v1), (cells[3], k2, v2), (cells[5], k3, v3)):
-                vsize = 9 if label == "身份证号" else 10.5
-                val_blocks = [(ln, WD_ALIGN_PARAGRAPH.CENTER, vsize, False, 1.15, 0)
+                val_blocks = [(ln, WD_ALIGN_PARAGRAPH.CENTER, 9, False, 1.15, 0)
                               for ln in str(val).split("\n")]
                 _cell_write(c, val_blocks, valign=center_valign)
 
-        # 第 5 行起：全宽分区
-        section_heights_cm = {"投诉内容": 4.6, "投诉诉求": 2.4, "费用核算": 1.6,
-                              "投诉处理": 7.0, "回访记录": 2.8}
+        # 第 5 行起：全宽分区（行高来自 _fit_section_heights 自适应结果，与 app.js regSecStyle 同步）
+        _sec_tw = _sec_text_w_cm(fit_step["mlr"])
         for i in range(_INFO_ROWS, n_rows):
             label, value, _, _ = data["fields"][i]
             row = table.rows[i]
-            h_cm = section_heights_cm.get(label, 1.5)
+            h_cm = alloc.get(label, 1.5)
             row.height = Cm(h_cm)
             merged = merge_full(row)
             merged.width = full_w
 
             if label == "投诉内容":
-                _section_cell(merged, "投诉内容：", [value])
+                _section_cell(merged, "投诉内容：", [value], row_h_cm=h_cm,
+                              font_pt=fit_step["font"], ls_head=fit_step["ls_head"],
+                              ls_body=fit_step["ls_body"], text_w_cm=_sec_tw)
             elif label == "投诉诉求":
-                _section_cell(merged, "投诉诉求：", [value])
+                _section_cell(merged, "投诉诉求：", [value], row_h_cm=h_cm,
+                              font_pt=fit_step["font"], ls_head=fit_step["ls_head"],
+                              ls_body=fit_step["ls_body"], text_w_cm=_sec_tw)
             elif label == "费用核算":
-                _section_cell(merged, "费用核算：", [value])
+                _section_cell(merged, "费用核算：", [value], row_h_cm=h_cm,
+                              font_pt=fit_step["font"], ls_head=fit_step["ls_head"],
+                              ls_body=fit_step["ls_body"], text_w_cm=_sec_tw)
             elif label == "投诉处理":
                 sign = f"处理人签名：{handler}　　日期：{today_cn}"
                 _section_cell(merged, "投诉处理：", str(value).split("\n"),
-                              sign_line=sign, row_h_cm=h_cm)
+                              sign_line=sign, row_h_cm=h_cm,
+                              font_pt=fit_step["font"], ls_head=fit_step["ls_head"],
+                              ls_body=fit_step["ls_body"], text_w_cm=_sec_tw)
             elif label == "回访记录":
                 sign = f"回访人：{SIGN_BLANK}　　______年____月____日"
-                _section_cell(merged, "回访记录：", [], sign_line=sign, row_h_cm=h_cm)
+                _section_cell(merged, "回访记录：", [], sign_line=sign, row_h_cm=h_cm,
+                              font_pt=fit_step["font"], ls_head=fit_step["ls_head"],
+                              ls_body=fit_step["ls_body"], text_w_cm=_sec_tw)
 
         # 底部备注
         note = doc.add_paragraph()
@@ -464,22 +715,19 @@ def generate_registration_form(
 
         if not output_dir:
             cfg = load_config()
-            output_dir = cfg["paths"]["reply_dir"]
+            root = cfg.get("archive_root") or "案件归档"
+            case_dir, reg_target, _ = build_archive_dir(ticket_data, root=root)
+            output_dir = case_dir
+            filepath = reg_target
+        else:
+            filepath = os.path.join(output_dir, "投诉登记表.docx")
         os.makedirs(output_dir, exist_ok=True)
-
-        name = re.sub(r'[\\/:*?"<>|\s]', "_", str(ticket_data.get("student_name") or "").strip()) or "未知"
-        date_str = str(ticket_data.get("complaint_date") or "").strip() or datetime.now().strftime("%Y%m%d")
-        filename = f"{date_str}_{name}_投诉登记表.docx"
-        filepath = os.path.join(output_dir, filename)
-        if os.path.exists(filepath):
-            base, ext = os.path.splitext(filepath)
-            n = 1
-            while os.path.exists(f"{base}({n}){ext}"):
-                n += 1
-            filepath = f"{base}({n}){ext}"
+        # 直接覆盖：归档是幂等操作；每案件目录只一份登记表，unique_path 加 (1) 无意义
 
         doc.save(filepath)
-        return {"success": True, "filepath": filepath, "filename": os.path.basename(filepath)}
+        return {"success": True, "filepath": filepath, "filename": os.path.basename(filepath),
+                "page_fit": {"level": fit_step["lvl"], "used_cm": round(fit_used, 2),
+                             "budget_cm": round(fit_budget, 2)}}
 
     except Exception as e:
         return {"success": False, "error": str(e)}
