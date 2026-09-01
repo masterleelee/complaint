@@ -224,7 +224,9 @@ def test_empty_query_result_creates_no_ticket(client, fresh_db, monkeypatch):
 
     job = app_module.QUERY_JOBS[job_id]
     assert job["status"] == "failed"
-    assert job["error"] == "未匹配到学员档案，请核对手机号或改用身份证号查询"
+    assert job["error"] == "未匹配到学员档案：三系统均查无该学员"
+    assert job.get("match_outcome") == "no_match"
+    assert job.get("manual_intake_eligible") is True
 
     records, _ = database.list_tickets(limit=100)
     assert all(r["phone"] != "13800000000" for r in records)
