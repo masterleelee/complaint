@@ -3617,6 +3617,7 @@ def api_tickets_register_form(ticket_id):
             special_warnings=json.loads(ticket.get("special_warnings", "[]")) if isinstance(ticket.get("special_warnings"), str) else ticket.get("special_warnings", []),
             exam_stage=ticket.get("exam_stage", ""),
             ai_sections=ai_sections,
+            overrides=_clean_overrides(body.get("overrides")),
         )
 
         if result.get("success"):
