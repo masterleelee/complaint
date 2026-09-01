@@ -3372,9 +3372,50 @@ def api_tickets_archive(ticket_id):
         if not files:
             return jsonify({"success": False, "errors": ["无可归档文件：请先生成登记表或回复函"]}), 400
 
+        # 合同纳入归档清单：contract_path + manifest.source_files → {姓名}_合同_* 入位
+        contract_sources = []
+        contract_path_src = str(ticket.get("contract_path") or "").strip()
+        if contract_path_src:
+            contract_sources.append(contract_path_src)
+        manifest = ticket.get("contract_manifest")
+        if isinstance(manifest, str):
+            try:
+                manifest = json.loads(manifest) if manifest.strip() else {}
+            except json.JSONDecodeError:
+                manifest = {}
+        if isinstance(manifest, dict):
+            for sf in (manifest.get("source_files") or []):
+                p = str((sf or {}).get("filepath") or "").strip()
+                if p:
+                    contract_sources.append(p)
+
         result = archive_case(ticket, files, open_folder=False)
         if not result.get("success"):
             return jsonify(result), 400
+
+        contract_result = archive_contract(ticket, contract_sources, case_dir=result["dir"])
+        result_files = list(result.get("files") or [])
+        for p in contract_result.get("copied") or []:
+            if p not in result_files:
+                result_files.append(p)
+        warnings.extend(contract_result.get("errors") or [])
+
+        # 合同被改名/搬移后，同步工单里的 contract_path 与 manifest，保持分析链路引用有效
+        mapping = contract_result.get("mapping") or {}
+        ticket_updates = {}
+        if contract_path_src and mapping.get(contract_path_src):
+            ticket_updates["contract_path"] = mapping[contract_path_src]
+        if mapping and isinstance(manifest, dict):
+            changed = False
+            for sf in (manifest.get("source_files") or []):
+                old = str((sf or {}).get("filepath") or "")
+                if old in mapping and mapping[old] != old:
+                    sf["filepath"] = mapping[old]
+                    changed = True
+            if changed:
+                ticket_updates["contract_manifest"] = manifest
+        if ticket_updates:
+            update_ticket(ticket_id, ticket_updates)
 
         update_ticket(ticket_id, {
             "archive_status": "已归档",
@@ -3387,12 +3428,38 @@ def api_tickets_archive(ticket_id):
         resp = {
             "success": True,
             "dir": result["dir"],
-            "files": result["files"],
+            "files": result_files,
             "opened": bool(result.get("opened")),
         }
         if warnings:
             resp["warning"] = "；".join(warnings)
         return jsonify(resp)
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
+@app.route("/api/config/archive-root", methods=["POST"])
+@login_required
+def api_config_archive_root():
+    """学员信息页「归档路径」即时持久化：选完/改完即写 config.archive_root。
+
+    此后合同下载/上传、登记表/回复函生成全部按该路径落盘（所见即所得），
+    不再依赖「点归档按钮时才持久化」的旧时序。
+    """
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        root = str(data.get("archive_root") or "").strip()
+        try:
+            normalized = validate_archive_root(root)
+        except ValueError as exc:
+            return _err(str(exc), 400)
+        cfg = load_config()
+        if str(cfg.get("archive_root") or "").strip() != root:
+            cfg["archive_root"] = root
+            save_config(cfg)
+            add_log("settings_update", f"归档路径更新: {normalized}")
+        return _ok({"archive_root": root, "normalized": normalized}, "归档路径已保存")
     except Exception as e:
         traceback.print_exc()
         return _err(str(e), 500)
