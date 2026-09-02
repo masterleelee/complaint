@@ -307,6 +307,12 @@ def init_db():
             ("intake_type", "TEXT DEFAULT ''"),
             ("handler_user_id", "INTEGER DEFAULT NULL"),
             ("handler_external_name", "TEXT DEFAULT ''"),
+            ("training_mode", "TEXT DEFAULT ''"),
+            ("service_fee", "REAL DEFAULT 0"),
+            ("contract_tier_id", "TEXT DEFAULT ''"),
+            ("contract_kind", "TEXT DEFAULT ''"),
+            ("contract_tier_display", "TEXT DEFAULT ''"),
+            ("contract_tier_confidence", "TEXT DEFAULT ''"),
         ]
         cursor = conn.execute("PRAGMA table_info(complaint_tickets)")
         existing_columns = [row[1] for row in cursor.fetchall()]
@@ -486,6 +492,12 @@ def save_ticket(data: dict, force_new: bool = False) -> str:
         "intake_type",
         "handler_user_id",
         "handler_external_name",
+        "training_mode",
+        "service_fee",
+        "contract_tier_id",
+        "contract_kind",
+        "contract_tier_display",
+        "contract_tier_confidence",
     }
 
     with get_db() as conn:

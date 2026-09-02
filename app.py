@@ -54,6 +54,7 @@ from services.contract_service import (
 )
 from services.upload_pipeline import analyze_upload_contract_file, is_upload_ticket
 from services.multi_contract import analyze_contract_set, resolve_entry_kind
+from services.contract_tiers import TIERS_BY_ID
 from services.gating import check_fee_plan_confirm, check_archive as gating_check_archive
 from services.contract_cache import cache_stats, invalidate as cache_invalidate, retier_and_recompute
 from services.page_cache import cleanup_lru as page_cache_cleanup, get_page_image, get_page_count, has_text_layer, stats as page_cache_stats
@@ -3070,6 +3071,39 @@ def _validate_contract_analysis_request(data: dict) -> tuple[str, str]:
     return filepath, ""
 
 
+def _persist_tier_columns(ticket_id: str, result: dict) -> None:
+    """把档位识别结果落库到工单的 4 个档位列（P0-2 / P1-1 统一入口）。
+
+    result 须含 tier_id（可空）。display_name 与 kind 一律从 TIERS_BY_ID[tier_id]
+    权威推导（不依赖可能过期的 tier_result，改档重算时 tier_result 可能是旧档或
+    identify_tier 按 ticket 字段另算的结果，会写错）；confidence 优先取 tier_result，
+    否则档位表有对应项时给 "manual"（改档/人工指定场景），空 tier 时四列落空值。
+    三个会让档位变化的入口都走这里，保证 DB 凭据与内存结果一致：
+    - /api/contract/analyze（上传后分析）
+    - /api/contract/retier（改档重算）
+    - /api/contract/recompute（按网点重算）
+    """
+    if not ticket_id:
+        return
+    tier_id = str(result.get("tier_id") or "")
+    tier_result = result.get("tier_result") or {}
+    if not isinstance(tier_result, dict):
+        tier_result = {}
+    tier = TIERS_BY_ID.get(tier_id) or {}
+    tier_kind = str(tier.get("kind") or "")
+    tier_display = str(tier.get("display_name") or "")
+    tier_conf = str(tier_result.get("confidence") or "")
+    if tier_id and not tier_conf:
+        # 档位存在但无 confidence：改档/人工指定场景，标记 manual
+        tier_conf = "manual"
+    update_ticket(ticket_id, {
+        "contract_tier_id": tier_id,
+        "contract_kind": tier_kind,
+        "contract_tier_display": tier_display,
+        "contract_tier_confidence": tier_conf,
+    })
+
+
 def _run_contract_analysis(data: dict) -> dict:
     filepath, err = _validate_contract_analysis_request(data)
     ticket_id = data.get("ticket_id", "")
@@ -3289,6 +3323,9 @@ def _run_contract_analysis(data: dict) -> dict:
                 result.get("contract_set") or {},
                 filepath,
             )
+            # 档位识别结果落库（P0-2）：档位 id / 种类 / 显示名 / 置信度，
+            # 否则「档位识别对了但没存下来」，改档重算与历史审计都拿不到凭据。
+            _persist_tier_columns(ticket_id, result)
             update_ticket(ticket_id, {
                 "total_fee": result.get("total_fee", 0),
                 "actual_paid": result.get("actual_paid", 0),
@@ -5243,6 +5280,8 @@ def api_contract_retier():
         result = retier_and_recompute(
             filepath, ticket, new_tier_id=new_tier_id, image_paths=image_paths,
         )
+        # 改档重算也要把新档位落库（P1-1），否则 DB 凭据停在 analyze 阶段的旧值
+        _persist_tier_columns(ticket_id, result)
         return _ok(result)
     except Exception as exc:
         add_log("contract_retier", f"改档重算失败: {exc}", success=False, ticket_id=ticket_id)
@@ -5267,6 +5306,8 @@ def api_contract_recompute():
     try:
         result = analyze_upload_contract_file(filepath, ticket, image_paths=image_paths)
         result["cached"] = False
+        # 按网点重算也要把档位落库（P1-1），否则 DB 凭据停在旧值
+        _persist_tier_columns(ticket_id, result)
         return _ok(result)
     except Exception as exc:
         add_log("contract_recompute", f"重算失败: {exc}", success=False, ticket_id=ticket_id)
