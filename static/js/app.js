@@ -2,6 +2,7 @@
 import { useToast } from "useToast";
 import { useComplaint } from "useComplaint";
 import { useWorkflow } from "useWorkflow";
+import { useContractPreview } from "useContractPreview";
 import { useSettings, useUsers, USER_ROLES, roleLabel } from "useSettings";
 import { useHistory } from "useHistory";
 import { useWorkbench } from "useWorkbench";
@@ -220,6 +221,10 @@ try {
       },
     });
 
+    // ── 合同三栏预览（上传合同分析完成后渲染：原文 / 原件 / 扣费明细） ──
+    // cp.* 暴露给模板（cp.tierDisplayName / cp.locate / cp.toggleFolded 等）
+    const cp = useContractPreview(() => ar.value, () => cPath.value);
+
     // ── 设置 ──
     const { cfg, cfgSaving, cfgMsg, cfgOk, loadCfg, saveCfg,
             LLM_PROVIDERS, providerSel, applyProvider, presetModels, modelSel, modelCustom,
@@ -251,7 +256,7 @@ try {
       loadSchoolCodes,
       statScope, setStatScope, drill, drillCode, onDrillSelect, onDateChange, boardComplaintRate,
       drillInto, closeDrill,
-      vehicleItems, vehicleLoading, vehicleSaving, vehicleModalOpen,
+      vehicleItems, vehicleKeyword, vehicleActiveItems, vehicleInactiveItems, vehicleLoading, vehicleSaving, vehicleModalOpen,
       loadVehicleCounts, saveVehicleCounts, addVehicleRow, removeVehicleRow,
       detailTicket, detailDeductions, detailCommunicationRecords, detailDocuments, detailLoading,
       showTicketDetail,
@@ -280,7 +285,10 @@ try {
       handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
       clPageSize, pagedGroups, clSetPage, batchBarVisible,
       daysOpen, isOverdue, feeState, maskPhone,
-      clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
+      clToggleRow, clToggleGroupSelect, openArchive, openArchiveSelected, clClearSelection, clSetSort, clClearFilters,
+      kjHelperModalOpen, kjUncPath, kjServerDir, copyKjUnc,
+      kjLastTicketId, kjLastName, kjFilesOpen, kjFilesLoading, kjFiles, kjFilesDir,
+      openKjFiles, kjFileUrl, fmtKjSize,
       batchExportSelected,
       clExpandedIds, clToggleExpand, copyPhone,
       transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
@@ -383,15 +391,15 @@ try {
       if (isK) {
         setTimeout(() => {
           initCharts({
-            trendChartRef: trendChartRef.value, schoolChartRef: schoolChartRef.value,
-            typeChartRef: typeChartRef.value, statusChartRef: statusChartRef.value,
+            trendChartRef: trendChartRef, schoolChartRef: schoolChartRef,
+            typeChartRef: typeChartRef, statusChartRef: statusChartRef,
           });
           updateCharts();
           initByTypeChart();
         }, 100);
       }
     });
-    Vue.watch(stats, () => { if (view.value === "kanban") { updateCharts(); updateByTypeChart(); } }, { deep: true });
+    Vue.watch(stats, () => { if (view.value === "kanban") { Vue.nextTick(() => { updateCharts(); updateByTypeChart(); }); } }, { deep: true });
 
     function initByTypeChart() {
       if (byTypeChartRef.value) {
@@ -880,7 +888,7 @@ try {
       debSearch, loadHist, loadStats, loadFromHist: loadFromHistAndGo, exportTickets, updateTicketStatus,
       askDeleteHist, confirmDeleteHist, hDeleteModal, hDeleting,
       loadSchoolCodes, statScope, setStatScope, drill, drillCode, onDrillSelect, onDateChange, boardComplaintRate,
-      drillInto, closeDrill, vehicleItems, vehicleLoading, vehicleSaving, vehicleModalOpen,
+      drillInto, closeDrill, vehicleItems, vehicleKeyword, vehicleActiveItems, vehicleInactiveItems, vehicleLoading, vehicleSaving, vehicleModalOpen,
       loadVehicleCounts, saveVehicleCounts, addVehicleRow, removeVehicleRow,
       detailTicket, detailDeductions, detailCommunicationRecords, detailDocuments, detailLoading, showTicketDetail,
       trendChartRef, schoolChartRef, typeChartRef, statusChartRef, byTypeChartRef, updateCharts,
@@ -902,7 +910,10 @@ try {
       handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
       clPageSize, pagedGroups, clSetPage, batchBarVisible,
       daysOpen, isOverdue, feeState, maskPhone, actionAt,
-      clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
+      clToggleRow, clToggleGroupSelect, openArchive, openArchiveSelected, clClearSelection, clSetSort, clClearFilters,
+      kjHelperModalOpen, kjUncPath, kjServerDir, copyKjUnc,
+      kjLastTicketId, kjLastName, kjFilesOpen, kjFilesLoading, kjFiles, kjFilesDir,
+      openKjFiles, kjFileUrl, fmtKjSize,
       batchExportSelected,
       clExpandedIds, clToggleExpand, copyPhone,
       transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
@@ -913,6 +924,8 @@ try {
       contractPreviewUrl, contractIsImage, cmpData, cmpLoading, cmpRefreshing,
       openContract, closeContract, refreshPlatform, relevantClauses,
       cmpActive, clauseHtml, hoverClause, leaveClause, clickClause,
+      // 合同三栏预览（上传合同分析：原文 / 原件 / 扣费明细）
+      cp, contractText: cp.contractText,
       // 撤案
       withdrawModalOpen, withdrawReason, askWithdraw, confirmWithdraw, askCancelWithdraw,
       // 标签

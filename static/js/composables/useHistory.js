@@ -402,11 +402,11 @@ export function useHistory(toast) {
     for (const item of vehicleItems.value) {
       const code = String(item.unit_code || "").trim();
       if (!code) {
-        alert("请填写所有网点的代号");
+        toast("请填写所有网点的代号", "", "warning");
         return false;
       }
       if (codes.has(code)) {
-        alert("代号重复: " + code);
+        toast("代号重复", code, "warning");
         return false;
       }
       codes.add(code);
@@ -420,10 +420,11 @@ export function useHistory(toast) {
       }).then(r => r.json());
       if (!d.success) throw new Error(d.error || "保存失败");
       loadStats();
+      toast("保存成功", "", "success");
       return true;
     } catch (e) {
       console.error("保存车辆数失败:", e);
-      alert("保存失败: " + e.message);
+      toast("保存失败", e.message, "danger");
       return false;
     } finally {
       vehicleSaving.value = false;
@@ -567,26 +568,43 @@ export function useHistory(toast) {
   const chartInstances = {};
   const chartRefs = {};
 
+  function resolveChartEl(refObj) {
+    if (!refObj) return null;
+    return refObj.value !== undefined ? refObj.value : refObj;
+  }
+
+  // 确保 key 对应的图表实例挂载在【当前】DOM 容器上。
+  // 关键修复：时间筛选切到空数据窗口时，Vue 的 v-if 会卸载图表容器，旧的 echarts
+  // 实例随 DOM 一起失效；切回有数据的窗口时容器被重建，必须丢弃陈旧实例、在新建
+  // 容器上重新 init，否则 setOption 写到了已脱离文档的旧实例上 → 卡片空白。
+  function ensureChart(key) {
+    const el = resolveChartEl(chartRefs[key + 'ChartRef']);
+    const inst = chartInstances[key];
+    if (!el) {
+      if (inst) { try { inst.dispose(); } catch (e) {} chartInstances[key] = null; }
+      return;
+    }
+    const live = echarts.getInstanceByDom(el);
+    if (live) { chartInstances[key] = live; return; }
+    if (inst) { try { inst.dispose(); } catch (e) {} }
+    chartInstances[key] = echarts.init(el);
+  }
+
   function initCharts(refs) {
-    // 保存 ref 引用
+    // 保存 ref 引用（传入的是 ref 对象本身，便于每次读取 .value 拿到当前 DOM）
     Object.assign(chartRefs, refs);
-    
-    // 初始化图表实例
-    if (refs.trendChartRef) {
-      chartInstances.trend = echarts.init(refs.trendChartRef);
-    }
-    if (refs.schoolChartRef) {
-      chartInstances.school = echarts.init(refs.schoolChartRef);
-    }
-    if (refs.typeChartRef) {
-      chartInstances.type = echarts.init(refs.typeChartRef);
-    }
-    if (refs.statusChartRef) {
-      chartInstances.status = echarts.init(refs.statusChartRef);
-    }
+    ensureChart('trend');
+    ensureChart('school');
+    ensureChart('type');
+    ensureChart('status');
   }
 
   function updateCharts() {
+    // 每次刷新前，先把实例重新挂到当前 DOM 容器（处理 v-if 卸载/重建）
+    ensureChart('trend');
+    ensureChart('school');
+    ensureChart('type');
+    ensureChart('status');
     const colors = ['#3370FF', '#34D399', '#FBBF24', '#F87171', '#A78BFA', '#60A5FA', '#2DD4BF'];
     
     // 1. 投诉趋势 - 只展示数据库中的真实案件数量
