@@ -15,6 +15,7 @@
 - 学员段：complaint_date / student_name / id_card / code，任意缺失用「未归属」兜底。
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -188,6 +189,351 @@ def archive_case(ticket: dict, files: dict, open_folder: bool = False) -> dict:
             warnings.warn(f"打开归档文件夹失败: {exc}")
 
     return {"success": True, "dir": case_dir, "files": copied, "opened": opened}
+
+
+def resolve_case_dir(ticket: dict, root: str | None = None) -> dict:
+    """定位案件归档夹（只拼路径+探测磁盘，不做任何打开动作，不校验三闸门）。
+
+    返回值不抛出：
+        {"success": True, "dir": ...}
+        {"success": False, "code": "root_unavailable"|"dir_missing",
+         "errors": [...], "dir": ...?}
+    """
+    try:
+        case_dir, _, _ = build_archive_dir(ticket, root=root)
+    except ValueError as exc:
+        return {"success": False, "code": "root_unavailable",
+                "errors": [f"归档根目录不可用: {exc}"]}
+    if not os.path.isdir(case_dir):
+        return {
+            "success": False, "code": "dir_missing", "dir": case_dir,
+            "errors": ["案件归档夹不存在：该学员尚未生成登记表/回复函，或归档根目录不可用（共享盘未挂载？）"],
+        }
+    return {"success": True, "dir": case_dir}
+
+
+def open_case_dir(ticket: dict, root: str | None = None) -> dict:
+    """在「运行本系统的这台机器」的文件管理器中打开案件归档夹。
+
+    ⚠️ 仅限请求来自服务器本机时调用——局域网远程客户端点击「打开归档」时，
+    绝不能在服务器端执行本函数（否则文件夹会弹在服务器的屏幕上）。
+    远程场景由路由返回 UNC 路径、浏览器端经 kjfolder:// 协议在客户端打开。
+
+    案件夹在受理生成登记表/回复函或终归档时已落盘——只要夹子在磁盘上即可打开，
+    在途工单（闸门未过）也能查看已生成的文档。返回值不抛出：
+        {"success": True, "dir": ...}
+        {"success": False, "code": "root_unavailable"|"dir_missing"|"launch_failed",
+         "errors": [...], "dir": ...?}
+    """
+    resolved = resolve_case_dir(ticket, root=root)
+    if not resolved.get("success"):
+        return resolved
+    case_dir = resolved["dir"]
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", case_dir], check=True)
+        elif sys.platform == "win32":
+            os.startfile(case_dir)  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", case_dir], check=True)
+    except Exception as exc:
+        return {"success": False, "code": "launch_failed", "dir": case_dir,
+                "errors": [f"打开归档文件夹失败: {exc}"]}
+    return {"success": True, "dir": case_dir}
+
+
+# ── SMB 共享映射：服务器路径 ↔ Windows UNC 路径 ────────────────────────
+# 归档根目录通常在 SMB 共享盘上（服务器挂载于 /Volumes/...，来源 //user@server/share）。
+# 远程客户端（局域网 Windows 电脑）拿不到服务器挂载点，必须转成 UNC 网络路径
+# （\\\\server\\share\\...）才能在自己的资源管理器里打开。
+_SMB_CACHE: dict = {"at": 0.0, "maps": []}
+
+
+def get_smb_mappings() -> list[dict]:
+    """当前可用的 SMB 挂载映射 [{"server","share","mount_point"}]。
+
+    优先读 config.json 的 "smb_share": {"server","share","mount_point"}（人工指定，
+    服务器不挂载时也能转换）；否则解析 macOS `mount` 输出里的 smbfs 行，
+    结果缓存 60 秒。任何失败返回空列表（to_unc_path 会返回 None 走兜底）。
+    """
+    cfg = load_config().get("smb_share")
+    if (isinstance(cfg, dict) and cfg.get("server") and cfg.get("share")
+            and cfg.get("mount_point")):
+        return [{
+            "server": str(cfg["server"]),
+            "share": str(cfg["share"]),
+            "mount_point": os.path.abspath(os.path.expanduser(str(cfg["mount_point"]))),
+        }]
+
+    import time as _time
+    now = _time.time()
+    if now - _SMB_CACHE["at"] < 60 and _SMB_CACHE["maps"]:
+        return _SMB_CACHE["maps"]
+
+    maps: list[dict] = []
+    try:
+        out = subprocess.run(["mount"], capture_output=True, text=True, timeout=5).stdout
+        for m in re.finditer(r"//(?:[^@/\s]+@)?([^/\s]+)/([^\s]+)\s+on\s+(\S+)\s+\(smbfs", out):
+            maps.append({"server": m.group(1), "share": m.group(2), "mount_point": m.group(3)})
+    except Exception:
+        maps = []
+    maps.sort(key=lambda x: -len(x["mount_point"]))  # 最长前缀优先
+    _SMB_CACHE.update({"at": now, "maps": maps})
+    return maps
+
+
+def to_unc_path(path: str) -> str | None:
+    """把服务器上的绝对路径转换为 Windows UNC 路径（\\\\server\\share\\rest）。
+
+    不在任何 SMB 挂载点之下时返回 None（调用方走「无法远程打开」兜底）。
+    内部按挂载点最长前缀优先匹配，不依赖 get_smb_mappings 的返回顺序。
+    """
+    p = os.path.realpath(str(path or ""))
+    if not p:
+        return None
+    maps = sorted(get_smb_mappings(), key=lambda x: -len(x["mount_point"]))
+    for m in maps:
+        mp = m["mount_point"].rstrip("/")
+        if not mp:
+            continue
+        if p == mp:
+            return f"\\\\{m['server']}\\{m['share']}"
+        if p.startswith(mp + "/"):
+            rest = p[len(mp) + 1:].replace("/", "\\")
+            return f"\\\\{m['server']}\\{m['share']}\\{rest}"
+    return None
+
+
+# ── Windows 归档助手：kjfolder:// 自定义协议，远程客户端一键弹出文件夹 ──
+# 浏览器安全策略禁止网页直接打开本地/网络文件夹；助手一次性注册 kjfolder:// 协议
+# （仅写 HKCU 当前用户注册表 + 一个 .vbs 到 LOCALAPPDATA，无需管理员、无常驻进程），
+# 之后页面调 kjfolder://<base64url(UNC路径)> 即可在客户端弹出资源管理器。
+HELPER_VBS = """' kjfolder-open.vbs - open a case archive folder from a kjfolder:// URL
+' Installed by the KuaiJie Complaint System archive helper.
+' URL format: kjfolder://<base64url-encoded UNC path>
+' v2 (2026-09-01): transport-hardened. Browsers/Explorer may append a
+' trailing "/" or percent-encode parts of the URL when launching a custom
+' protocol; MSXML6 rejects such non-canonical base64 with 80004005. We now
+' keep ONLY base64url characters after the scheme, so any transport junk
+' (trailing slash, %xx, quotes, whitespace) is stripped before decoding.
+Option Explicit
+Dim url, p, i, c, out
+If WScript.Arguments.Count = 0 Then WScript.Quit 1
+url = WScript.Arguments(0)
+On Error Resume Next
+' strip scheme up to "://" (fallback: anything up to the first ":")
+If InStr(url, "://") > 0 Then
+  p = Mid(url, InStr(url, "://") + 3)
+ElseIf InStr(url, ":") > 0 Then
+  p = Mid(url, InStr(url, ":") + 1)
+Else
+  p = url
+End If
+' keep only base64url characters (drops "/", "+", "%xx", spaces, quotes...)
+' step 1: percent-decode so junk like "%2F" becomes "/" (then stripped below)
+out = ""
+i = 1
+Do While i <= Len(p)
+  c = Mid(p, i, 1)
+  If c = "%" And i + 2 <= Len(p) Then
+    out = out & Chr(CLng("&H" & Mid(p, i + 1, 2)) And &HFF&)
+    i = i + 3
+  ElseIf c = "%" Then
+    i = i + 1
+  Else
+    out = out & c
+    i = i + 1
+  End If
+Loop
+p = out
+' step 2: keep only base64url characters
+out = ""
+For i = 1 To Len(p)
+  c = Mid(p, i, 1)
+  If InStr("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", c) > 0 Then out = out & c
+Next
+p = out
+p = Replace(p, "-", "+")
+p = Replace(p, "_", "/")
+Do While Len(p) Mod 4 <> 0
+  p = p & "="
+Loop
+p = B64ToUtf8(p)
+If Err.Number <> 0 Then
+  MsgBox "解码失败：请重新运行安装脚本（.bat）更新归档助手后重试。" & vbCrLf & _
+         "(Decode failed - please re-run the installer .bat to update the helper.)", _
+         48, "Archive Folder Helper"
+  WScript.Quit 1
+End If
+On Error GoTo 0
+If Left(p, 2) <> "\\\\" Then
+  MsgBox "路径异常：" & vbCrLf & p & vbCrLf & vbCrLf & _
+         "请重新运行安装脚本（.bat）更新归档助手。", 48, "Archive Folder Helper"
+  WScript.Quit 1
+End If
+On Error Resume Next
+CreateObject("Shell.Application").Open p
+If Err.Number <> 0 Then
+  MsgBox "Cannot open folder:" & vbCrLf & p, 48, "Archive Folder Helper"
+End If
+WScript.Quit 0
+
+Function B64ToUtf8(b64)
+  Dim xml, node, stm
+  Set xml = CreateObject("MSXML2.DOMDocument.6.0")
+  Set node = xml.createElement("b64")
+  node.dataType = "bin.base64"
+  node.text = b64
+  Set stm = CreateObject("ADODB.Stream")
+  stm.Type = 1
+  stm.Open
+  stm.Write node.nodeTypedValue
+  stm.Position = 0
+  stm.Type = 2
+  stm.Charset = "utf-8"
+  B64ToUtf8 = stm.ReadText
+  stm.Close
+End Function
+"""
+
+_HELPER_BAT_TEMPLATE = """@echo off
+setlocal
+echo ==================================================
+echo  KuaiJie Complaint System - Archive Folder Helper
+echo  This installs the kjfolder:// protocol (per-user).
+echo  No admin rights required. Nothing runs in the
+echo  background - Windows opens folders on demand.
+echo ==================================================
+echo.
+echo [1/3] Downloading opener script from the server...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "try{Invoke-WebRequest -UseBasicParsing -Uri '__BASE_URL__/kopen-helper.vbs' -OutFile ($env:LOCALAPPDATA+'\\kjfolder-open.vbs')}catch{exit 1}"
+if errorlevel 1 goto fail
+if not exist "%LOCALAPPDATA%\\kjfolder-open.vbs" goto fail
+
+echo [2/3] Registering the kjfolder:// protocol for the current user...
+reg add "HKCU\\Software\\Classes\\kjfolder" /ve /d "URL:KuaiJie Archive Folder" /f >nul
+if errorlevel 1 goto fail
+reg add "HKCU\\Software\\Classes\\kjfolder" /v "URL Protocol" /f >nul
+if errorlevel 1 goto fail
+reg add "HKCU\\Software\\Classes\\kjfolder\\shell\\open\\command" /ve /d "wscript.exe \\"%LOCALAPPDATA%\\kjfolder-open.vbs\\" \\"%%1\\"" /f >nul
+if errorlevel 1 goto fail
+
+echo.
+echo [3/3] Done!
+echo.
+echo You can now click "Open Archive" in the complaint system.
+echo The folder will open in Windows Explorer directly.
+echo.
+echo Press any key to close this window...
+pause >nul
+exit /b 0
+
+:fail
+echo.
+echo Installation FAILED. Please contact the administrator.
+echo Press any key to close...
+pause >nul
+exit /b 1
+"""
+
+
+def generate_helper_bat(base_url: str) -> str:
+    """生成 Windows 安装脚本（.bat）内容；base_url 形如 http://192.168.1.192:5003。
+
+    内容纯 ASCII（避免 cmd 代码页乱码），CRLF 行尾由编码端保证。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    return _HELPER_BAT_TEMPLATE.replace("__BASE_URL__", base)
+
+
+_DIAGNOSE_BAT_TEMPLATE = """@echo off
+chcp 936 >nul
+setlocal enabledelayedexpansion
+title kjfolder 归档助手一键诊断
+echo ==============================================
+echo   kjfolder:// 归档助手 一键诊断
+echo   本脚本只做只读检查和两次调用测试，不改任何设置
+echo ==============================================
+echo.
+set "VBS=%LOCALAPPDATA%\\kjfolder-open.vbs"
+
+echo [1/4] 检查助手脚本文件
+if not exist "%VBS%" (
+  echo   X 不存在 —— 助手未安装或安装失败，请先双击运行安装脚本
+  set "RESULT1=缺失"
+) else (
+  for /f %%V in ('powershell -NoProfile -Command "$t=Get-Content -Raw -LiteralPath '%VBS%'; if($t -match 'transport-hardened'){'V2新版'}elseif($t -match 'bin.base64'){'V1旧版'}else{'异常'}"') do set "RESULT1=%%V"
+  echo   结果: !RESULT1!
+  if "!RESULT1!"=="V1旧版" echo   X 是旧版 —— 请重新运行安装脚本升级后再试
+)
+echo.
+
+echo [2/4] 检查 kjfolder 协议注册
+reg query "HKCU\\Software\\Classes\\kjfolder" /v "URL Protocol" >nul 2>&1
+if !errorlevel! neq 0 (
+  echo   X 未注册 —— 请重新运行安装脚本
+  set "RESULT2=未注册"
+) else (
+  reg query "HKCU\\Software\\Classes\\kjfolder\\shell\\open\\command" /ve 2>nul | find /i "wscript" >nul
+  if !errorlevel! equ 0 (
+    echo   √ 已注册且指向 wscript
+    set "RESULT2=正常"
+  ) else (
+    echo   X 已注册但打开命令异常，实际内容：
+    reg query "HKCU\\Software\\Classes\\kjfolder\\shell\\open\\command" /ve
+    set "RESULT2=异常"
+  )
+)
+echo.
+
+echo [3/4] 调用测试（会创建并打开临时文件夹 %TEMP%\\kjfolder-diag-test）
+md "%TEMP%\\kjfolder-diag-test" >nul 2>&1
+for /f "delims=" %%P in ('powershell -NoProfile -Command "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('%TEMP%\\kjfolder-diag-test')).TrimEnd('=').Replace('+','-').Replace('/','_')"') do set "PAYLOAD=%%P"
+
+echo   测试A：直接调助手（绕过浏览器）
+wscript.exe "%VBS%" "kjfolder://%PAYLOAD%"
+echo   —— 如果刚才弹出资源管理器并打开了 kjfolder-diag-test 文件夹，选 Y
+choice /c YN /t 30 /d N /m "   测试A是否成功弹出文件夹"
+if errorlevel 2 (set "DIRECT=没弹出") else (set "DIRECT=成功")
+echo.
+
+echo   测试B：走浏览器协议（等同页面点击「打开归档」）
+start "" "kjfolder://%PAYLOAD%"
+echo   —— 若浏览器弹出「要允许此网站打开 kjfolder 吗」，勾选始终允许再点打开
+choice /c YN /t 30 /d N /m "   测试B是否成功弹出文件夹"
+if errorlevel 2 (set "BROWSER=没弹出") else (set "BROWSER=成功")
+echo.
+
+echo [4/4] 诊断结论
+echo   助手文件: !RESULT1!    协议注册: !RESULT2!
+echo   直接调用: !DIRECT!    浏览器调用: !BROWSER!
+echo.
+if not "!DIRECT!"=="成功" (
+  echo   结论：助手调用本身失败，与浏览器无关。
+  echo   处理：重新运行安装脚本；仍失败请把本窗口完整截图发回。
+) else if not "!BROWSER!"=="成功" (
+  echo   结论：助手正常，是浏览器拦截了协议调用。
+  echo   处理：点「打开归档」时在浏览器询问框勾选「始终允许」；
+  echo         或换 Edge 打开系统；之前勾过「不允许」的浏览器需换用或清设置。
+) else (
+  echo   结论：两条链路都正常！请刷新系统页面再点「打开归档」。
+)
+echo.
+echo   安装脚本下载地址: __BASE_URL__/kopen-helper
+pause
+"""
+
+
+def generate_diagnose_bat(base_url: str) -> str:
+    """生成 Windows 一键诊断脚本（.bat）：逐环检查「打开归档」链路。
+
+    判定矩阵（HITL 反馈环，区分浏览器层/助手层故障）：
+      直接调用成功 + 浏览器调用失败 → 浏览器拦截（授权/记住拒绝）
+      直接调用失败                 → 助手层（文件缺失/旧版/注册异常/解码失败）
+    内容含中文，由路由端按 GBK 编码（chcp 936）。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    return _DIAGNOSE_BAT_TEMPLATE.replace("__BASE_URL__", base)
 
 
 def validate_archive_root(root: str | None) -> str:

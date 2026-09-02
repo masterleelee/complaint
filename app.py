@@ -65,6 +65,12 @@ from services.archive_service import (
     archive_contract,
     contract_target_name,
     validate_archive_root,
+    open_case_dir,
+    resolve_case_dir,
+    to_unc_path,
+    generate_helper_bat,
+    generate_diagnose_bat,
+    HELPER_VBS,
 )
 from services.intake_service import parse_complaint_file, parse_complaint_text, ensure_upload_dir, ai_summarize_complaint
 from services.org_unit_service import ORGANIZATION_UNITS, resolve_org_unit
@@ -3770,6 +3776,190 @@ def api_tickets_archive(ticket_id):
         if warnings:
             resp["warning"] = "；".join(warnings)
         return jsonify(resp)
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
+def _request_from_server_host() -> bool:
+    """请求是否发自服务器本机。
+
+    本系统部署形态：Flask 跑在一台机器上（如 192.168.1.192 的 macOS），
+    局域网内其他电脑（Windows）用浏览器访问。只有本机发出的请求才允许
+    在服务器端打开 Finder/资源管理器；远程客户端的「打开归档」必须回到
+    客户端自己弹出（kjfolder:// 协议 + UNC 路径），否则文件夹会弹在
+    服务器的屏幕上——这是 2026-09-01 修复的核心逻辑错误。
+    """
+    remote = (request.remote_addr or "").strip()
+    if remote in ("127.0.0.1", "::1", "localhost"):
+        return True
+    # 用户在本机用局域网 IP 访问自己（如 http://192.168.1.192:5003）时，
+    # remote_addr 与 Host 头里的地址一致
+    host = (request.host or "").split(":")[0].strip()
+    return bool(host) and remote == host
+
+
+@app.route("/api/tickets/<ticket_id>/open-archive", methods=["POST"])
+@login_required
+def api_tickets_open_archive(ticket_id):
+    """打开该学员的案件归档夹（不走归档三闸门：夹子在磁盘上即可打开）。
+
+    两种模式（按请求来源自动分流）：
+    - 服务器本机 → 服务器直接打开 Finder，返回 mode=local；
+    - 局域网远程客户端 → 绝不在服务器端执行任何打开动作，返回 mode=remote
+      + UNC 网络路径（\\server\\share\\...），由浏览器端经 kjfolder:// 协议
+      在客户端自己的资源管理器中打开（未装归档助手时前端弹路径兜底）。
+    """
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+
+        resolved = resolve_case_dir(ticket)
+        if not resolved.get("success"):
+            # root_unavailable=400（配置/挂载问题）；dir_missing=404（夹子还没建）
+            status = {"root_unavailable": 400, "dir_missing": 404}.get(resolved.get("code"), 500)
+            return jsonify({"success": False, "errors": resolved.get("errors", [])}), status
+        case_dir = resolved["dir"]
+
+        if _request_from_server_host():
+            # 本机：保持既有行为，直接在服务器屏幕上打开
+            launched = open_case_dir(ticket)
+            if not launched.get("success"):
+                status = {"root_unavailable": 400, "dir_missing": 404}.get(
+                    launched.get("code"), 500)
+                return jsonify({"success": False, "errors": launched.get("errors", [])}), status
+            return _ok({"mode": "local", "dir": case_dir, "opened": True})
+
+        # 远程客户端：不在服务器端打开；转换 UNC 路径交浏览器端处理
+        # （归档不在 SMB 共享盘上时 unc=None，前端弹窗展示服务器路径并提示）
+        return _ok({"mode": "remote", "dir": case_dir, "unc": to_unc_path(case_dir),
+                    "opened": False})
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
+@app.route("/kopen-helper")
+def kopen_helper_bat():
+    """下载 Windows「归档助手」安装脚本（.bat，动态嵌入当前访问地址）。
+
+    免登录说明：该脚本由安装器 PowerShell 无 cookie 下载，无法携带 session；
+    内容仅含安装命令与本系统地址（无任何敏感信息），故不加 login_required。
+    """
+    base_url = request.host_url.rstrip("/")
+    bat = generate_helper_bat(base_url)
+    from urllib.parse import quote
+    resp = Response(
+        bat.encode("gbk"),
+        mimetype="application/octet-stream",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=\"kopen-helper.bat\"; "
+                f"filename*=UTF-8''{quote('投诉系统归档助手-安装.bat')}",
+        },
+    )
+    return resp
+
+
+@app.route("/kopen-helper.vbs")
+def kopen_helper_vbs():
+    """下载归档助手的 vbs 打开器（bat 安装时由 PowerShell 拉取）。
+
+    免登录理由同 /kopen-helper：内容为通用文件夹打开逻辑，无敏感信息。
+    编码：UTF-16 LE + BOM —— wscript 按 BOM 自动识别（v2 的 MsgBox 含中文
+    提示，ANSI/ASCII 在非 GBK 代码页机器上会乱码）。
+    """
+    return Response(
+        HELPER_VBS.encode("utf-16"),
+        mimetype="application/octet-stream",
+        headers={"Content-Disposition": "attachment; filename=\"kjfolder-open.vbs\""},
+    )
+
+
+@app.route("/kopen-diagnose")
+def kopen_diagnose_bat():
+    """下载「归档助手一键诊断」脚本（.bat，GBK 编码 + chcp 936 防中文乱码）。
+
+    免登录理由同 /kopen-helper：内容为只读检查与调用测试，无敏感信息。
+    HITL 反馈环：助手文件版本 / 协议注册 / 直接调用 / 浏览器调用 四环逐项红绿，
+    直接调用成功而浏览器调用失败 = 浏览器拦截（授权问题）。
+    """
+    bat = generate_diagnose_bat(request.host_url.rstrip("/"))
+    from urllib.parse import quote
+    resp = Response(
+        bat.encode("gbk"),
+        mimetype="application/octet-stream",
+        headers={
+            "Content-Disposition":
+                f"attachment; filename=\"kjfolder-diagnose.bat\"; "
+                f"filename*=UTF-8''{quote('归档助手一键诊断.bat')}",
+        },
+    )
+    return resp
+
+
+@app.route("/api/tickets/<ticket_id>/archive-files")
+@login_required
+def api_tickets_archive_files(ticket_id):
+    """列出该学员案件归档夹内的文件（远程客户端零安装兜底查看）。
+
+    2026-09-01：局域网 Windows 电脑 kjfolder:// 协议被浏览器拦截/未装助手时，
+    前端兜底弹窗可跳转本面板——服务器端直接 scandir 归档夹，网页里逐个下载，
+    完全不需要在客户端安装任何东西。
+    """
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+        resolved = resolve_case_dir(ticket)
+        if not resolved.get("success"):
+            status = {"root_unavailable": 400, "dir_missing": 404}.get(resolved.get("code"), 500)
+            return jsonify({"success": False, "errors": resolved.get("errors", [])}), status
+        case_dir = resolved["dir"]
+        files = []
+        try:
+            for entry in os.scandir(case_dir):
+                if entry.is_file(follow_symlinks=False):
+                    st = entry.stat()
+                    files.append({
+                        "name": entry.name,
+                        "size": st.st_size,
+                        "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                    })
+        except OSError as exc:
+            return _err(f"读取归档目录失败: {exc}", 500)
+        files.sort(key=lambda x: x["mtime"], reverse=True)
+        return _ok({"dir": case_dir, "files": files})
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
+@app.route("/api/tickets/<ticket_id>/archive-files/download")
+@login_required
+def api_tickets_archive_file_download(ticket_id):
+    """下载归档夹内的单个文件（as_attachment，浏览器直接另存）。
+
+    安全：name 参数只接受纯文件名——先反斜杠归一成斜杠再取 basename，
+    与原串不等（含路径分隔符/穿越段）即 400 拒绝。
+    """
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+        name = (request.args.get("name") or "").strip()
+        safe = os.path.basename(name.replace("\\", "/")).strip()
+        if not safe or safe in (".", "..") or safe != name:
+            return _err("非法文件名", 400)
+        resolved = resolve_case_dir(ticket)
+        if not resolved.get("success"):
+            status = {"root_unavailable": 400, "dir_missing": 404}.get(resolved.get("code"), 500)
+            return jsonify({"success": False, "errors": resolved.get("errors", [])}), status
+        fp = os.path.join(resolved["dir"], safe)
+        if not os.path.isfile(fp):
+            return _err("文件不存在", 404)
+        return send_file(fp, as_attachment=True, download_name=safe)
     except Exception as e:
         traceback.print_exc()
         return _err(str(e), 500)

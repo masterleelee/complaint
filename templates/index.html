@@ -594,6 +594,8 @@
   .col-chk{width:34px}
   .row-del{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
   .row-del:hover{color:var(--color-danger);background:var(--color-danger-bg)}
+  .row-open{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
+  .row-open:hover{color:var(--color-primary);background:var(--color-primary-50)}
   .empty-hint{padding:24px;text-align:center;color:var(--color-text-secondary);font-size:12.5px}
   .cl-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px 16px;border-top:1px solid var(--color-border);background:var(--color-surface-50)}
   .cl-pager .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -949,7 +951,7 @@
                     <i class="bi sort-icon" :class="clSort.key==='days' ? (clSort.dir===1?'bi-sort-up-alt':'bi-sort-down') : 'bi-arrow-down-up'"></i></th>
                   <th>处理人</th>
                   <th>状态</th>
-                  <th style="width:44px"></th>
+                  <th style="width:72px"></th>
                 </tr></thead>
                 <tbody>
                   <tr v-for="t in g.items" :key="t.id" class="rowlink" :id="'cl-row-' + t.id"
@@ -984,6 +986,7 @@
                       <span v-else class="badge badge-muted">已撤诉</span>
                     </td>
                     <td class="col-act" @click.stop>
+                      <button class="row-open" title="打开该学员的归档文件夹" @click="openArchive(t)"><i class="bi bi-folder2-open"></i></button>
                       <button class="row-del" title="删除该案件" @click="askDeleteRow(t)"><i class="bi bi-trash"></i></button>
                     </td>
                   </tr>
@@ -1006,7 +1009,7 @@
 
         <div class="batch-bar" :class="{show: clSelectedIds.length>0}">
           <b>已选 [[ clSelectedIds.length ]] 条</b>
-          <button class="btn btn-sm btn-batch" @click="clSelectAllShown()">全选当前结果</button>
+          <button class="btn btn-sm btn-batch" :disabled="clSelectedIds.length!==1" :title="clSelectedIds.length===1 ? '在系统文件管理器中打开该学员的归档文件夹' : '请只勾选 1 条案件后打开归档'" @click="openArchiveSelected()"><i class="bi bi-folder2-open"></i> 打开归档</button>
           <button class="btn btn-sm btn-batch" @click="clClearSelection()">清除</button>
           <span class="vline"></span>
           <button class="btn btn-sm btn-primary" @click="batchExportSelected()"><i class="bi bi-download"></i> 批量导出</button>
@@ -2500,6 +2503,69 @@
           <span class="hint" style="flex:1">将当前浏览的文件夹设为学员归档路径</span>
           <button class="btn btn-secondary" @click="folderModalOpen=false">取消</button>
           <button class="btn btn-primary" :disabled="fbLoading || !fbPath" @click="fbConfirm()"><i class="bi bi-check2"></i> 选择此文件夹</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 远程打开归档兜底弹窗（未装归档助手 / 归档不在共享盘） ═══ -->
+    <div class="modal-overlay" v-cloak v-if="kjHelperModalOpen" @click.self="kjHelperModalOpen=false">
+      <div class="modal-content" style="width:min(560px,92vw)">
+        <div class="m-head"><i class="bi bi-folder2-open"></i> 打开归档文件夹<button class="m-close" @click="kjHelperModalOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
+        <div class="m-body" style="padding:14px 18px">
+          <template v-if="kjUncPath">
+            <p class="hint" style="margin:0 0 6px">没能自动打开（可能未安装归档助手，或浏览器拦截了协议调用）。可复制下面的网络路径，粘贴到<b>资源管理器地址栏</b>回车打开：</p>
+            <div style="display:flex;gap:8px;align-items:center">
+              <code style="flex:1;font-size:12px;background:var(--color-surface-50);padding:8px 10px;border-radius:6px;user-select:all;word-break:break-all">[[ kjUncPath ]]</code>
+              <button class="btn btn-secondary btn-sm" @click="copyKjUnc()" title="复制网络路径"><i class="bi bi-clipboard"></i> 复制</button>
+            </div>
+            <p class="hint" style="margin:8px 0 0;padding:8px 10px;background:var(--color-surface-50);border-radius:6px">
+              <i class="bi bi-shield-check" style="color:var(--color-primary)"></i>
+              若浏览器弹出「要允许此网站打开 <b>kjfolder</b> 吗」，请勾选「始终允许」再点打开；若之前勾过「不允许」，本浏览器会静默拦截——换 Edge 重试或清除该站点设置。
+            </p>
+            <div style="margin-top:14px;padding:10px 12px;background:var(--color-primary-50);border-radius:8px">
+              <p style="margin:0 0 6px;font-weight:600"><i class="bi bi-lightning-charge" style="color:var(--color-primary)"></i> 推荐：安装归档助手，以后一键直接弹出</p>
+              <p class="hint" style="margin:0 0 8px">仅需安装一次（当前用户级，无需管理员、无后台程序），安装后点击「打开归档」即在<b>你自己的电脑</b>弹出资源管理器。</p>
+              <a class="btn btn-primary btn-sm" href="/kopen-helper" download><i class="bi bi-download"></i> 下载归档助手</a>
+              <a class="btn btn-secondary btn-sm" href="/kopen-diagnose" download title="装了还是不弹？运行这个脚本逐环检查"><i class="bi bi-stethoscope"></i> 一键诊断</a>
+              <button class="btn btn-secondary btn-sm" @click="openKjFiles()" title="无需安装任何东西，直接在网页里列出归档文件并可逐个下载"><i class="bi bi-files"></i> 网页查看文件（免安装）</button>
+            </div>
+          </template>
+          <template v-else>
+            <p class="hint" style="margin:0 0 6px">该学员的归档夹存放在<b>服务器本机磁盘</b>上，不在共享盘内，你的电脑无法直接打开。请到服务器上查看，或联系管理员：</p>
+            <code style="display:block;font-size:12px;background:var(--color-surface-50);padding:8px 10px;border-radius:6px;user-select:all;word-break:break-all">[[ kjServerDir || '（路径未知）' ]]</code>
+            <div style="margin-top:12px">
+              <button class="btn btn-primary btn-sm" @click="openKjFiles()" title="在网页里列出该归档夹的文件并可逐个下载"><i class="bi bi-files"></i> 网页查看文件（免安装）</button>
+            </div>
+          </template>
+        </div>
+        <div class="m-foot">
+          <span class="hint" style="flex:1"></span>
+          <button class="btn btn-secondary" @click="kjHelperModalOpen=false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══ 归档文件面板（零安装兜底：服务器端列目录 + 网页逐个下载） ═══ -->
+    <div class="modal-overlay" v-cloak v-if="kjFilesOpen" @click.self="kjFilesOpen=false">
+      <div class="modal-content" style="width:min(680px,94vw)">
+        <div class="m-head"><i class="bi bi-files"></i> 归档文件<span class="hint" style="margin-left:8px;font-weight:400">[[ kjLastName ]]</span><button class="m-close" @click="kjFilesOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
+        <div class="m-body" style="padding:10px 18px 14px">
+          <p class="hint" style="margin:0 0 8px">以下文件来自服务器上的归档夹，点击文件名即可下载到本地查看：</p>
+          <div v-if="kjFilesLoading" class="hint" style="padding:20px 0;text-align:center"><i class="bi bi-arrow-repeat"></i> 正在读取…</div>
+          <div v-else-if="!kjFiles.length" class="hint" style="padding:20px 0;text-align:center">归档夹里还没有文件</div>
+          <table v-else style="width:100%;border-collapse:collapse;font-size:13px">
+            <tbody>
+              <tr v-for="f in kjFiles" :key="f.name" style="border-bottom:1px solid var(--color-surface-100)">
+                <td style="padding:7px 4px"><a :href="kjFileUrl(f.name)" style="word-break:break-all"><i class="bi bi-file-earmark-text" style="margin-right:6px"></i>[[ f.name ]]</a></td>
+                <td class="hint" style="padding:7px 4px;white-space:nowrap;text-align:right">[[ fmtKjSize(f.size) ]]</td>
+                <td class="hint" style="padding:7px 4px 7px 12px;white-space:nowrap">[[ f.mtime ]]</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="m-foot">
+          <span class="hint" style="flex:1">共 [[ kjFiles.length ]] 个文件</span>
+          <button class="btn btn-secondary" @click="kjFilesOpen=false">关闭</button>
         </div>
       </div>
     </div>

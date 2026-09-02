@@ -481,10 +481,148 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       else if (i < 0) clSelectedIds.value.push(id);
     }
   }
-  function clSelectAllShown() {
-    for (const g of listGroups.value) for (const t of g.items) {
-      if (!clSelectedIds.value.includes(t.id)) clSelectedIds.value.push(t.id);
+  // 打开归档：在系统文件管理器中打开该学员的案件归档夹（后端实时探测，失败 toast 原因）
+  // ── 远程打开归档（kjfolder:// 协议 + 失焦检测 + 兜底弹窗） ──────────────
+  // 后端 mode=remote 时：不弹服务器 Finder，前端尝试 kjfolder://<base64url(UNC)>
+  // 调起客户端「归档助手」；window 失焦 = 助手已装（资源管理器抢焦点）→ 成功提示；
+  // 短暂窗口内未失焦 = 未装助手（或被拦截）→ 弹兜底弹窗：UNC 路径 + 一键复制 + 下载助手。
+  const kjHelperModalOpen = Vue.ref(false);
+  const kjUncPath = Vue.ref("");
+  const kjServerDir = Vue.ref("");
+
+  function _utf8ToBase64Url(str) {
+    const bytes = new TextEncoder().encode(str);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  function _tryKjProtocol(unc) {
+    // 触发自定义协议；浏览器若无注册处理程序通常静默失败（个别浏览器弹协议选择框，
+    // 用户取消后 focus 不变，同样落入兜底弹窗，行为正确）。
+    try {
+      window.location.href = "kjfolder://" + _utf8ToBase64Url(unc);
+    } catch (e) { /* 兜底弹窗 */ }
+  }
+
+  function _watchBlurThenResolve(unc, dir) {
+    let done = false;
+    const onFinish = (installed) => {
+      if (done) return;
+      done = true;
+      window.removeEventListener("blur", onBlur);
+      clearTimeout(timer);
+      if (installed) toast("已在你的电脑打开归档文件夹", unc, "success");
+      else { kjUncPath.value = unc; kjServerDir.value = dir; kjHelperModalOpen.value = true; }
+    };
+    const onBlur = () => onFinish(true);
+    window.addEventListener("blur", onBlur);
+    const timer = setTimeout(() => onFinish(false), 1500);
+  }
+
+  async function copyKjUnc() {
+    const text = kjUncPath.value || "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e2) { /* ignore */ }
+      document.body.removeChild(ta);
     }
+    toast("已复制", "已复制网络路径，可粘贴到资源管理器地址栏回车打开", "success");
+  }
+
+  // ── 网页内置归档文件面板（零安装兜底）────────────────────────────────
+  // 服务器端直接列出归档夹文件 + 单文件下载，客户端无需装归档助手。
+  // kjLastTicketId/kjLastName 在每次 openArchive 时记录，兜底弹窗里
+  // 「网页查看文件」按钮据此拉取当前工单的归档文件清单。
+  const kjLastTicketId = Vue.ref("");
+  const kjLastName = Vue.ref("");
+  const kjFilesOpen = Vue.ref(false);
+  const kjFilesLoading = Vue.ref(false);
+  const kjFiles = Vue.ref([]);
+  const kjFilesDir = Vue.ref("");
+
+  async function openKjFiles() {
+    if (!kjLastTicketId.value) {
+      toast("无法查看", "缺少工单信息，请从列表重新进入", "danger");
+      return;
+    }
+    kjHelperModalOpen.value = false;
+    kjFilesOpen.value = true;
+    kjFilesLoading.value = true;
+    kjFiles.value = [];
+    try {
+      const resp = await fetch(`/api/tickets/${encodeURIComponent(kjLastTicketId.value)}/archive-files`);
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.success) {
+        const d = data.data || {};
+        kjFiles.value = d.files || [];
+        kjFilesDir.value = String(d.dir || "");
+      } else {
+        const msg = (data.errors && data.errors[0]) || data.error || `读取归档文件失败（HTTP ${resp.status}）`;
+        toast("读取归档文件失败", msg, "danger");
+        kjFilesOpen.value = false;
+      }
+    } catch (e) {
+      toast("读取归档文件失败", String(e.message || e), "danger");
+      kjFilesOpen.value = false;
+    } finally {
+      kjFilesLoading.value = false;
+    }
+  }
+
+  function kjFileUrl(name) {
+    return `/api/tickets/${encodeURIComponent(kjLastTicketId.value)}/archive-files/download?name=${encodeURIComponent(name)}`;
+  }
+
+  function fmtKjSize(n) {
+    if (!Number.isFinite(n)) return "";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / 1024 / 1024).toFixed(2) + " MB";
+  }
+
+  async function openArchive(t) {
+    if (!t || !t.id) return false;
+    kjLastTicketId.value = String(t.id);
+    kjLastName.value = String(t.student_name || "");
+    try {
+      const resp = await fetch(`/api/tickets/${encodeURIComponent(t.id)}/open-archive`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.success) {
+        const d = data.data || {};
+        if (d.mode === "remote") {
+          // 远程客户端：绝不在服务器端打开；用 UNC 路径在客户端自己弹出
+          if (d.unc) {
+            _watchBlurThenResolve(d.unc, String(d.dir || ""));
+            _tryKjProtocol(d.unc);
+          } else {
+            // 归档不在 SMB 共享盘上 → 无法转 UNC，弹窗展示服务器路径并说明
+            kjUncPath.value = ""; kjServerDir.value = String(d.dir || "");
+            kjHelperModalOpen.value = true;
+          }
+        } else {
+          toast("已打开归档文件夹", String(d.dir || ""), "success");
+        }
+        return true;
+      }
+      const msg = (data.errors && data.errors[0]) || data.error || `打开归档失败（HTTP ${resp.status}）`;
+      toast("打开归档失败", msg, "danger");
+      return false;
+    } catch (e) {
+      toast("打开归档失败", String(e.message || e), "danger");
+      return false;
+    }
+  }
+  // 批量条「打开归档」：仅单选生效（多条时按钮已置灰，这里兜底拦截）
+  function openArchiveSelected() {
+    if (clSelectedIds.value.length !== 1) return;
+    const t = allTickets.value.find(x => x.id === clSelectedIds.value[0]);
+    if (t) return openArchive(t);
   }
   function clClearSelection() { clSelectedIds.value = []; }
   function clSetSort(key) {
@@ -911,7 +1049,10 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     clPageSize, pagedGroups, clSetPage, batchBarVisible,
     daysOpen, isOverdue, feeState, maskPhone,
     actionAt,
-    clToggleRow, clToggleGroupSelect, clSelectAllShown, clClearSelection, clSetSort, clClearFilters,
+    clToggleRow, clToggleGroupSelect, openArchive, openArchiveSelected, clClearSelection, clSetSort, clClearFilters,
+    kjHelperModalOpen, kjUncPath, kjServerDir, copyKjUnc,
+    kjLastTicketId, kjLastName, kjFilesOpen, kjFilesLoading, kjFiles, kjFilesDir,
+    openKjFiles, kjFileUrl, fmtKjSize,
     batchExportSelected,
     clExpandedIds, clToggleExpand, copyPhone,
     transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
