@@ -18,7 +18,7 @@ from datetime import datetime, date
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from threading import Event, Lock, Thread
-from flask import Flask, render_template, request, jsonify, send_file
+from flask import Flask, render_template, request, jsonify, send_file, Response
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge, NotFound
 
@@ -52,6 +52,11 @@ from services.contract_service import (
     merge_analysis_into_contract_set, normalize_contract_set,
     _llm_config, _format_llm_error,
 )
+from services.upload_pipeline import analyze_upload_contract_file, is_upload_ticket
+from services.multi_contract import analyze_contract_set, resolve_entry_kind
+from services.gating import check_fee_plan_confirm, check_archive as gating_check_archive
+from services.contract_cache import cache_stats, invalidate as cache_invalidate, retier_and_recompute
+from services.page_cache import cleanup_lru as page_cache_cleanup, get_page_image, get_page_count, has_text_layer, stats as page_cache_stats
 from services.reply_docx import generate_reply_docx
 from services.archive_service import (
     archive_gate_errors,
@@ -1896,6 +1901,11 @@ def api_ticket_fee_confirm(ticket_id):
             if not deductions:
                 return _err("请提供扣费明细")
 
+            # 闸门 07：上传件存在 pending 项时拒绝确认（与 no_fee_basis 互斥）
+            ok, gate_err = check_fee_plan_confirm({"items": _ticket_pending_items(ticket)})
+            if not ok:
+                return _err(gate_err, 400)
+
             total_fee = float(data.get("total_fee", ticket.get("total_fee", 0)) or 0)
             actual_paid = float(
                 data.get("actual_paid", data.get("paid_amount", ticket.get("actual_paid", 0))) or 0
@@ -3083,6 +3093,23 @@ def _run_contract_analysis(data: dict) -> dict:
                     contract_fee = float(driving_fee.get("contract_fee", 0) or 0)
             except (json.JSONDecodeError, TypeError, AttributeError):
                 pass
+            # 上传管线（工单 04/10）从 ticket 读进度；exam_counts/实操学时不是工单表字段，
+            # 前端分析请求携带的进度须覆盖进 ticket 副本，否则考试费/实操费永远为空。
+            ticket = dict(ticket)
+            if exam_counts:
+                ticket["exam_counts"] = exam_counts
+            if training_hours:
+                try:
+                    qr = ticket.get("query_result", {})
+                    if isinstance(qr, str):
+                        qr = json.loads(qr)
+                    qr = dict(qr or {})
+                    merged_hours = dict(qr.get("driving_hours") or {})
+                    merged_hours.update(training_hours or {})
+                    qr["driving_hours"] = merged_hours
+                    ticket["query_result"] = qr
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    ticket["query_result"] = {"driving_hours": training_hours}
 
     result = analyze_contract_from_file(
         filepath=filepath,
@@ -3096,12 +3123,153 @@ def _run_contract_analysis(data: dict) -> dict:
     )
 
     if result.get("error"):
-        add_log("contract_analyze", f"分析失败: {result['error']}", success=False, ticket_id=ticket_id)
-        return result
+        # 上传件条目需在 legacy 早退前判定：多份套件首份（如 2019 服务合同）本就
+        # 不含费用关键字段，legacy「识别不完整」属预期 —— 降级为面板警告继续归并
+        # （真实样张验收修复：原逻辑在此早退导致整套多份归并永不执行、面板不渲染）。
+        upload_file_entries_pre = []
+        if ticket and is_upload_ticket(ticket.get("contract_set")):
+            try:
+                upload_file_entries_pre = [
+                    e for e in normalize_contract_set(ticket.get("contract_set"))["contracts"]
+                    if (e.get("file") or "") and os.path.exists(e.get("file"))
+                ]
+            except Exception:
+                upload_file_entries_pre = []
+        if len(upload_file_entries_pre) > 1:
+            legacy_incomplete_msg = str(result.pop("error"))
+            add_log(
+                "contract_analyze",
+                f"多份首份 legacy 识别不完整（降级继续归并）: {legacy_incomplete_msg}",
+                ticket_id=ticket_id,
+            )
+        else:
+            add_log("contract_analyze", f"分析失败: {result['error']}", success=False, ticket_id=ticket_id)
+            return result
+    else:
+        legacy_incomplete_msg = ""
 
     # 东莞驾培 contract_fee 为权威合同金额，覆盖 AI/规则结果（AI 仅作校验对比）
     if contract_fee > 0:
         result = apply_authoritative_total_fee(result, contract_fee)
+
+    # 上传件分析管线（工单 04/10）：档位识别 + 扣费引擎 + 缓存键（下载链路不变）
+    # 多份合同（contract_set >1 条有文件）→ 逐份分析 + 归并；单份沿用原管线并补齐
+    # deductions_result / contract_analyses 回传（06 三栏预览面板的渲染前提）。
+    if ticket and is_upload_ticket(ticket.get("contract_set")):
+        try:
+            entries = normalize_contract_set(ticket.get("contract_set"))["contracts"]
+            file_entries = [
+                e for e in entries
+                if (e.get("file") or "") and os.path.exists(e.get("file"))
+            ]
+            if len(file_entries) > 1:
+                # ── 工单 10：多份逐份分析 + 归并 ──
+                multi = analyze_contract_set(ticket, file_entries)
+                analyses = multi["analyses"]
+                agg = multi["aggregated"]
+                if legacy_incomplete_msg:
+                    agg["warnings"] = [legacy_incomplete_msg, *(agg.get("warnings") or [])]
+                result["contract_analyses"] = [
+                    {k: v for k, v in a.items() if k != "contract_set"} for a in analyses
+                ]
+                result["contract_count"] = agg["recognized_count"]
+                result["contract_kinds"] = agg["kinds"]
+                result["deductions_result"] = {
+                    "items": agg["items"],
+                    "total_deduction": agg["total_deduction"],
+                    "refund": agg["refund"],
+                    "refund_pending": agg["refund_pending"],
+                    "warnings": agg["warnings"],
+                    "tier_id": next((a["tier_id"] for a in analyses if a.get("tier_id")), ""),
+                    "stage": str(ticket.get("exam_stage") or ""),
+                }
+                result["deductions"] = agg["items"]
+                result["total_deduction"] = agg["total_deduction"]
+                result["refund"] = agg["refund"]
+                result["refund_pending"] = agg["refund_pending"]
+                first = next((a for a in analyses if a.get("tier_id")), None)
+                result["tier_id"] = (first or {}).get("tier_id", "")
+                result["tier_result"] = (first or {}).get("tier_result") or {}
+                result["cache_key"] = ""  # 多份无单一缓存键（逐份键在 contract_analyses 内）
+                result["text_source"] = (analyses[0] or {}).get("text_source", "") if analyses else ""
+                kinds_disp = "、".join(
+                    f"{a.get('kind') or '未识别'}({a.get('tier_display_name') or '—'})"
+                    for a in analyses
+                )
+                result["tier_based"] = f"多份合并（已识别 {agg['recognized_count']} 份）：{kinds_disp}"
+                # 逐份正文合并回工单合同集合（ADR-0002：正文随结果落库）
+                merged = normalize_contract_set(ticket.get("contract_set"))
+                for a in analyses:
+                    merged = merge_analysis_into_contract_set(
+                        merged, a.get("contract_set") or {}, a["filepath"],
+                    )
+                result["contract_set"] = merged
+            else:
+                upload_analysis = analyze_upload_contract_file(
+                    filepath=filepath,
+                    ticket=ticket,
+                    image_paths=data.get("image_paths", []),
+                )
+                result["tier_id"] = upload_analysis.get("tier_id", "")
+                result["tier_result"] = upload_analysis.get("tier_result", {})
+                result["cache_key"] = upload_analysis.get("cache_key", "")
+                result["text_source"] = upload_analysis.get("text_source", "")
+                dr = upload_analysis.get("deductions_result")
+                if dr is not None:
+                    # 新引擎按档位+阶段+进度算明细；pending/违约金/封顶告警一并落库
+                    result["deductions"] = dr.get("items", [])
+                    result["total_deduction"] = dr.get("total_deduction", 0)
+                    result["refund"] = dr.get("refund", 0)
+                    result["refund_pending"] = dr.get("refund_pending", False)
+                    # 回传完整引擎结果（06 三栏预览面板 v-if=ar.deductions_result 的渲染前提）
+                    result["deductions_result"] = dr
+                    # 逐份记录（单份也统一回传，前端汇总条显示「已识别 1 份」）
+                    entry0 = file_entries[0] if file_entries else {}
+                    text0 = ""
+                    for c in (upload_analysis.get("contract_set") or {}).get("contracts") or []:
+                        if (c.get("file") or "") == filepath and c.get("text"):
+                            text0 = str(c["text"])
+                            break
+                    result["contract_analyses"] = [{
+                        "index": 0,
+                        "filepath": filepath,
+                        "filename": os.path.basename(filepath),
+                        "kind": resolve_entry_kind(entry0, result["tier_id"]),
+                        "tier_id": result["tier_id"],
+                        "tier_display_name": (result["tier_result"] or {}).get("display_name", ""),
+                        "tier_confidence": (result["tier_result"] or {}).get("confidence", ""),
+                        "tier_result": result["tier_result"] or {},
+                        "text": text0,
+                        "text_source": result["text_source"],
+                        "cache_key": result["cache_key"],
+                        "deductions_result": dr,
+                        "extraction_error": upload_analysis.get("extraction_error"),
+                    }]
+                    result["contract_count"] = 1
+                    result["contract_kinds"] = [result["contract_analyses"][0]["kind"]]
+                    # 摘要里展示档位（如 "2023·分店 (高)"），便于经办人一眼核对
+                    tr = upload_analysis.get("tier_result", {}) or {}
+                    tier_disp = tr.get("display_name") or ""
+                    confidence = tr.get("confidence") or ""
+                    if tier_disp:
+                        result["tier_based"] = f"{tier_disp}({confidence})"
+                if upload_analysis.get("extraction_error"):
+                    result["upload_pipeline_error"] = upload_analysis["extraction_error"]
+                # 新管线的合同集合（含正文落库）按文件引用合并进工单合同集合
+                result["contract_set"] = merge_analysis_into_contract_set(
+                    result.get("contract_set") or {},
+                    upload_analysis.get("contract_set") or {},
+                    filepath,
+                )
+        except Exception as pipe_err:
+            # 上传管线失败不影响 legacy 结果；只记日志，页面不报错
+            add_log(
+                "upload_pipeline",
+                f"上传管线异常（已回退 legacy）: {pipe_err}",
+                success=False,
+                ticket_id=ticket_id,
+            )
+            result["upload_pipeline_error"] = str(pipe_err)
 
     add_log("contract_analyze", f"分析完成: 应退{result.get('refund', 0)}元", ticket_id=ticket_id)
     if ticket_id:
@@ -3488,6 +3656,16 @@ def api_tickets_archive(ticket_id):
         errors = archive_gate_errors(ticket)
         if errors:
             return jsonify({"success": False, "errors": errors}), 400
+
+        # 闸门 07：上传件 pending 项拒绝归档（与既有 fee_plan_status 闸门互补）
+        ok, gate_err = gating_check_archive(
+            {"items": _ticket_pending_items(ticket)},
+            fee_plan_status=ticket.get("fee_plan_status"),
+            handling_notes=ticket.get("handling_notes"),
+            branch_cooperation=ticket.get("branch_cooperation"),
+        )
+        if not ok:
+            return jsonify({"success": False, "errors": [gate_err]}), 400
 
         # 归档根目录：优先取请求体（用户在界面填写/修改），并持久化为上次使用路径
         body = request.get_json(force=True, silent=True) or {}
@@ -4808,6 +4986,114 @@ def api_contract_preview():
         mimetype = "application/octet-stream"
 
     return send_file(abs_path, mimetype=mimetype, as_attachment=False)
+
+
+# ── 工单 07 / 08 / 09 集成路由 ──────────────────────────────────────────
+
+
+def _ticket_pending_items(ticket: dict) -> list:
+    """从 ticket.deduction_detail 提取 pending=True 的项；非 pending 项不计入（让闸门只关注缺失）。"""
+    raw = ticket.get("deduction_detail")
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(raw, list):
+        return []
+    return [it for it in raw if isinstance(it, dict) and it.get("pending") is True]
+
+
+@app.route("/api/contract/page-image")
+@login_required
+def api_contract_page_image():
+    """扫描版 PDF 页图接口（工单 09）：?path=...&page=N；命中缓存或渲染后返回 image/png。
+
+    文本层 PDF / 文件不存在 / 路径不安全 / 越界页码均返回 404/403/404，**不抛**。
+    """
+    filepath = request.args.get("path", "")
+    try:
+        page_no = int(request.args.get("page", "1"))
+    except (TypeError, ValueError):
+        return _err("page 必须是整数", 400)
+    if not filepath:
+        return _err("缺少 path 参数", 400)
+    if not os.path.exists(filepath):
+        return _err("文件不存在", 404)
+    if not is_path_within(filepath, _contract_allowed_dirs()):
+        return _err("路径不在允许范围内", 403)
+
+    img_bytes = get_page_image(filepath, page_no)
+    if img_bytes is None:
+        return _err("无页图（文本层 PDF 或渲染失败）", 404)
+    return Response(img_bytes, mimetype="image/png")
+
+
+@app.route("/api/contract/retier", methods=["POST"])
+@login_required
+def api_contract_retier():
+    """改档重算（工单 08）：按 new_tier_id 算新 cache_key，命中返回 cached=True。"""
+    data = request.get_json(force=True, silent=True) or {}
+    ticket_id = str(data.get("ticket_id") or "")
+    new_tier_id = str(data.get("new_tier_id") or "")
+    filepath = str(data.get("filepath") or "")
+    image_paths = data.get("image_paths") or []
+    ticket = get_ticket(ticket_id) if ticket_id else None
+    if not ticket:
+        return _err("工单不存在", 404)
+    if not filepath or not os.path.exists(filepath):
+        return _err("文件不存在", 400)
+    if not is_path_within(filepath, _contract_allowed_dirs()):
+        return _err("路径不在允许范围内", 403)
+    if not new_tier_id:
+        return _err("缺少 new_tier_id", 400)
+    try:
+        result = retier_and_recompute(
+            filepath, ticket, new_tier_id=new_tier_id, image_paths=image_paths,
+        )
+        return _ok(result)
+    except Exception as exc:
+        add_log("contract_retier", f"改档重算失败: {exc}", success=False, ticket_id=ticket_id)
+        return _err(f"改档重算失败：{exc}", 500)
+
+
+@app.route("/api/contract/recompute", methods=["POST"])
+@login_required
+def api_contract_recompute():
+    """按工单当前 organization_unit_type 推断档位重算（工单 08 V1 简化）。"""
+    data = request.get_json(force=True, silent=True) or {}
+    ticket_id = str(data.get("ticket_id") or "")
+    filepath = str(data.get("filepath") or "")
+    image_paths = data.get("image_paths") or []
+    ticket = get_ticket(ticket_id) if ticket_id else None
+    if not ticket:
+        return _err("工单不存在", 404)
+    if not filepath or not os.path.exists(filepath):
+        return _err("文件不存在", 400)
+    if not is_path_within(filepath, _contract_allowed_dirs()):
+        return _err("路径不在允许范围内", 403)
+    try:
+        result = analyze_upload_contract_file(filepath, ticket, image_paths=image_paths)
+        result["cached"] = False
+        return _ok(result)
+    except Exception as exc:
+        add_log("contract_recompute", f"重算失败: {exc}", success=False, ticket_id=ticket_id)
+        return _err(f"重算失败：{exc}", 500)
+
+
+@app.route("/api/contract/cache/stats", methods=["GET"])
+@login_required
+def api_contract_cache_stats():
+    """缓存命中/未命中统计 + LRU 容量（工单 08 + 09）。调试用——前端藏在 ?debug=1 后。"""
+    from flask import request as _req
+    if _req.args.get("debug") != "1":
+        return _err("debug only", 403)
+    return _ok({
+        "contract_cache": cache_stats(),
+        "page_cache": page_cache_stats(),
+    })
 
 
 # ═══════════════════════════════════════════════════════════════

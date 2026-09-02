@@ -701,6 +701,108 @@
   html.dark .role-handler{background:rgba(59,130,246,.18);color:#93C5FD}
   html.dark .role-viewer{background:rgba(148,163,184,.18);color:#CBD5E1}
   html.dark .sidebar-toggle.logout-toggle:hover{background:rgba(220,38,38,.12);color:#FCA5A5}
+
+  /* ===== 合同三栏预览组件（demo contract-upload-parity-v1.html 内联化） ===== */
+  .cp-panel .card-body.cp-body{padding:0;overflow:hidden}
+  .cp-tierbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:#f7f8fa;border-bottom:1px solid var(--color-border)}
+  .cp-tier-label{font-size:12px;color:var(--color-text-secondary)}
+  .cp-tier-name{font-size:14px;color:var(--color-primary)}
+  .cp-tier-sel{font-size:12px;padding:2px 6px;border:1px solid var(--color-border);border-radius:3px;background:#fff}
+  .cp-tier-evidence{font-size:11px;color:#7a8699;margin-left:auto;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cp-conf{font-size:11px;padding:2px 8px;border-radius:8px;display:inline-flex;align-items:center;gap:4px}
+  .cp-conf.cp-conf-high{background:#e8f7ea;color:#16A34A;border:1px solid #b7e0bd}
+  .cp-conf.cp-conf-medium{background:#FFFBEB;color:#D97706;border:1px solid #f0d9a8}
+  .cp-conf.cp-conf-low{background:#F1F5F9;color:#64748B;border:1px solid #cbd5e1}
+  .cp-dot{display:inline-block;width:7px;height:7px;border-radius:50%}
+  .cp-dot-green{background:#16A34A}.cp-dot-amber{background:#D97706}.cp-dot-gray{background:#94A3B8}
+
+  .cp-summary{display:flex;gap:1px;background:var(--color-border);border-bottom:1px solid var(--color-border)}
+  .cp-sumcell{flex:1;background:#fff;padding:8px 12px;min-width:0}
+  .cp-sumcell .k{font-size:11px;color:var(--color-text-secondary);display:flex;align-items:center;gap:4px}
+  .cp-sumcell .v{font-size:17px;font-weight:600;margin-top:2px;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+  .cp-sumcell .v.cp-refund{color:#DC2626}
+
+  .cp-panes{display:grid;grid-template-columns:1fr 330px 280px;gap:1px;background:var(--color-border);min-height:480px;max-height:60vh}
+  .cp-pane{background:#fff;overflow:hidden;display:flex;flex-direction:column;min-width:0}
+  .cp-pane-h{position:sticky;top:0;background:#f7f8fa;border-bottom:1px solid var(--color-border);padding:6px 12px;font-size:12px;font-weight:600;color:var(--color-text-secondary);z-index:2;display:flex;justify-content:space-between;align-items:center}
+  .cp-hint-r{font-weight:400;font-size:11px;color:#9aa0a8}
+  .cp-fold-btn{font-size:11px;font-weight:400;color:var(--color-primary);cursor:pointer;user-select:none}
+  .cp-pane-body{overflow-y:auto;flex:1}
+
+  /* 左侧：原文 mark */
+  .cp-clause{padding:10px 14px;border-bottom:1px dashed #eceeef}
+  .cp-clause h4{font-size:12.5px;color:#444;margin-bottom:4px;font-weight:600}
+  .cp-clause p{font-size:12.5px;color:#333;text-align:justify;line-height:1.7;word-break:break-word}
+  .cp-clause-pg{float:right;font-size:10px;color:#bbb}
+  .cp-mark{background:#fff1a8;padding:0 1px;border-radius:2px}
+  .cp-mark.cp-hit{background:#ffd666;outline:2px solid #fa8c16;animation:cp-pulse 1s ease 2}
+  @keyframes cp-pulse{50%{outline-color:transparent}}
+
+  /* 中间：原件影像（骨架占位） */
+  .cp-page-card{margin:12px;border:1px solid var(--color-border);border-radius:4px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px;color:#555;font-size:11.5px;filter:grayscale(.3);transition:all .2s}
+  .cp-page-card .cp-ph{height:8px;background:#e9ebee;border-radius:2px;margin:7px 0}
+  .cp-page-card .cp-ph-w60{width:60%}.cp-page-card .cp-ph-w80{width:80%}.cp-page-card .cp-ph-w40{width:40%}
+  .cp-page-card .cp-pno{text-align:center;color:#999;font-size:10px;margin-top:10px}
+  .cp-page-card.cp-flash{outline:3px solid #fa8c16;animation:cp-pulse 1s ease 2}
+  .cp-pane-orig.cp-folded .cp-page-card{display:inline-block;width:44%;margin:6px;padding:6px;filter:grayscale(.5);opacity:.85}
+  .cp-pane-orig.cp-folded .cp-page-card .cp-ph{height:4px;margin:4px 0}
+  .cp-pane-orig.cp-folded .cp-page-card .cp-pno{margin-top:4px;font-size:9px}
+  .cp-cache-note{margin:10px 12px;font-size:11px;color:var(--color-text-secondary);background:#f7f8fa;border:1px dashed var(--color-border);border-radius:4px;padding:8px 10px}
+  .cp-cache-key{display:block;margin-top:4px;font-size:10px;color:#64748B}
+  .cp-cache-key code{font-family:var(--font-mono);font-size:10px;background:#fff;padding:1px 4px;border-radius:2px}
+
+  /* 右侧：扣费明细 */
+  .cp-grp-h{padding:6px 12px;font-size:11px;font-weight:700;background:#f7f8fa;border-bottom:1px solid var(--color-border);color:var(--color-text-secondary)}
+  .cp-grp-h.cp-grp-must{color:#DC2626}
+  .cp-grp-h.cp-grp-actual{color:var(--color-primary)}
+  .cp-grp-h.cp-grp-pen{color:#D97706}
+  .cp-ded{padding:8px 12px;border-bottom:1px solid #f0f1f2;cursor:pointer;display:flex;flex-direction:column;gap:2px;align-items:stretch;transition:background .15s}
+  .cp-ded:hover{background:#f2f6ff}
+  .cp-ded.cp-ded-active{background:#e7efff;box-shadow:inset 2px 0 0 var(--color-primary)}
+  .cp-ded.cp-ded-pending{opacity:.85}
+  .cp-ded-l{display:flex;align-items:center;gap:6px;min-width:0}
+  .cp-ded-nm{font-size:12.5px;color:var(--color-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cp-ded-amt{font-weight:600;font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right}
+  .cp-ded-basis{display:block;font-size:11px;color:var(--color-text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cp-ded-loc{font-size:11px;color:var(--color-primary);cursor:pointer;align-self:flex-end}
+  .cp-ded-loc.cp-ded-loc-no{color:#94A3B8;cursor:not-allowed}
+  .cp-tag{font-size:10px;border-radius:3px;padding:0 4px;margin-left:4px;white-space:nowrap;border:1px solid transparent}
+  .cp-tag.cp-tag-must{background:#fdeceb;color:#DC2626;border-color:#f5c4c2}
+  .cp-tag.cp-tag-actual{background:#eaf3ff;color:var(--color-primary);border-color:#c2d8f8}
+  .cp-tag.cp-tag-pen{background:#fdf3e0;color:#D97706;border-color:#f0d9a8}
+  .cp-tag.cp-tag-pending{background:#FEF3C7;color:#92400E;border-color:#FDE68A}
+  .cp-conf-mini{display:inline-flex;align-items:center}
+  .cp-legend{padding:8px 12px;font-size:11px;color:var(--color-text-secondary);border-top:1px solid var(--color-border);background:#fbfbfc}
+  /* 工单 10：多份合同分节（左栏）与份类型标签 */
+  .cp-section{margin-bottom:14px;padding-bottom:12px;border-bottom:1px dashed var(--color-border)}
+  .cp-section:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
+  .cp-sec-head{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
+  .cp-sec-tier{font-weight:600;font-size:12px;color:var(--color-text)}
+  .cp-sec-file{font-size:11px;color:var(--color-text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cp-sec-err{font-size:11px;color:var(--color-danger)}
+  .cp-tag.cp-tag-kind{background:#eaf3ff;color:var(--color-primary);border-color:#c2d8f8}
+  .cp-sumcell .v.cp-sum-n{font-size:14px;font-weight:600;color:var(--color-primary)}
+
+  /* 通用 */
+  .cp-empty{padding:24px;text-align:center;color:var(--color-text-secondary);font-size:12px}
+  .cp-warnings{margin:10px 14px;padding:10px 12px;background:#FEF3C7;border:1px solid #FDE68A;border-radius:4px;font-size:12px;color:#92400E}
+  .cp-warnings ul{margin:6px 0 0 18px;padding:0}
+  .cp-warnings li{margin-bottom:2px}
+
+  /* 暗色主题适配 */
+  html.dark .cp-tierbar{background:var(--color-surface-50);border-color:var(--color-border)}
+  html.dark .cp-sumcell{background:var(--color-surface)}
+  html.dark .cp-pane{background:var(--color-surface)}
+  html.dark .cp-pane-h{background:var(--color-surface-50);border-color:var(--color-border)}
+  html.dark .cp-page-card{background:var(--color-surface);border-color:var(--color-border)}
+  html.dark .cp-page-card .cp-ph{background:#334155}
+  html.dark .cp-mark{background:rgba(250,204,21,.25);color:inherit}
+  html.dark .cp-mark.cp-hit{background:rgba(250,204,21,.45)}
+  html.dark .cp-ded:hover{background:rgba(59,130,246,.08)}
+  html.dark .cp-ded.cp-ded-active{background:rgba(59,130,246,.15)}
+  html.dark .cp-grp-h{background:var(--color-surface-50)}
+  html.dark .cp-cache-note{background:var(--color-surface-50);border-color:var(--color-border)}
+  html.dark .cp-cache-key code{background:var(--color-surface-50)}
   </style>
 </head>
 <body>
@@ -1457,6 +1559,141 @@
                       <span style="margin-left:auto">应退 <span class="big" :class="{'refund-pos': ((ar.actual_paid||ar.paid_amount||0) - (ar.total_deduction||0)) > 0}">¥[[ money(Math.max((ar.actual_paid||ar.paid_amount||0) - (ar.total_deduction||0), 0)) ]]</span></span>
                     </div>
                   </template>
+                </div>
+              </div>
+
+              <!-- ②.5 三栏预览：合同上传分析后的原文 / 原件 / 扣费明细（demo parity v2） -->
+              <div class="card panel cp-panel" v-if="ar && ar.deductions_result">
+                <div class="card-header">
+                  <i class="bi bi-layout-three-columns text-primary"></i> 合同三栏预览
+                  <span class="badge badge-processing" style="margin-left:6px"><i class="bi bi-link-45deg"></i> 锚点已落库</span>
+                  <span style="flex:1"></span>
+                  <span class="hint" style="font-weight:400">点击右侧明细 → 原文 mark 高亮 + 原件页闪烁</span>
+                </div>
+                <div class="card-body cp-body">
+                  <!-- 档位 + 置信度 -->
+                  <div class="cp-tierbar">
+                    <span class="cp-tier-label">合同档位</span>
+                    <b class="cp-tier-name" :class="'cp-conf-' + cp.tierConfidence">[[ cp.tierDisplayName ]]</b>
+                    <span class="cp-conf" :class="'cp-conf-' + cp.tierConfidence">
+                      <span class="cp-dot" :class="cp.tierConfidence==='high' ? 'cp-dot-green' : (cp.tierConfidence==='medium' ? 'cp-dot-amber' : 'cp-dot-gray')"></span>
+                      [[ cp.tierConfidence==='high' ? '高' : (cp.tierConfidence==='medium' ? '中' : '低') ]]
+                      <template v-if="cp.tierConfidenceLabel">[[ cp.tierConfidenceLabel ]]</template>
+                    </span>
+                    <select v-if="cp.tierCandidates.length > 1" class="cp-tier-sel">
+                      <option v-for="(c, ci) in cp.tierCandidates" :key="'tierc-' + ci" :value="c.tier_id || c">
+                        [[ (c.display_name || c.tier_id || c) + (c.tier_id === cp.tierId ? ' · 已选' : '') ]]
+                      </option>
+                    </select>
+                    <span class="cp-tier-evidence" v-if="cp.tierEvidence">依据：[[ cp.tierEvidence ]]</span>
+                  </div>
+
+                  <!-- summary -->
+                  <div class="cp-summary">
+                    <div class="cp-sumcell"><div class="k">培训费总额</div><div class="v">¥[[ cp.money(cp.summary.totalFee) ]]</div></div>
+                    <div class="cp-sumcell"><div class="k">已缴金额</div><div class="v">¥[[ cp.money(cp.summary.paid) ]]</div></div>
+                    <div class="cp-sumcell"><div class="k">必扣项（[[ cp.groupedDeductions.find(g=>g.key==='must')?.items.length || 0 ]] 项）</div><div class="v">¥[[ cp.money(cp.summary.mustTotal) ]]</div></div>
+                    <div class="cp-sumcell"><div class="k">依实项（[[ cp.groupedDeductions.find(g=>g.key==='actual')?.items.length || 0 ]] 项）</div><div class="v">¥[[ cp.money(cp.summary.actualTotal) ]]</div></div>
+                    <div class="cp-sumcell"><div class="k">违约金</div><div class="v">¥[[ cp.money(cp.summary.penaltyTotal) ]]</div></div>
+                    <div class="cp-sumcell"><div class="k">应退金额</div><div class="v cp-refund">¥[[ cp.money(cp.summary.refund) ]]</div></div>
+                    <div class="cp-sumcell" v-if="cp.contractKinds.length"><div class="k">合同份数</div><div class="v cp-sum-n">已识别 [[ cp.contractCount ]] 份</div></div>
+                  </div>
+
+                  <!-- 三栏 -->
+                  <div class="cp-panes">
+                    <!-- 左：结构化原文（多份合同分节展示） + anchor mark -->
+                    <div class="cp-pane cp-pane-left">
+                      <div class="cp-pane-h">
+                        <span>结构化原文</span>
+                        <span class="cp-hint-r">[[ cp.totalTextLength ? (cp.totalTextLength + ' 字') : '暂无文本层' ]]</span>
+                      </div>
+                      <div class="cp-pane-body" v-if="cp.contractSections.length">
+                        <div v-for="sec in cp.contractSections" :key="'sec-' + sec.index" class="cp-section">
+                          <div class="cp-sec-head">
+                            <span class="cp-tag" :class="sec.kind ? 'cp-tag-kind' : 'cp-tag-pending'">[[ sec.kind || '未识别' ]]</span>
+                            <span class="cp-sec-tier" v-if="sec.tierName">[[ sec.tierName ]]</span>
+                            <span class="cp-sec-file" v-if="sec.filename" :title="sec.filename">[[ sec.filename ]]</span>
+                            <span class="cp-sec-err" v-if="sec.error">提取失败：[[ sec.error ]]</span>
+                          </div>
+                          <template v-if="sec.clauses.length">
+                            <div v-for="(cl, cli) in sec.clauses" :key="'cl-' + sec.index + '-' + cli" class="cp-clause">
+                              <span class="cp-clause-pg" v-if="cl.no">第 [[ cl.no ]] 条</span>
+                              <h4 v-if="cl.no">[[ '第' + cl.no + '条　' + cl.title ]]</h4>
+                              <h4 v-else>[[ cl.title ]]</h4>
+                              <p v-html="cl.html"></p>
+                            </div>
+                          </template>
+                          <div v-else class="cp-empty">该份暂无文本层（text_source=[[ sec.textSource || '—' ]]）</div>
+                        </div>
+                      </div>
+                      <div v-else class="cp-empty">暂无合同原文（text_source=[[ cp.textSource || '—' ]]）</div>
+                    </div>
+
+                    <!-- 中：原件影像（骨架占位 + 闪烁） -->
+                    <div class="cp-pane cp-pane-orig" :class="{ 'cp-folded': cp.folded }">
+                      <div class="cp-pane-h">
+                        <span>原件影像</span>
+                        <span class="cp-fold-btn" @click="cp.toggleFolded()">[[ cp.folded ? '展开原件 ⇥' : '收起为缩略图 ⇤' ]]</span>
+                      </div>
+                      <div class="cp-pane-body">
+                        <div class="cp-page-card" v-for="n in 2" :key="'pg-' + n">
+                          <b>第 [[ n ]] 页</b>
+                          <div class="cp-ph cp-ph-w60"></div><div class="cp-ph cp-ph-w80"></div><div class="cp-ph"></div>
+                          <div class="cp-ph cp-ph-w80"></div><div class="cp-ph"></div><div class="cp-ph cp-ph-w40"></div>
+                          <div class="cp-ph cp-ph-w80"></div><div class="cp-ph"></div><div class="cp-ph cp-ph-w60"></div>
+                          <div class="cp-ph"></div><div class="cp-ph cp-ph-w80"></div><div class="cp-ph cp-ph-w40"></div>
+                          <div class="cp-pno">原件第 [[ n ]] 页 · 骨架占位</div>
+                        </div>
+                        <div class="cp-cache-note">
+                          <i class="bi bi-info-circle"></i>
+                          原件渲染：PDF/图片走浏览器端预览（零服务器产物）；扫描版按页生成缓存（按合同 sha256 整目录管理）。
+                          <span v-if="cp.cacheKey" class="cp-cache-key">cache_key: <code>[[ cp.cacheKey ]]</code></span>
+                          <span v-if="cp.extractionError" class="cp-cache-key" style="color:var(--color-danger)">提取警告：[[ cp.extractionError ]]</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- 右：扣费明细（按 category 分组，点击定位） -->
+                    <div class="cp-pane cp-pane-ded">
+                      <div class="cp-pane-h">
+                        <span>扣费明细（点击定位）</span>
+                        <span v-if="cp.pendingCount > 0" class="cp-hint-r">[[ cp.pendingCount ]] 项待补</span>
+                      </div>
+                      <div class="cp-pane-body">
+                        <div v-for="grp in cp.groupedDeductions" :key="'g-' + grp.key" class="cp-grp">
+                          <div class="cp-grp-h" :class="'cp-grp-' + grp.key">[[ grp.label ]] · [[ grp.items.length ]] 项</div>
+                          <div v-for="(d, di) in grp.items" :key="d._key"
+                               class="cp-ded"
+                               :class="{ 'cp-ded-active': cp.activeItemKey === d._key, 'cp-ded-pending': d.pending || d._amount === 0 }"
+                               @click="cp.locate(d._key)">
+                            <div class="cp-ded-l">
+                              <span class="cp-ded-nm">[[ d.item || '未命名扣费' ]]</span>
+                              <span class="cp-tag" :class="'cp-tag-' + d._tagKey">[[ d._tagLabel ]]</span>
+                              <span v-if="d._kindLabel" class="cp-tag cp-tag-kind" :title="'所属合同份：' + d._kindLabel">[[ d._kindLabel ]]</span>
+                              <span v-if="d.confidence != null" class="cp-conf-mini" :title="'来源置信度 ' + (Math.round((Number(d.confidence)||0)*100)) + '%'">
+                                <span class="cp-dot" :class="(Number(d.confidence)>=0.8) ? 'cp-dot-green' : ((Number(d.confidence)>=0.5) ? 'cp-dot-amber' : 'cp-dot-gray')"></span>
+                              </span>
+                              <span v-if="d.pending || d._amount === 0" class="cp-tag cp-tag-pending">待补</span>
+                            </div>
+                            <span class="cp-ded-amt">¥[[ cp.money(d._amount) ]]</span>
+                            <span class="cp-ded-basis" v-if="d.basis">[[ d.basis ]]</span>
+                            <span class="cp-ded-loc" v-if="cp.canLocate(d._key)" title="可定位"><i class="bi bi-geo-alt-fill"></i></span>
+                            <span class="cp-ded-loc cp-ded-loc-no" v-else title="锚点缺失"><i class="bi bi-question-circle"></i></span>
+                          </div>
+                        </div>
+                        <div class="cp-legend">
+                          ● 必扣＝不论进度一律扣除<br>
+                          ● 依实＝按学时/已考科目<br>
+                          ● 违约金＝培训费×档位比例
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="cp-warnings" v-if="cp.warnings && cp.warnings.length">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <ul><li v-for="(w, wi) in cp.warnings" :key="'w-' + wi">[[ w ]]</li></ul>
+                  </div>
                 </div>
               </div>
 
@@ -2416,10 +2653,11 @@
       "helpers": "/static/js/utils/helpers.js?v=16",
       "useToast": "/static/js/composables/useToast.js?v=16",
       "useComplaint": "/static/js/composables/useComplaint.js?v=20",
-      "useWorkflow": "/static/js/composables/useWorkflow.js?v=19",
+      "useWorkflow": "/static/js/composables/useWorkflow.js?v=20",
+      "useContractPreview": "/static/js/composables/useContractPreview.js?v=2",
       "useSettings": "/static/js/composables/useSettings.js?v=22",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=28"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=31"
     }
   }
   </script>
