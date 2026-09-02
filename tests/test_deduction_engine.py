@@ -6,7 +6,7 @@
 import pytest
 
 from services.contract_tiers import TIERS_BY_ID
-from services.deduction_engine import calculate_deductions
+from services.deduction_engine import _is_accepted, calculate_deductions
 
 
 def _find(items, **filters):
@@ -228,3 +228,150 @@ def test_function_is_pure():
     r1 = calculate_deductions(tier=tier, **kwargs)
     r2 = calculate_deductions(tier=tier, **kwargs)
     assert r1 == r2
+
+
+# ── 东城自制第六条退费分支（工单 11-dongcheng-tier，2026-09-02） ──────
+
+_DONGCHENG_PROGRESS = {
+    "exam_counts": {"subject1": 1, "subject2": 1},
+    "training_hours": {"subject2": 10},
+    "license_type": "C1",
+}
+
+
+def test_dongcheng_normal_before_acceptance_charges_half_service_fee():
+    """普通培训·受理前：服务费扣 50%。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="受理中", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    svc = _find(result["items"], item="服务费（扣50%）")
+    assert svc is not None
+    assert svc["amount"] == pytest.approx(500)
+    assert _find(result["items"], item="服务费") is None  # 受理前不出现全额服务费
+
+
+def test_dongcheng_normal_after_acceptance_charges_full_service_fee():
+    """普通培训·受理后：服务费全额扣（不退）。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    svc = _find(result["items"], item="服务费")
+    assert svc is not None
+    assert svc["amount"] == pytest.approx(1000)
+    assert _find(result["items"], item="服务费（扣50%）") is None
+
+
+def test_dongcheng_penalty_20_percent():
+    """东城自制违约金 = 总培训费用 × 20%。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    penalty = _find(result["items"], item="违约金")
+    assert penalty is not None
+    assert penalty["amount"] == pytest.approx(760)
+
+
+def test_dongcheng_practical_uses_80_not_c1_c2_standard():
+    """实操单价采信合同正文 80 元/学时（C1/C2 统一，不沿用 120/150 标准）。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    practical = _find(result["items"], item="科目二实操培训费")
+    assert practical is not None
+    assert practical["amount"] == pytest.approx(800)  # 10 学时 × 80，而非 1200
+
+
+def test_dongcheng_agency_fee_refund_warning():
+    """代交费用 490 元扣除已完成科目考试费后剩余应退还（第六条（五）告警）。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    # 已完成科一(70)+科二(130)=200，剩余 490-200=290 应退还
+    assert any("剩余 290 元应退还" in w for w in result["warnings"])
+
+
+def test_dongcheng_pay_first_then_train_charges_800_and_warns():
+    """先培后付：补交 800 元 + 人工核对告警。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="先培后付",
+    )
+    payback = _find(result["items"], item="先培后付退学补交款")
+    assert payback is not None
+    assert payback["amount"] == pytest.approx(800)
+    assert any("先培后付" in w and "人工" in w for w in result["warnings"])
+
+
+def test_dongcheng_penalty_pending_when_total_fee_missing():
+    """东城自制 total_fee 缺失 → 违约金 pending。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理", progress=_DONGCHENG_PROGRESS,
+        total_fee=None, service_fee=1000, training_mode="",
+    )
+    penalty = _find(result["items"], item="违约金")
+    assert penalty["pending"] is True
+    assert result["refund_pending"] is True
+
+
+# ── P0-1 修复回归：生产 exam_stage 短词（科目一/二/三/四）应判已受理 ──
+
+@pytest.mark.parametrize(
+    "stage, expected_accepted",
+    [
+        ("科目一", True),
+        ("科目二", True),
+        ("科目三", True),
+        ("科目四", True),
+        ("待考科目一", True),
+        ("待考科目二", True),
+        ("待补考科目一", True),
+        ("已毕业", True),
+        ("已受理", True),
+        ("科一约考", True),
+        ("科一通过", True),
+        ("", False),
+        ("无", False),
+        ("未报名", False),
+        ("待受理", False),
+    ],
+)
+def test_dongcheng_is_accepted_stage_short_words(stage, expected_accepted):
+    """生产 exam_stage 短词判定：科目N/待考/已毕业=已受理；空/无/未报名/待受理=未受理。"""
+    assert _is_accepted(stage) is expected_accepted
+
+
+def test_dongcheng_stage_subject_one_charges_full_service_fee():
+    """王俊林工单 exam_stage='科目一' 已受理 → 服务费全额扣（修复前误扣 50%）。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="科目一", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    svc = _find(result["items"], item="服务费")
+    assert svc is not None
+    assert svc["amount"] == pytest.approx(1000)  # 全额不退，非 500
+    assert _find(result["items"], item="服务费（扣50%）") is None
+
+
+def test_dongcheng_stage_not_enrolled_charges_half_service_fee():
+    """未受理（空 stage）→ 服务费扣 50%。"""
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="", progress=_DONGCHENG_PROGRESS,
+        total_fee=3800, service_fee=1000, training_mode="",
+    )
+    svc = _find(result["items"], item="服务费（扣50%）")
+    assert svc is not None
+    assert svc["amount"] == pytest.approx(500)

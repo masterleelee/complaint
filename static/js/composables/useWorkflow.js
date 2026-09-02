@@ -133,6 +133,18 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
   const analysisElapsed = Vue.ref(0);
   let aTimerId = null;
 
+  // 东城自制合同（2019_dongcheng）专属字段：培训方式 + 综合服务费
+  // 后端扣费引擎按这两个字段走第六条退费分支（普通培训 / 先培后付）
+  const dongchengServiceFee = Vue.ref(0);
+  const dongchengTrainingMode = Vue.ref("");
+  const dongchengSaving = Vue.ref(false);
+  // 是否为东城自制档位（前端据此显示专属输入项）
+  const isDongchengTier = Vue.computed(() => {
+    const r = ar.value;
+    const tid = String(r?.tier_id || r?.tier_result?.tier_id || "");
+    return tid === "2019_dongcheng";
+  });
+
   // 扣费合计校验
   const deductionSum = Vue.computed(() => {
     if (!ar.value || !ar.value.deductions) return 0;
@@ -552,6 +564,41 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
     workflowStep.value = 3;
 	    toast("退费结果已确认", "请联系学员并记录沟通情况", "success");
 	  }
+
+  /** 东城自制合同：保存「培训方式 + 服务费」并重算退费。
+   *  先持久化到工单（PUT /api/tickets/<id>，service_fee/training_mode 已进 ALLOWED_COLUMNS），
+   *  再重新跑合同分析，让扣费引擎按第六条（普通培训/先培后付）分支出明细。 */
+  async function saveDongchengFields(ticketId) {
+    if (!ticketId) {
+      toast("缺少案件ID", "", "warning");
+      return;
+    }
+    if (!dongchengTrainingMode.value) {
+      toast("请选择培训方式", "普通培训 / 先培后付决定第六条退费口径", "warning");
+      return;
+    }
+    dongchengSaving.value = true;
+    try {
+      const upd = await postJ(`/api/tickets/${ticketId}`, {
+        training_mode: dongchengTrainingMode.value,
+        service_fee: Number(dongchengServiceFee.value) || 0,
+      });
+      if (!upd.success) throw new Error(upd.error || "保存失败");
+      toast("已保存培训方式/服务费", "正在按第六条重算退费…", "success");
+      // 重跑分析：后端从工单读 service_fee/training_mode 走东城自制分支
+      const qr = getQr ? getQr() : null;
+      await doAnalyze(
+        qr?.id_card || "",
+        qr?.exam_stage || ar.value?.stage || "已受理",
+        qr?.training_hours || {},
+        ticketId,
+      );
+    } catch (e) {
+      toast("保存失败", e.message, "danger");
+    } finally {
+      dongchengSaving.value = false;
+    }
+  }
 
 	  function buildManualContractSet() {
 	    const rules = (ar.value?.deductions || [])
@@ -1319,6 +1366,8 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
       ? sourceFiles
       : (cPath.value ? [{ filepath: cPath.value, filename: cName.value }] : []);
     cSrc.value = cPath.value ? "upload" : "upload";
+    dongchengServiceFee.value = Number(ticket.service_fee) || 0;
+    dongchengTrainingMode.value = String(ticket.training_mode || "");
     ar.value = deductions.length || ticket.fee_plan_status ? {
       total_fee: Number(ticket.total_fee) || 0,
       actual_paid: Number(ticket.actual_paid) || 0,
@@ -1398,6 +1447,8 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
     exportDeductions,
     updatePenaltyRate,  // 导出违约金比例修正方法
     genReply,
+    dongchengServiceFee, dongchengTrainingMode, dongchengSaving, isDongchengTier,
+    saveDongchengFields,
 	    // 沟通/归档
 	    fromHistoryLabel,
 	    OUTCOME_OPTIONS, COOPERATION_OPTIONS, NEGOTIATION_OPTIONS,

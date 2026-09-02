@@ -271,8 +271,18 @@ def test_pipeline_warns_on_penalty_rate_conflict():
 
 
 def test_pipeline_marks_anchor_missing_without_throwing():
-    """OCR 噪声致锚点缺失：明细 anchor_missing=True，整管线不抛。"""
-    text = "短文本"  # 几乎不含任何扣费短语
+    """OCR 噪声致锚点缺失：明细 anchor_missing=True，整管线不抛。
+
+    注意：东城自制档「不限年份/不限网点」加入候选后，纯噪声短文本无法再靠
+    「网点类型唯一收敛」定档（候选含东城自制，ADR-0001 不静默采信）——这是预期行为。
+    本测试改用「能定档但缺少必扣项锚点词」的文本，验证锚点缺失不抛。
+    """
+    # 含「20%违约金」等分店特征句 → 定档 2023·分店，但文本不含「场地费」锚点词
+    text = (
+        "东莞市机动车驾驶员培训合同\n"
+        "全部培训费用的20%作为违约金\n"
+        "包含乙方理论培训、实操培训及甲方协助乙方建档、学员IC卡等相关服务费\n"
+    )
     ticket = _make_ticket(
         registration_date="2023-09-01",
         organization_unit_type="分店",
@@ -281,11 +291,25 @@ def test_pipeline_marks_anchor_missing_without_throwing():
     )
     result = analyze_upload_contract_text(text, ticket)
     dr = result["deductions_result"]
-    # 必扣项应有 anchor_missing=True（文本里没这些词）
+    assert dr is not None, "能定档的文本应产出扣费明细"
+    # 「场地费」是分店必扣项，文本未出现该词 → anchor_missing=True
     missing_items = [it for it in dr["items"] if it.get("anchor_missing") is True]
-    assert missing_items, "OCR 噪声下应至少部分锚点缺失"
+    assert missing_items, "文本缺少必扣项锚点词时应至少部分锚点缺失"
     # 整体不抛 + warnings 字段存在
     assert "warnings" in dr
+
+
+def test_pipeline_noise_text_returns_no_tier_not_raise():
+    """纯噪声短文本（无法评分）在新候选集下不定档、不抛，deductions_result=None。"""
+    ticket = _make_ticket(
+        registration_date="2023-09-01",
+        organization_unit_type="分店",
+        exam_stage="实受理",
+        total_fee=6000,
+    )
+    result = analyze_upload_contract_text("短文本", ticket)
+    assert result["tier_id"] == ""
+    assert result["deductions_result"] is None
 
 
 # ── 6. 真实 PDF fixture 跑通端到端 ───────────────────────────────────

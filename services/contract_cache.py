@@ -41,12 +41,14 @@ _STATS = {"hits": 0, "misses": 0, "stores": 0, "invalidations": 0}
 
 
 def _progress_hash(ticket: dict) -> str:
-    """进度哈希：阶段 + 培训费 + 已考次数 + 审核学时 + 车型；用于缓存键。"""
+    """进度哈希：阶段 + 培训费 + 已考次数 + 审核学时 + 车型 + 东城自制字段；用于缓存键。"""
     payload: dict[str, Any] = {
         "exam_stage": str(ticket.get("exam_stage") or ""),
         "total_fee": ticket.get("total_fee"),
         "exam_counts": ticket.get("exam_counts") or {},
         "license_type": str(ticket.get("license_type") or ""),
+        "service_fee": ticket.get("service_fee"),
+        "training_mode": str(ticket.get("training_mode") or ""),
     }
     qr = ticket.get("query_result") or {}
     if isinstance(qr, str):

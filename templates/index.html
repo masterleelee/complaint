@@ -1544,6 +1544,27 @@
                   </template>
                   <template v-else>
                     <p class="hint" style="margin-bottom:10px">来源：[[ ar.source === 'manual' ? '人工录入（无合同 AI 提取结果，请自行对照合同原件核对）' : '东莞驾培电子合同 AI 提取' ]]，可直接修改任意单元格；点击「预览合同」可查看合同原件核对扣费依据。<b>确认后作为归档与回复函金额口径，仍可解锁重编。</b></p>
+                    <div v-if="isDongchengTier" class="card" style="background:#fbf7ec;border:1px solid #e6d9b8;padding:12px;margin-bottom:12px">
+                      <div style="font-weight:600;color:#8a6d1a;margin-bottom:8px"><i class="bi bi-file-earmark-text"></i> 东城自制合同 · 第六条退费口径</div>
+                      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end">
+                        <div>
+                          <label style="font-size:12px;color:var(--color-text-secondary);display:block;margin-bottom:4px">培训方式</label>
+                          <select class="form-control" v-model="dongchengTrainingMode" style="width:180px;height:32px">
+                            <option value="">请选择</option>
+                            <option value="普通培训">普通培训（先缴后培）</option>
+                            <option value="先培后付">先培后付</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label style="font-size:12px;color:var(--color-text-secondary);display:block;margin-bottom:4px">综合服务费（元）</label>
+                          <input class="form-control mono" type="number" min="0" v-model.number="dongchengServiceFee" style="width:160px;height:32px;text-align:center">
+                        </div>
+                        <button class="btn btn-primary btn-sm" style="height:32px" :disabled="dongchengSaving" @click="saveDongchengFields(selectedTicketId)">
+                          <span v-if="dongchengSaving" class="spinner-custom spinner-custom-sm me-1"></span>[[ dongchengSaving ? '重算中…' : '保存并重算退费' ]]
+                        </button>
+                      </div>
+                      <div class="hint" style="margin-top:8px;color:#8a6d1a">普通培训：受理前退 50% 服务费、受理后不退；先培后付：需补交款 800 元 + 代交费 490 元（扣已考科目）。违约金=总培训费×20%。</div>
+                    </div>
                     <table class="table"><thead><tr><th style="width:20%">扣费项目</th><th style="width:11%;text-align:center">金额（元）</th><th style="width:11%;text-align:center">上限金额（元）</th><th>扣费依据</th><th style="width:40px"></th></tr></thead>
                       <tbody>
                         <tr v-for="(d,i) in ar.deductions" :key="i">

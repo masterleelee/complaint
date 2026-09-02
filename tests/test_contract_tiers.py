@@ -83,6 +83,12 @@ TEXT_2023_STORE = """东莞市机动车驾驶员培训合同
 科目二实操 C1 120元/学时
 备注：合同期内乙方申请提前解除合同，扣除基础服务、其他双方约定的费用两项必扣项及乙方解除合同时已完成（含已开始）的考试科目（阶段）已经代收代交的考试行政事业收费（包括考试费、补考费等）及已产生的实操培训费，再扣除全部培训费用的20%作为违约金后，甲方将剩余的费用退还给乙方。"""
 
+TEXT_DONGCHENG = """东莞市机动车驾驶员培训合同
+甲方（分校分店名称）依照《中华人民共和国合同法》、《中华人民共和国道路交通安全法》、《中华人民共和国消费者权益保护法》等相关法律法规的规定，双方就甲方接受乙方委托，对乙方开展报名、咨询及委托机动车驾驶培训服务相关事宜协商一致，订立本合同。
+第三条 培训方式 1、普通培训，即甲方指定培驾中介，提前就培训时间等事项与乙方协商确定，乙方按时参加培训。2、先培后付培训方式，乙方根据培训进度向甲方支付费用。
+第五条 代交费用及支付 代交费用包括考试费、补考费、工本费。1、由乙方要求甲方代收代交以上费用，乙方一次性支付给甲方490元。
+第十一条 违约责任 单方非因不可抗拒因素不履行合同义务，向另一方支付本合同双方约定的总培训费用20%的违约金。"""
+
 
 # ── 1. 档位表数值逐项与模板原文一致（表驱动断言） ────────────────────
 
@@ -94,11 +100,12 @@ EXPECTED_TIERS = {
     "2021_2022": ("2021-2022", 10, 0, "单一培训", 2020, 2022, None),
     "2023_branch_school": ("2023·分校", 20, 1000, "单一培训", 2023, None, ["分校"]),
     "2023_branch_store": ("2023·分店", 20, 1700, "单一培训", 2023, None, ["分店"]),
+    "2019_dongcheng": ("东城自制", 20, 0, "单一培训", None, None, None),
 }
 
 
-def test_six_tiers_registered():
-    assert len(CONTRACT_TIERS) == 6
+def test_seven_tiers_registered():
+    assert len(CONTRACT_TIERS) == 7
     assert set(TIERS_BY_ID) == set(EXPECTED_TIERS)
 
 
@@ -141,7 +148,11 @@ def test_exam_fee_standards_match_template():
         assert tier["exam_fees"] == DEFAULT_EXAM_FEES
         assert tier["makeup_fees"] == DEFAULT_MAKEUP_FEES
         assert tier["material_fee"] == DEFAULT_MATERIAL_FEE
-        assert tier["practical_rates"] == DEFAULT_PRACTICAL_RATES
+        if tier["id"] == "2019_dongcheng":
+            # 东城自制采信合同正文 80 元/学时，不走东莞驾培 C1=120/C2=150 标准
+            assert tier["practical_rates"] == {"C1": 80, "C2": 80}
+        else:
+            assert tier["practical_rates"] == DEFAULT_PRACTICAL_RATES
 
 
 def test_every_tier_has_features():
@@ -160,14 +171,16 @@ IDENTIFY_MATRIX = [
     ("2023报名+分校网点+分校文本", "2023-05-10", "分校", TEXT_2023_SCHOOL, "2023_branch_school", "high"),
     ("2023报名+分店网点+分校文本→权威优先+告警", "2023-05-10", "分店", TEXT_2023_SCHOOL, "2023_branch_store", "medium"),
     ("2021报名+2021文本", "2021-03-26", "", TEXT_2021, "2021_2022", "high"),
-    ("2022报名+空文本→唯一候选低置信", "2022-05-13", "", "", "2021_2022", "low"),
+    ("2022报名+空文本→双候选不给档", "2022-05-13", "", "", "", "low"),
     ("2019报名+服务文本", "2019-05-01", "", TEXT_2019_SERVICE, "2019_service", "high"),
     ("2019报名+代缴文本", "2019-05-01", "", TEXT_2019_PAY_AGENT, "2019_pay_agent", "high"),
     ("2019报名+培训文本", "2019-05-01", "", TEXT_2019_TRAINING, "2019_training", "high"),
-    ("2019报名+空文本→三候选不给档", "2019-05-01", "", "", "", "low"),
+    ("2019报名+空文本→多候选不给档", "2019-05-01", "", "", "", "low"),
     ("无权威+无文本→不给档", "", "", "", "", "low"),
     ("无权威+分店文本→特征决胜", "", "", TEXT_2023_STORE, "2023_branch_store", "high"),
     ("2023报名+2021文本→特征纠正年份收敛", "2023-05-10", "", TEXT_2021, "", "low"),
+    ("东城自制文本+任意年份→东城自制", "2023-05-10", "", TEXT_DONGCHENG, "2019_dongcheng", "high"),
+    ("东城自制文本+无年份→东城自制", "", "", TEXT_DONGCHENG, "2019_dongcheng", "high"),
 ]
 
 
@@ -184,10 +197,10 @@ def test_identify_matrix(label, reg_date, org_type, text, expected_tier, expecte
         assert result["display_name"] == TIERS_BY_ID[expected_tier]["display_name"]
 
 
-def test_2019_registration_yields_three_candidates():
-    """2019 报名 → 候选含服务/代缴/培训三份，特征句能分辨。"""
+def test_2019_registration_yields_four_candidates():
+    """2019 报名 → 候选含服务/代缴/培训三份 + 东城自制（不限年份），特征句能分辨。"""
     result = identify_tier(registration_date="2019-08-01", contract_text=TEXT_2019_SERVICE)
-    assert set(result["candidates"]) == {"2019_service", "2019_pay_agent", "2019_training"}
+    assert set(result["candidates"]) == {"2019_service", "2019_pay_agent", "2019_training", "2019_dongcheng"}
     assert result["tier_id"] == "2019_service"
 
 

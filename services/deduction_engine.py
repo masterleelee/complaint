@@ -207,6 +207,8 @@ def calculate_deductions(
     progress: dict,
     total_fee: float | None = None,
     manual_amounts: dict | None = None,
+    service_fee: float | None = None,
+    training_mode: str = "",
 ) -> dict:
     """按档位 + 阶段 + 进度 + 手写金额算一份合同的有序扣费明细。
 
@@ -216,6 +218,8 @@ def calculate_deductions(
         progress: {"exam_counts": {subjectN: attempts}, "training_hours": {subjectN: hours}, "license_type": "C1"|"C2"}。
         total_fee: 该份合同的「培训费总额」手写值；缺失 → 违约金 pending、理论费 pending（培训档）。
         manual_amounts: 人工覆盖字典，可含 {"theory_fee": float}；高置信 manual 优先于 total_fee。
+        service_fee: 东城自制档「咨询/服务费」金额（第六条（二）基数），仅东城自制档使用。
+        training_mode: 东城自制档「培训方式」（普通培训 / 先培后付），仅东城自制档使用。
 
     Returns:
         {
@@ -228,6 +232,18 @@ def calculate_deductions(
           "stage": str,
         }
     """
+    # 东城自制档走第六条专属分支（退费模型与线性「必扣+违约金」不同）
+    if tier.get("id") == "2019_dongcheng":
+        return calculate_dongcheng_refund(
+            tier=tier,
+            stage=stage,
+            progress=progress,
+            total_fee=total_fee,
+            service_fee=service_fee,
+            training_mode=training_mode,
+            manual_amounts=manual_amounts,
+        )
+
     exam_counts = (progress or {}).get("exam_counts") or {}
     training_hours = (progress or {}).get("training_hours") or {}
     license_type = (progress or {}).get("license_type") or "C1"
@@ -249,6 +265,223 @@ def calculate_deductions(
     refund = 0.0
     if not refund_pending and total_fee is not None and total_fee != "":
         # 单份合同内：理论费 + 必扣 + 考试费 + 实操费 + 违约金 = 培训费总额 - 应退
+        refund = max(0.0, float(total_fee) - total_deduction)
+
+    return {
+        "items": items,
+        "total_deduction": total_deduction,
+        "refund": refund,
+        "refund_pending": refund_pending,
+        "warnings": warnings,
+        "tier_id": tier.get("id", ""),
+        "stage": stage,
+    }
+
+
+# ── 东城自制合同第六条退费分支（2026-09-02 新增，工单 11-dongcheng-tier） ──
+
+# 受理前阶段集合：这些 exam_stage 表示学员尚未完成档案受理。
+# 第六条（二）以「档案受理」为分界：受理前退学退 50% 服务费，受理后退学不退。
+# 注：生产环境 exam_stage 实际取值（来自内部系统事件标题归一化）为「科目一/二/三/四」
+# 「待考科目X」「待补考科目X」等短词，均已进入考试流程 → 档案必已受理；故下方用
+# 「已受理关键词」+「明确未受理信号」双向判定，而非穷举白名单（避免漏判/误判）。
+_ACCEPTED_STAGES: frozenset[str] = frozenset({
+    "已受理", "已缴费", "已缴费1190(申请)", "已毕业", "已领证",
+    "科一约考", "科一约成功",
+    "科一已缴费(申请)", "科一未通过", "科一通过", "科二收", "科二约考",
+    "科二约成功", "科二已缴费(申请)", "科二未通过", "科二通过", "科三收",
+    "科三约考", "科三约成功", "科三已缴费(申请)", "科三未通过", "科三通过",
+    "科四收", "科四约考", "科四约成功", "科四未通过", "科四通过",
+})
+
+# 已进入考试/培训流程的关键词：凡命中任一，即视为档案已受理（要考试必先建档受理）。
+# 注意：不含「受理」一词——「受理中/待受理」均含「受理」但语义是「未完成受理」，
+# 会与「已受理」混淆；「已受理/已缴费/已毕业」等精确值已由 _ACCEPTED_STAGES 白名单覆盖。
+_ACCEPTED_KEYWORDS: tuple[str, ...] = (
+    "科目一", "科目二", "科目三", "科目四",
+    "科一", "科二", "科三", "科四",
+    "约考", "通过", "已领证",
+)
+
+# 明确的「未受理」信号（优先级高于关键词：即便含「科」字也按未受理）。
+_NOT_ACCEPTED_SIGNALS: tuple[str, ...] = ("未报名", "待受理", "受理中")
+
+# 代交费用（第五条）：东城自制合同一次性代收代交 490 元（考试费+补考费+工本费）。
+_DONGCHENG_AGENCY_FEE = 490.0
+
+# 先培后付补交款（第六条（四））：退首期咨询服务费需向甲方补交 800 元。
+_DONGCHENG_PAYBACK = 800.0
+
+
+def _is_accepted(stage: str) -> bool:
+    """判断学员是否已完成档案受理（第六条（二）的分界）。
+
+    语义规则（2026-09-02 修正，生产 exam_stage 为「科目一/二/三/四」等短词）：
+    - 明确的未受理信号（未报名/待受理/空/无）→ 未受理；
+    - 命中已受理关键词（科目一/二/三/四、科一~科四、已受理/已缴费/已毕业/约考/通过等）→ 已受理；
+    - 其余（含历史白名单精确值）→ 已受理。
+    """
+    s = str(stage or "").strip()
+    if not s or s == "无":
+        return False
+    for signal in _NOT_ACCEPTED_SIGNALS:
+        if signal in s:
+            return False
+    if s in _ACCEPTED_STAGES:
+        return True
+    for kw in _ACCEPTED_KEYWORDS:
+        if kw in s:
+            return True
+    # 兜底：非空、非明确未受理，保守视为已受理（避免少扣服务费致多退）
+    return True
+
+
+def calculate_dongcheng_refund(
+    tier: dict,
+    stage: str,
+    progress: dict,
+    total_fee: float | None,
+    service_fee: float | None = None,
+    training_mode: str = "",
+    manual_amounts: dict | None = None,
+) -> dict:
+    """东城自制合同第六条「退学退费」专属口径（与线性「必扣+违约金」模型不同）。
+
+    第六条分支：
+    - （二）普通培训：档案受理前退学 → 咨询/服务费退回 50%（即扣 50%）；
+      档案受理后退学 → 已交费用不退（服务费全额扣）。
+    - （三）已发生实操培训费 = 学时 × 档位单价（80 元/学时，C1/C2 统一，用户
+      拍板采信合同正文第六条（三）「约定的学时收费标准是 80 元/学时」）。
+    - （四）先培后付：退首期咨询服务费需补交 800 元；约考科一二三前退学互不退补
+      （违约金除外）。该分支数据难以自动获取 → 以告警提示人工核对，不臆造金额。
+    - （五）代交费用（490 元）：扣除已完成（含已开始）考试科目的考试费后退剩余。
+    - 第十一条：违约金 = 总培训费用 × 20%。
+
+    返回结构与 calculate_deductions 一致，便于上层统一消费。
+    """
+    exam_counts = (progress or {}).get("exam_counts") or {}
+    training_hours = (progress or {}).get("training_hours") or {}
+    license_type = (progress or {}).get("license_type") or "C1"
+
+    items: list[dict] = []
+    warnings: list[str] = []
+    mode = str(training_mode or "").strip()
+    accepted = _is_accepted(stage)
+    svc = float(service_fee or 0)
+
+    # ── 1) 咨询/服务费：受理前退 50%，受理后退学不退 ──
+    if mode == "先培后付":
+        # 先培后付：首期咨询服务费退学补交 800；约考科一二三前退学互不退补。
+        # 具体金额依赖「首期支付额/是否已约考」等字段（系统未采集）→ 告警人工核对。
+        items.append(_make_item(
+            category="必扣",
+            name="先培后付退学补交款",
+            amount=_DONGCHENG_PAYBACK,
+            basis=f"第六条（四）退首期咨询服务费需向甲方补交 {_DONGCHENG_PAYBACK:.0f} 元",
+            source="tier_default",
+        ))
+        warnings.append(
+            "东城自制·先培后付：约考科一/二/三前退学互不退补（违约金除外），"
+            "具体补交/退补金额请人工按第六条（四）核对"
+        )
+    elif svc > 0:
+        if accepted:
+            items.append(_make_item(
+                category="必扣",
+                name="服务费",
+                amount=svc,
+                basis=f"第六条（二）档案已受理，退学服务费全额不退（{svc:.0f} 元）",
+                source="tier_default",
+            ))
+        else:
+            items.append(_make_item(
+                category="必扣",
+                name="服务费（扣50%）",
+                amount=round(svc * 0.5, 2),
+                basis=f"第六条（二）档案受理前退学，服务费扣 50%（{svc:.0f}×50%）",
+                source="tier_default",
+            ))
+
+    # ── 2) 已发生实操培训费（学时 × C1/C2 单价）──
+    rate_table = tier.get("practical_rates") or {}
+    rate = float(rate_table.get(license_type, 0))
+    if rate > 0:
+        for key, label in _SUBJECT_LABELS.items():
+            if key == "subject1":
+                continue
+            hours = float(training_hours.get(key, 0) or 0)
+            if hours <= 0:
+                continue
+            amount = hours * rate
+            items.append(_make_item(
+                category="依实",
+                name=f"{label}实操培训费",
+                amount=amount,
+                basis=f"审核学时 {hours:g} × 档位单价 {rate:.0f} 元/学时（{license_type}）",
+            ))
+            if total_fee is not None and amount > float(total_fee):
+                warnings.append(
+                    f"{label}实操培训费 {amount:.0f} 元超出培训费总额 {float(total_fee):.0f} 元，请人工核对"
+                )
+
+    # ── 3) 已代收代交考试费（已完成科目）──
+    paid_exam = 0.0
+    for key, label in _SUBJECT_LABELS.items():
+        attempts = int(exam_counts.get(key, 0) or 0)
+        if attempts <= 0:
+            continue
+        exam_fee = float(tier.get("exam_fees", {}).get(key, 0))
+        if exam_fee > 0:
+            items.append(_make_item(
+                category="依实",
+                name=f"{label}考试费",
+                amount=exam_fee,
+                basis=f"已考 1 次 × 档位标准 {exam_fee:.0f} 元",
+            ))
+            paid_exam += exam_fee
+        makeup_fee = float(tier.get("makeup_fees", {}).get(key, 0))
+        extra = attempts - 1
+        if extra > 0 and makeup_fee > 0:
+            items.append(_make_item(
+                category="依实",
+                name=f"{label}补考费",
+                amount=extra * makeup_fee,
+                basis=f"补考 {extra} 次 × 档位标准 {makeup_fee:.0f} 元",
+            ))
+            paid_exam += extra * makeup_fee
+
+    # ── 4) 代交费用退款说明（第六条（五）：490 元中扣除已完成科目后剩余退还）──
+    remaining_agency = max(0.0, _DONGCHENG_AGENCY_FEE - paid_exam)
+    if remaining_agency > 0:
+        warnings.append(
+            f"代交费用 490 元扣除已完成科目考试费 {paid_exam:.0f} 元后，"
+            f"剩余 {remaining_agency:.0f} 元应退还（第六条（五））"
+        )
+
+    # ── 5) 违约金（第十一条：总培训费用 20%，恒排最后）──
+    rate_pct = float(tier.get("penalty_rate", 0) or 0)
+    if rate_pct > 0:
+        if total_fee is None or total_fee == "":
+            items.append(_make_item(
+                category="违约金",
+                name="违约金",
+                amount=0,
+                basis=f"{tier['display_name']} 档默认违约金率 {rate_pct:.0f}%，基数缺失（pending）",
+                pending=True,
+            ))
+        else:
+            amount = float(total_fee) * rate_pct / 100.0
+            items.append(_make_item(
+                category="违约金",
+                name="违约金",
+                amount=amount,
+                basis=f"总培训费用 × 档位默认 {rate_pct:.0f}%（{tier['display_name']}）",
+            ))
+
+    total_deduction = sum(it["amount"] for it in items if not it["pending"])
+    refund_pending = any(it["pending"] for it in items)
+    refund = 0.0
+    if not refund_pending and total_fee is not None and total_fee != "":
         refund = max(0.0, float(total_fee) - total_deduction)
 
     return {

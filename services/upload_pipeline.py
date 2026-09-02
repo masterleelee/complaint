@@ -88,12 +88,14 @@ def _resolve_progress(ticket: dict) -> dict:
 
 
 def _progress_hash(ticket: dict) -> str:
-    """进度哈希：阶段 + 培训费 + 已考次数 + 审核学时 + 车型；用于缓存键。"""
+    """进度哈希：阶段 + 培训费 + 已考次数 + 审核学时 + 车型 + 东城自制字段；用于缓存键。"""
     payload = {
         "exam_stage": str(ticket.get("exam_stage") or ""),
         "total_fee": ticket.get("total_fee"),
         "exam_counts": ticket.get("exam_counts") or {},
         "license_type": str(ticket.get("license_type") or ""),
+        "service_fee": ticket.get("service_fee"),
+        "training_mode": str(ticket.get("training_mode") or ""),
     }
     qr = ticket.get("query_result") or {}
     if isinstance(qr, str):
@@ -218,6 +220,8 @@ def _run_pipeline(
                 stage=str(ticket.get("exam_stage") or "已受理"),
                 progress=_resolve_progress(ticket),
                 total_fee=_as_float(ticket.get("total_fee")),
+                service_fee=_as_float(ticket.get("service_fee")),
+                training_mode=str(ticket.get("training_mode") or ""),
             )
         except Exception as exc:  # pragma: no cover — 防御性兜底
             deductions_result = {
