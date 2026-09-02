@@ -537,6 +537,114 @@ def _extract_standard_contract_data(text: str) -> dict:
     }
 
 
+# ── 上传合同费用提取 + 一致性校验（旧模板兼容 + OCR 噪声容错）──────────
+
+_OCR_SEP = r"[\s_—_－\-–·]"
+
+
+def _clean_ocr_noise(text: str) -> str:
+    """OCR 噪声清洗：下划线/破折号/中点等分隔符 → 空格；金额尾随点去除（'490.元'→'490元'）。"""
+    t = re.sub(_OCR_SEP + r"+", " ", text or "")
+    t = re.sub(r"(?<=\d)\.(?=\s*元)", "", t)
+    return t
+
+
+def extract_contract_fees(contract_text: str) -> dict:
+    """从上传合同文本提取费用结构 + 一致性校验告警（旧模板兼容 + OCR 噪声容错）。
+
+    这是「上传合同」路径的扣费明细数据源（区别于 `_extract_standard_contract_data`
+    面向东莞驾培电子合同）：按合同正文逐项提取，供扣费引擎以合同为准计算。
+
+    Returns:
+        {
+          "total_fee": float,              # 培训费总额（普通培训合计）
+          "theory_fee": float,             # 理论培训费
+          "practical_unit_price": float,   # 实操单价（元/学时，采信合同正文）
+          "exam_fees": {subjectN: float},  # 考试费分项
+          "material_fee": float,           # 工本费
+          "service_fee": float,            # 协助报考服务费合计
+          "service_breakdown": {label: float},  # 服务费拆分明细
+          "penalty_rate": float,           # 违约金比例（小数，0.1=10%）
+          "warnings": [str],               # 「合计≠拆分」等一致性告警
+        }
+    提取失败字段为 0/空；warnings 供前端提示经办人人工核对合同错漏。
+    """
+    cleaned = _clean_ocr_noise(contract_text)
+    warnings: list[str] = []
+
+    total_fee = _first_money(cleaned, [
+        r"培训费用(?:总额)?合计(?:人民币)?\s*(\d+(?:\.\d+)?)\s*元",
+        r"培训服务费合计\s*(\d+(?:\.\d+)?)\s*元",
+    ])
+
+    theory_fee = _first_money(cleaned, [
+        r"理论培训费(?:及相关手续费)?(?:人民币)?\s*(\d+(?:\.\d+)?)\s*元",
+        r"理论培训费(?:（[^）]*）)?\s*(\d+(?:\.\d+)?)\s*元",
+    ])
+
+    practical_unit_price = _first_money(cleaned, [
+        r"按人民(?:币)?\s*(\d+(?:\.\d+)?)\s*元/学时",
+        r"科目二实际操作培训费人民币\s*[\d.]+\s*元（学时单价为\s*(\d+(?:\.\d+)?)\s*元/学时",
+        r"第二部分基础和场地驾驶培训费\s*[\d.]+\s*元，退学退费时折算\s*学时单价\s*(\d+(?:\.\d+)?)\s*元/学时",
+    ])
+
+    exam_fees: dict[str, float] = {}
+    for label, key in (("科目一", "subject1"), ("科目二", "subject2"), ("科目三", "subject3")):
+        v = _first_money(cleaned, [
+            rf"{label}考试费\s*(\d+(?:\.\d+)?)\s*元",
+            rf"{label}\s*(\d+(?:\.\d+)?)\s*元",
+        ])
+        if v > 0:
+            exam_fees[key] = v
+    material_fee = _first_money(cleaned, [r"工本费\s*(\d+(?:\.\d+)?)\s*元"])
+
+    service_fee = _first_money(cleaned, [r"协助报考服务费(?:合计)?\s*(\d+(?:\.\d+)?)\s*元"])
+    service_breakdown: dict[str, float] = {}
+    for label, key in (
+        ("报名服务和学员卡费", "enroll_card"),
+        ("科目一服务费", "subject1_service"),
+    ):
+        v = _first_money(cleaned, [
+            rf"{label}\s*(\d+(?:\.\d+)?)\s*元",
+            rf"{label}\s*(\d+(?:\.\d+)?)",
+        ])
+        if v > 0:
+            service_breakdown[key] = v
+    # 科目二三服务费（OCR 常漏「务」字：'科目二，三服费'）
+    v23 = _first_money(cleaned, [r"科目二[，,、]?三服?务?费\s*(\d+(?:\.\d+)?)"])
+    if v23 > 0:
+        service_breakdown["subject23_service"] = v23
+
+    penalty_rate = _extract_penalty_rate(cleaned)
+
+    # ── 一致性校验：合计 vs 拆分 ──────────────────────────────
+    if service_fee > 0 and service_breakdown:
+        bd_sum = round(sum(service_breakdown.values()), 2)
+        if abs(bd_sum - service_fee) > 0.01:
+            parts = "+".join(f"{v:.0f}" for v in service_breakdown.values())
+            warnings.append(
+                f"协助报考服务费合计 {service_fee:.0f} 元，与拆分明细 {parts}={bd_sum:.0f} 元不一致，请人工核对"
+            )
+
+    # 代交费 = 各科目考试费 + 工本费；总金额 = 培训费总额 + 代交费 + 服务费（退费基数）
+    agency_fee = round(sum(exam_fees.values()) + material_fee, 2)
+    total_amount = round(total_fee + agency_fee + service_fee, 2)
+
+    return {
+        "total_fee": total_fee,
+        "theory_fee": theory_fee,
+        "practical_unit_price": practical_unit_price,
+        "exam_fees": exam_fees,
+        "material_fee": material_fee,
+        "agency_fee": agency_fee,
+        "service_fee": service_fee,
+        "service_breakdown": service_breakdown,
+        "penalty_rate": penalty_rate,
+        "total_amount": total_amount,
+        "warnings": warnings,
+    }
+
+
 # ── 合同集合分条结构（工单 03-contract-set-storage，ADR-0002） ─────────
 
 # 提取来源 → 正文置信度：文本层直读无损失；多模态次之；本地 OCR 最弱。

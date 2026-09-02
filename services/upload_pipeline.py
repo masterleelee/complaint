@@ -27,6 +27,7 @@ from typing import Any
 
 from services.contract_service import (
     attach_contract_text,
+    extract_contract_fees,
     extract_contract_text_from_file,
 )
 from services.contract_tiers import TIERS_BY_ID, identify_tier
@@ -181,6 +182,42 @@ def analyze_upload_contract_file(
 
 # ── 主流程（私有） ────────────────────────────────────────────────────
 
+
+def _append_fee_items_pending(deductions_result: dict, fees: dict) -> None:
+    """降级时补全扣费项目：把合同提取到、但扣费引擎未列的费用项追加为 pending（待填）。
+
+    fees 为 extract_contract_fees 的返回；已有同名项跳过（避免与引擎已列项重复）。
+    """
+    existing = {it.get("item") for it in deductions_result.get("items", [])}
+
+    def add(name: str, category: str) -> None:
+        if name in existing:
+            return
+        deductions_result["items"].append({
+            "category": category,
+            "item": name,
+            "amount": 0.0,
+            "basis": "合同金额有错漏，待人工填写",
+            "source": "pending",
+            "confidence": "pending",
+            "pending": True,
+        })
+        existing.add(name)
+
+    for key, label in (("subject1", "科目一"), ("subject2", "科目二"), ("subject3", "科目三")):
+        if (fees.get("exam_fees") or {}).get(key):
+            add(f"{label}考试费", "依实")
+    if fees.get("material_fee"):
+        add("工本费", "依实")
+    bd = fees.get("service_breakdown") or {}
+    if bd.get("enroll_card"):
+        add("报名/学员卡费", "依实")
+    if bd.get("subject1_service"):
+        add("科目一服务费", "依实")
+    if bd.get("subject23_service"):
+        add("科目二三服务费", "依实")
+
+
 def _run_pipeline(
     extraction: dict,
     ticket: dict,
@@ -215,14 +252,41 @@ def _run_pipeline(
     deductions_result = None
     if tier_id in TIERS_BY_ID:
         try:
+            # 合同费用提取（旧模板兼容 + OCR 噪声容错 + 一致性校验）
+            fees = extract_contract_fees(contract_text)
+            # 用合同提取值构造 manual_amounts：理论费、实操单价、服务费拆分采信合同正文
+            manual_amounts: dict[str, Any] = {}
+            if fees.get("theory_fee"):
+                manual_amounts["theory_fee"] = fees["theory_fee"]
+            if fees.get("practical_unit_price"):
+                manual_amounts["practical_unit_price"] = fees["practical_unit_price"]
+            if fees.get("service_breakdown"):
+                manual_amounts["service_breakdown"] = fees["service_breakdown"]
+
             deductions_result = calculate_deductions(
                 tier=TIERS_BY_ID[tier_id],
                 stage=str(ticket.get("exam_stage") or "已受理"),
                 progress=_resolve_progress(ticket),
                 total_fee=_as_float(ticket.get("total_fee")),
+                manual_amounts=manual_amounts,
                 service_fee=_as_float(ticket.get("service_fee")),
                 training_mode=str(ticket.get("training_mode") or ""),
+                total_amount=fees.get("total_amount"),
             )
+            # 合同错漏校验（合计≠拆分等，如罗炳灿服务费 460≠300+130+130）：
+            # 检测到错漏 → 降级为「列扣费项目 + 金额人工填写」，不自动算具体金额。
+            if fees.get("warnings"):
+                for item in deductions_result["items"]:
+                    item["pending"] = True
+                    item["amount"] = 0
+                # 补全合同提取到、但扣费引擎未列的费用项（考试费/工本费/服务费拆分）
+                _append_fee_items_pending(deductions_result, fees)
+                deductions_result["total_deduction"] = 0.0
+                deductions_result["refund_pending"] = True
+                deductions_result["refund"] = 0.0
+                deductions_result["warnings"] = (
+                    list(deductions_result.get("warnings") or []) + fees["warnings"]
+                )
         except Exception as exc:  # pragma: no cover — 防御性兜底
             deductions_result = {
                 "items": [],

@@ -100,20 +100,58 @@ def _exam_items(tier: dict, exam_counts: dict[str, int]) -> list[dict]:
     return items
 
 
+def _service_fee_items(
+    service_breakdown: dict | None,
+    exam_counts: dict[str, int],
+) -> list[dict]:
+    """协助报考服务费按进度扣（旧模板 2021-2022 特有费用项）。
+
+    服务费拆分（报名/学员卡 + 科一服务费 + 科二三服务费）按学员进度扣：
+    - 报名/学员卡费：已报名建档 → 全额扣；
+    - 科目一服务费：已考科目一 → 扣；未考 → 退；
+    - 科目二三服务费：已考科目二或科目三 → 扣；都未考 → 退。
+    """
+    items: list[dict] = []
+    bd = service_breakdown or {}
+    if bd.get("enroll_card"):
+        items.append(_make_item(
+            category="依实", name="报名/学员卡费", amount=float(bd["enroll_card"]),
+            basis="已报名建档（服务费按进度扣）", source="manual",
+        ))
+    if bd.get("subject1_service") and int(exam_counts.get("subject1", 0) or 0) > 0:
+        items.append(_make_item(
+            category="依实", name="科目一服务费", amount=float(bd["subject1_service"]),
+            basis="已考科目一（服务费按进度扣）", source="manual",
+        ))
+    if bd.get("subject23_service") and (
+        int(exam_counts.get("subject2", 0) or 0) > 0 or int(exam_counts.get("subject3", 0) or 0) > 0
+    ):
+        items.append(_make_item(
+            category="依实", name="科目二三服务费", amount=float(bd["subject23_service"]),
+            basis="已考科目二/三（服务费按进度扣）", source="manual",
+        ))
+    return items
+
+
 def _practical_items(
     tier: dict,
     training_hours: dict[str, float],
     license_type: str,
     total_fee: float | None,
+    manual_amounts: dict | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """返回 (明细, 告警)。仅培训档 + 学时 > 0 才出。封顶校验只告警不截断。"""
+    """返回 (明细, 告警)。仅培训档 + 学时 > 0 才出。封顶校验只告警不截断。
+
+    实操单价优先取 manual_amounts.practical_unit_price（合同正文采信值，如罗炳灿 75 元/学时），
+    缺省回退档位表 practical_rates（C1=120/C2=150）。
+    """
     items: list[dict] = []
     warnings: list[str] = []
     if not _is_training_kind(tier.get("kind", "")):
         return items, warnings
 
     rate_table = tier.get("practical_rates") or {}
-    rate = float(rate_table.get(license_type, 0))
+    rate = float((manual_amounts or {}).get("practical_unit_price") or rate_table.get(license_type, 0))
     if rate <= 0:
         return items, warnings
 
@@ -124,12 +162,14 @@ def _practical_items(
         if hours <= 0:
             continue
         amount = hours * rate
-        basis = f"审核学时 {hours:g} × 档位单价 {rate:.0f} 元/学时（{license_type}）"
+        rate_label = "合同正文单价" if (manual_amounts or {}).get("practical_unit_price") else "档位单价"
+        basis = f"审核学时 {hours:g} × {rate_label} {rate:.0f} 元/学时（{license_type}）"
         items.append(_make_item(
             category="依实",
             name=f"{label}实操培训费",
             amount=amount,
             basis=basis,
+            source="manual" if (manual_amounts or {}).get("practical_unit_price") else "tier_default",
         ))
         # 封顶校验：仅告警不截断
         if total_fee is not None and amount > float(total_fee):
@@ -155,7 +195,7 @@ def _theory_fee_items(
             category="依实",
             name="理论培训费",
             amount=float(manual),
-            basis="人工录入（高置信覆盖）",
+            basis="合同正文理论培训费（采信合同）",
             source="manual",
         )]
 
@@ -209,6 +249,7 @@ def calculate_deductions(
     manual_amounts: dict | None = None,
     service_fee: float | None = None,
     training_mode: str = "",
+    total_amount: float | None = None,
 ) -> dict:
     """按档位 + 阶段 + 进度 + 手写金额算一份合同的有序扣费明细。
 
@@ -217,15 +258,18 @@ def calculate_deductions(
         stage: "已受理" | "实操中"（与 CONTEXT.md「阶段」一致）。
         progress: {"exam_counts": {subjectN: attempts}, "training_hours": {subjectN: hours}, "license_type": "C1"|"C2"}。
         total_fee: 该份合同的「培训费总额」手写值；缺失 → 违约金 pending、理论费 pending（培训档）。
-        manual_amounts: 人工覆盖字典，可含 {"theory_fee": float}；高置信 manual 优先于 total_fee。
+        manual_amounts: 人工覆盖字典，可含 {"theory_fee": float, "practical_unit_price": float,
+            "service_breakdown": dict}；高置信 manual 优先于档位默认。
         service_fee: 东城自制档「咨询/服务费」金额（第六条（二）基数），仅东城自制档使用。
         training_mode: 东城自制档「培训方式」（普通培训 / 先培后付），仅东城自制档使用。
+        total_amount: 退费基数「总金额」（培训费 + 代交费 + 服务费）；缺失回退 total_fee。
+            违约金/理论费基数仍用 total_fee（培训费总额），只有应退金额用 total_amount。
 
     Returns:
         {
           "items": [扣费明细，按 必扣 → 考试费 → 实操费 → 理论费 → 违约金 排序],
           "total_deduction": float,    # 仅非 pending 项求和
-          "refund": float,             # 0 若 refund_pending；否则 = total_fee - total_deduction（占位）
+          "refund": float,             # 0 若 refund_pending；否则 = total_amount - total_deduction
           "refund_pending": bool,      # 任一上游缺失时为 True，不给出 refund 数字
           "warnings": [str],           # 封顶校验等告警
           "tier_id": str,
@@ -253,7 +297,8 @@ def calculate_deductions(
 
     items.extend(_mandatory_items(tier))
     items.extend(_exam_items(tier, exam_counts))
-    practical, w_practical = _practical_items(tier, training_hours, license_type, total_fee)
+    items.extend(_service_fee_items((manual_amounts or {}).get("service_breakdown"), exam_counts))
+    practical, w_practical = _practical_items(tier, training_hours, license_type, total_fee, manual_amounts)
     items.extend(practical)
     warnings.extend(w_practical)
     items.extend(_theory_fee_items(tier, total_fee, manual_amounts))
@@ -263,9 +308,10 @@ def calculate_deductions(
 
     refund_pending = any(it["pending"] for it in items)
     refund = 0.0
-    if not refund_pending and total_fee is not None and total_fee != "":
-        # 单份合同内：理论费 + 必扣 + 考试费 + 实操费 + 违约金 = 培训费总额 - 应退
-        refund = max(0.0, float(total_fee) - total_deduction)
+    # 退费基数优先用 total_amount（总金额=培训费+代交费+服务费），缺省回退 total_fee（培训费总额）
+    refund_base = total_amount if total_amount is not None else total_fee
+    if not refund_pending and refund_base is not None and refund_base != "":
+        refund = max(0.0, float(refund_base) - total_deduction)
 
     return {
         "items": items,
