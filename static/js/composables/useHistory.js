@@ -624,7 +624,7 @@ export function useHistory(toast) {
       chartInstances.school.setOption({
         grid: { left: 60, right: 44, top: 10, bottom: 20 },
         xAxis: { type: 'value', axisLine: { show: false }, splitLine: { lineStyle: { color: '#F3F4F6' } }, axisLabel: { color: '#6B7280', fontSize: 10 } },
-        yAxis: { type: 'category', data: items.map(i => i.name || i.school || i.code || '未知网点'), axisLine: { lineStyle: { color: '#E5E7EB' } }, axisLabel: { color: '#374151', fontSize: 11 } },
+        yAxis: { type: 'category', data: items.map(i => i.code || i.school || '未知网点'), axisLine: { lineStyle: { color: '#E5E7EB' } }, axisLabel: { color: '#374151', fontSize: 11 } },
         series: [{
           data: vals, type: 'bar', barWidth: 16,
           itemStyle: {
