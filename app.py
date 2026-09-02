@@ -3188,14 +3188,17 @@ def _run_contract_analysis(data: dict) -> dict:
     else:
         legacy_incomplete_msg = ""
 
-    # 东莞驾培 contract_fee 为权威合同金额，覆盖 AI/规则结果（AI 仅作校验对比）
-    if contract_fee > 0:
+    # 东莞驾培 contract_fee 为权威合同金额，覆盖 AI/规则结果（AI 仅作校验对比）。
+    # 上传路径（纸质合同）跳过覆盖：用户上传合同本身即说明东莞驾培无对应电子合同，
+    # 工单快照残留的 contract_fee 会错误覆盖纸质合同 OCR 金额，造成总金额与扣费明细不一致。
+    is_upload = bool(ticket and is_upload_ticket(ticket.get("contract_set")))
+    if contract_fee > 0 and not is_upload:
         result = apply_authoritative_total_fee(result, contract_fee)
 
     # 上传件分析管线（工单 04/10）：档位识别 + 扣费引擎 + 缓存键（下载链路不变）
     # 多份合同（contract_set >1 条有文件）→ 逐份分析 + 归并；单份沿用原管线并补齐
     # deductions_result / contract_analyses 回传（06 三栏预览面板的渲染前提）。
-    if ticket and is_upload_ticket(ticket.get("contract_set")):
+    if is_upload:
         try:
             entries = normalize_contract_set(ticket.get("contract_set"))["contracts"]
             file_entries = [
