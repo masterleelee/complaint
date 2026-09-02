@@ -209,6 +209,18 @@ def extract_contract_text_from_file(filepath: str, image_paths: list[str] = None
             system_logger.warning("[PDF] pdfplumber 提取失败: %s，尝试本地 OCR", e)
             contract_text = ""
 
+    if not contract_text and lower_path.endswith(".docx"):
+        try:
+            contract_text = _file_parser_extract_text(filepath)
+            if contract_text and len(contract_text.strip()) >= 20:
+                source = "docx_text"
+                system_logger.info("[DOCX] 提取成功: %d 字符", len(contract_text))
+            else:
+                contract_text = ""
+        except Exception as e:
+            system_logger.warning("[DOCX] 提取失败: %s", e)
+            contract_text = ""
+
     if not contract_text:
         ocr_inputs = [
             p for p in image_paths

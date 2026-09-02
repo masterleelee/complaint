@@ -164,11 +164,17 @@ def _extract_image_easyocr(filepath: str) -> str:
 
 
 def _extract_docx(filepath: str) -> str:
-    """从 Word 文档提取文本"""
+    """从 Word 文档提取文本（含表格——费用表等关键字段常落在 docx 表格里，漏掉会致关键字段缺失）。"""
     try:
         from docx import Document
         doc = Document(filepath)
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        parts = [p.text for p in doc.paragraphs if p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
     except Exception:
         return ""
 

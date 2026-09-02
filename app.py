@@ -157,7 +157,7 @@ FEE_PLAN_FIELDS = {
     "fee_plan_history",
     "fee_plan_snapshot",
 }
-CONTRACT_UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg"}
+CONTRACT_UPLOAD_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".docx"}
 CONTRACT_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 
 
