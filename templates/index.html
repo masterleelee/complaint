@@ -812,7 +812,7 @@
     <div class="app-shell">
       <!-- ═══ 左侧导航栏 ═══ -->
       <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
-        <div class="brand"><span class="brand-txt">投诉系统<small>v2 智能工作台 · build 0831-1605</small></span></div>
+        <div class="brand"><span class="brand-txt">投诉系统</span></div>
         <div class="nav-section">工单处理</div>
         <button class="nav-link" :class="{active: view==='intake'}" @click="goView('intake')" :title="sidebarCollapsed ? '新增投诉' : ''"><i class="bi bi-plus-circle"></i> <span class="txt">新增投诉</span></button>
         <button class="nav-link" :class="{active: view==='workbench'}" @click="goView('workbench')" :title="sidebarCollapsed ? '学员信息' : ''"><i class="bi bi-person-badge"></i> <span class="txt">学员信息</span></button>
@@ -2038,13 +2038,13 @@
 
               <h4 style="margin:0 0 10px;font-size:15px;font-weight:600">正常网点 <span class="hint" style="font-weight:400">[[ vehicleActiveItems.length ]] 个<span v-if="vehicleKeyword">（共 [[ vehicleItems.filter(x => x.is_active !== 0).length ]] 个）</span></span></h4>
               <table class="table veh-table">
-                <thead><tr><th style="width:90px">状态</th><th style="width:90px">类型</th><th style="width:130px">代号</th><th>网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
+                <thead><tr><th style="width:90px">状态</th><th style="width:90px">类型</th><th style="width:70px">代号</th><th style="width:180px">网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
                 <tbody>
                   <tr v-for="v in vehicleActiveItems" :key="v.unit_code + v.unit_name">
                     <td><select class="form-control" style="padding:5px 8px" v-model.number="v.is_active"><option :value="1">正常</option><option :value="0">已注销</option></select></td>
                     <td><select class="form-control" style="padding:5px 8px" v-model="v.unit_type"><option>分校</option><option>分店</option></select></td>
-                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_code" placeholder="如 DC-04"></td>
-                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_name" placeholder="网点名称"></td>
+                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_code" placeholder="如 东" maxlength="2"></td>
+                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_name" placeholder="如 东部工业园分校"></td>
                     <td><input class="form-control" style="padding:5px 8px" type="number" min="0" v-model.number="v.vehicle_count"></td>
                     <td><button class="btn btn-secondary btn-sm" style="color:var(--color-danger)" @click="removeVehicleRow(v)" title="删除该网点"><i class="bi bi-trash3"></i></button></td>
                   </tr>
@@ -2054,13 +2054,13 @@
 
               <h4 style="margin:24px 0 10px;font-size:15px;font-weight:600">已注销网点 <span class="hint" style="font-weight:400">[[ vehicleInactiveItems.length ]] 个<span v-if="vehicleKeyword">（共 [[ vehicleItems.filter(x => x.is_active === 0).length ]] 个）</span></span></h4>
               <table class="table veh-table">
-                <thead><tr><th style="width:90px">状态</th><th style="width:90px">类型</th><th style="width:130px">代号</th><th>网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
+                <thead><tr><th style="width:90px">状态</th><th style="width:90px">类型</th><th style="width:70px">代号</th><th style="width:180px">网点名称</th><th style="width:110px">车辆数</th><th style="width:64px">操作</th></tr></thead>
                 <tbody>
                   <tr v-for="v in vehicleInactiveItems" :key="v.unit_code + v.unit_name">
                     <td><select class="form-control" style="padding:5px 8px" v-model.number="v.is_active"><option :value="1">正常</option><option :value="0">已注销</option></select></td>
                     <td><select class="form-control" style="padding:5px 8px" v-model="v.unit_type"><option>分校</option><option>分店</option></select></td>
-                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_code" placeholder="如 DC-04"></td>
-                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_name" placeholder="网点名称"></td>
+                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_code" placeholder="如 东" maxlength="2"></td>
+                    <td><input class="form-control" style="padding:5px 8px" v-model="v.unit_name" placeholder="如 东部工业园分校"></td>
                     <td><input class="form-control" style="padding:5px 8px" type="number" min="0" v-model.number="v.vehicle_count"></td>
                     <td><button class="btn btn-secondary btn-sm" style="color:var(--color-danger)" @click="removeVehicleRow(v)" title="删除该网点"><i class="bi bi-trash3"></i></button></td>
                   </tr>
