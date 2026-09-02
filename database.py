@@ -998,6 +998,24 @@ def _previous_month(ym: str) -> str:
         return ym
 
 
+def _shifted_range(start_str: str, end_str: str):
+    """本期窗口等长向前平移得到上期窗口（与前端 shiftedRange 一致）。
+
+    返回 (prev_start, prev_end)，均为 YYYY-MM-DD。用于环比的"上期"基准，
+    保证分子（本期）与分母（上期）使用同一时间长度、同一范围/网点条件。
+    """
+    from datetime import datetime, timedelta
+    try:
+        s = datetime.strptime(start_str, "%Y-%m-%d")
+        e = datetime.strptime(end_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None, None
+    length = (e - s).days + 1
+    p1 = s - timedelta(days=length)
+    p2 = s - timedelta(days=1)
+    return p1.strftime("%Y-%m-%d"), p2.strftime("%Y-%m-%d")
+
+
 def get_ticket_statistics(
     start_date: str = "",
     end_date: str = "",
@@ -1093,18 +1111,33 @@ def get_ticket_statistics(
             ORDER BY ym ASC
         """, params).fetchall()
 
-        # 上一自然月（环比基准）与去年同月（同比基准）的投诉量
-        if month_rows:
-            last_ym = month_rows[-1]["ym"]
-            prev_ym = _previous_month(last_ym)
-            prev_rows = conn.execute(
-                "SELECT COUNT(*) AS cnt FROM complaint_tickets WHERE substr(complaint_date,1,7)=? AND complaint_date != ''",
-                (prev_ym,),
-            ).fetchone()
+        # 环比基准（窗口感知）：上期窗口 = 本期窗口等长向前平移；
+        # 分子（本期）与分母（上期）使用同一套 where_clause（时间 + 范围 + 网点）。
+        # 全部时间（无起止）无"上一周期"可比，mom_change 置 None。
+        last_ym = month_rows[-1]["ym"] if month_rows else ""
+        prev_month_count = 0
+        prev_window_start = ""
+        prev_window_end = ""
+        if start_date and end_date:
+            p_start, p_end = _shifted_range(start_date, end_date)
+            prev_window_start, prev_window_end = p_start, p_end
+            prev_conditions = ["complaint_date >= ?", "complaint_date <= ?"]
+            prev_params = [p_start, p_end]
+            if unit_code:
+                prev_conditions.append("(organization_unit_code = ? OR school_short = ?)")
+                prev_params.extend([unit_code, unit_code])
+            elif scope == "branch":
+                prev_conditions.append("organization_unit_type = '分校'")
+            elif scope == "store":
+                prev_conditions.append("organization_unit_type = '分店'")
+            prev_where = "WHERE " + " AND ".join(prev_conditions)
+            prev_rows = conn.execute(f"""
+                SELECT COUNT(*) AS cnt FROM complaint_tickets {prev_where}
+                AND complaint_date != ''
+                AND COALESCE(withdraw_status,'')!='已撤诉'
+                AND TRIM(COALESCE(withdrawn_at,''))=''
+            """, prev_params).fetchone()
             prev_month_count = prev_rows["cnt"] or 0
-        else:
-            last_ym = ""
-            prev_month_count = 0
 
         # 车辆数配置（投诉率分母）
         vehicle_counts = get_org_vehicle_counts()
@@ -1220,13 +1253,13 @@ def get_ticket_statistics(
                 for row in month_rows
             ],
             "monthly_compare": {
-                "current_month": last_ym,
-                "current_month_count": month_rows[-1]["cnt"] if month_rows else 0,
+                "current_month": start_date or last_ym,
+                "current_month_count": effective_total,
+                "previous_month": prev_window_start or (_previous_month(last_ym) if last_ym else ""),
                 "previous_month_count": prev_month_count,
-                "previous_month": _previous_month(last_ym) if last_ym else "",
                 "mom_change": (
-                    round((month_rows[-1]["cnt"] - prev_month_count) / prev_month_count * 100, 1)
-                    if month_rows and prev_month_count > 0
+                    round((effective_total - prev_month_count) / prev_month_count * 100, 1)
+                    if start_date and end_date and prev_month_count > 0
                     else None
                 ),
             },
