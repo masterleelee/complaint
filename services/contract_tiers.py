@@ -235,13 +235,17 @@ def _text_penalty_rates(norm_text: str) -> set[int]:
 
 
 def _candidate_ids(year: int | None, org_type: str) -> list[str]:
-    """权威数据收敛候选：年份先过滤，网点类型只对声明了 org_types 的档位二分。"""
+    """权威数据收敛候选：年份只做「下限」约束，网点类型只对声明了 org_types 的档位二分。
+
+    年份语义（2026-09-02 用户拍板）：报名年份不能早于合同版本的发布年份（2019 年报名
+    不可能用 2021/2023 版），但**不做上限约束**——旧版合同会跨年沿用（2023 年报名仍可能
+    用 2021 版甚至更早版本）。档位最终归属以合同条款特征（features 打分）为准，年份只
+    排除「时间上不可能」的更新版本。
+    """
     ids = []
     for tier in CONTRACT_TIERS:
         if year is not None:
             if tier["year_from"] is not None and year < tier["year_from"]:
-                continue
-            if tier["year_to"] is not None and year > tier["year_to"]:
                 continue
         ids.append(tier["id"])
 
