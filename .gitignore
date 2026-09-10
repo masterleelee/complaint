@@ -9,12 +9,30 @@ data/logs/
 *.db-shm
 *.db-wal
 *.db.backup
+# 实际备份命名是 complaints.db.bak-<时间>-<用途>，上面 *.db.backup 规则对不上（2026-09-11 修正）
+data/*.bak-*
 
 # 案件材料、上传与业务文书（含个人信息）
 案件归档/
 uploads/
 回复函/
 *.doc
+
+# 学员个人材料（含姓名/证件号/签名）——2026-09-11 补
+# 学员纸质合同扫描件；与「合同文件/」同类，绝不入库
+纸质合同样板/
+# 含真实学员姓名 / 证件号 / 手机号的一次性统计报表
+demo/2026_complaints_*.html
+
+# 密钥类（绝不入库；一旦进入 git 历史将无法彻底移除）
+data/.flask_secret_key
+
+# 运行日志与历史备份（留在磁盘上，只是不进版本库）
+.scratch/*.log
+.scratch/backup/
+
+# 意外产生的重复文件（非源码，易导致改错文件）
+app.pyn
 
 # Python 缓存
 __pycache__/
