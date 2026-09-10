@@ -1,0 +1,15 @@
+=============================== warnings summary ===============================
+tests/test_driving_skip_gate.py::DrivingTaskDecisionTest::test_internal_error_with_old_profile_skips
+  /Users/master/Desktop/投诉处理系统/tests/test_driving_skip_gate.py:143: DeprecationWarning: There is no current event loop
+    err = asyncio.Future()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_archive_api.py::test_archive_success_copies_two_files - ass...
+FAILED tests/test_archive_api.py::test_archive_no_files_returns_400 - assert ...
+FAILED tests/test_archive_service.py::TestArchiveCase::test_no_existing_file_fails
+FAILED tests/test_contract_tiers.py::test_penalty_rate_conflict_warns - Asser...
+FAILED tests/test_doc_authority.py::test_withdraw_archived_case_writes_note_and_refreshes_form
+FAILED tests/test_doc_authority.py::test_archive_persists_archived_dir - asse...
+FAILED tests/test_doc_authority.py::test_archive_regen_failure_falls_back_with_warning
+7 failed, 603 passed, 1 warning in 38.96s

@@ -133,3 +133,17 @@
 - **修复**：`services/visit_service.py` 新增 `_fit_section_heights` 压缩链（档位 L0→L4：页边距→行距→字号→信息行高→标题字号），生成前按与 `_section_cell` 完全一致的渲染口径预算 Σ高度，超可用预算逐级收紧直到装下；返回 `page_fit:{level, used_cm, budget_cm}`。固定定高改为「理想上限」——内容不超时用理想定高，超则降到 need 下限；真实工单全 L0 单页，超长触发压缩兜底。
 - **证据**：`tests/test_registration_form_onepage.py`（4 passed）；全量 86 工单生成 level 0、0 溢出、max_used 24.70/27.10cm；超长/极端模拟触发 L1~L4 且不抛异常。`tmp/diag_reg_pagefit.py` 单一真源校验。
 - **遗留**：极端超长（>约 1200 字组合）物理上 1 页塞不下，降到 L4 仍可能 2 页——属内容超限非 bug，page_fit 已暴露 used>budget 供上层告警；app.js 预览在 L0 与 docx 一致，超长档为 L0 近似（预览为 HTML 浏览器分页，不影响生成的 docx 单页性）。
+
+## 关联清单
+
+- **重构审计轮（2026-09-10）**：`ISS-R-01` ~ `ISS-R-10`，见 `.scratch/refactor-audit-20260910.md`。
+  级别口径不同轴：P0=正确性隐患 / P1=结构性阻塞 / P2=可维护性债务 / P3=低收益。当前状态：**清单已出，待用户圈定范围后进入设计批次**。
+- **「打开归档」方案 A 轮（2026-09-10）**：`ISS-AP-00` / `01` / `03` / `04` / `05` / `06` / `07`（`ISS-AP-02` ZIP 打包**已取消**），见 `.scratch/archive-panel/`（`audit.md` / `spec.md` / `issues/` / `evidence/`）。
+  主线：把「打开归档」从「尝试弹出资源管理器」改为「网页内置归档文件面板」（零安装、必有反应）。
+  **范围决定（用户 2026-09-10）**：不做压缩打包，只做「需要哪个文件自己下载」+ 单文件预览。
+  ⚠️ **审计实测发现基线是红的**：`pytest tests/ -q` → **7 failed / 603 passed**，其中 **6 例落在归档域**。
+  根因（已实验证实）：`app.py:32` 用 `from config import load_config` 直接绑定，测试却 patch `config_module.load_config`
+  → 打桩无效 → 归档路由读真实 `data/config.json` 的 `archive_root`（`/Volumes/File/...`，当前未挂载）→ `PermissionError`。
+  即**这批归档测试从未隔离环境，通过与否取决于共享盘是否挂载**；且在共享盘挂载时会把测试文件真实写进生产归档目录。
+  当前状态：**用户已批准"按建议执行"（D0~D5），已进入实施批次 1**。
+  上游证据：`.scratch/open-archive-diagnosis-20260901.md`（kjfolder 方案 5 环外部依赖 + blur 误报的成功判据）。
