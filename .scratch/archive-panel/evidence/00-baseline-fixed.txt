@@ -1,0 +1,67 @@
+# ISS-AP-00 · 前置红色基线：修复后证据
+
+## 运行命令
+
+```
+env -u PYTHONPATH ./venv/bin/python3 -m pytest tests/ -q
+```
+
+## 结果对比
+
+| 时点 | 结果 | 备注 |
+|---|---|---|
+| 改前（2026-09-10 审计实测，见 `00-baseline.txt`） | **7 failed, 603 passed** | 6 例归档域 + 1 例合同档位 |
+| 改后（conftest 隔离生效，未加回归用例） | **610 passed** | 7 例全转绿 |
+| 改后（+4 例隔离回归用例） | **614 passed, 1 warning** | 全绿 |
+
+第 7 例 `test_contract_tiers::test_penalty_rate_conflict_warns` 已随 D0 主题 C 提交
+（`c7cb475`）修正为按内容定位冲突项，不依赖告警顺序，同批转绿。
+
+## 隔离生效证明（运行时环境核对）
+
+| 检查项 | 实测值 |
+|---|---|
+| 真实 `data/config.json` 的 `archive_root` | `/Volumes/File/综合办公室/内部共用/投诉文件/投诉处理系统` |
+| `/Volumes/File` 挂载状态 | **未挂载**（`ls /Volumes/` 仅 `Macintosh HD`） |
+| 全量输出中 `Volumes/File` 出现次数 | **0** |
+| 全量输出中 `PermissionError` 出现次数 | **0** |
+
+即：在「共享盘未挂载」这一原本必然触发 6 例失败的条件**保持不变**的前提下，
+归档域全部转绿，且全套件对共享盘零访问 —— 隔离确实生效，而非环境变化掩盖。
+
+## 改动内容
+
+1. `tests/conftest.py` 新增 autouse fixture `_isolate_archive_root`：
+   - 用 **wrap**（而非替换）真实 `config.load_config`，只覆盖 `archive_root` 一个键，
+     其余配置段（`paths` / 三个系统 / 4 个 llm 段）保留真实值 → 不波及非归档用例；
+   - 同时作用于两个「`from config import load_config` 直接绑定」点：
+     `app` 与 `services.archive_service`；
+   - 锚定到每例 `tmp_path`，故 `build_archive_dir(ticket, root=str(tmp_path))`
+     这类既有断言口径不变；
+   - 只处理已导入模块（不主动 import `app`），不打乱用例对导入时序的假设；
+   - 用例自身的 monkeypatch 在 fixture 之后生效，仍可覆盖本隔离（既有 12 处
+     `monkeypatch.setattr(app_module, "load_config", ...)` 全部保持原语义）。
+
+2. `tests/test_archive_root_isolation.py`（新增，4 例）——把验收项变成可执行断言：
+   - `test_both_modules_archive_root_isolated_to_tmp`：两个模块的归档根都 == 本用例 `tmp_path`；
+   - `test_isolated_root_never_under_real_root`：隔离根不得落在真实归档根之下；
+   - `test_legacy_config_module_patch_no_longer_leaks`：**复现原 bug 写法**
+     （只 patch `config` 模块）不再导致 app 层读到真实归档根；
+   - `test_other_config_keys_kept_real`：其余配置段未被打桩丢失。
+
+## 全量输出（尾部）
+
+```
+........................................................................ [ 58%]
+........................................................................ [ 70%]
+........................................................................ [ 82%]
+........................................................................ [ 93%]
+......................................                                   [100%]
+=============================== warnings summary ===============================
+tests/test_driving_skip_gate.py::DrivingTaskDecisionTest::test_internal_error_with_old_profile_skips
+  /Users/master/Desktop/投诉处理系统/tests/test_driving_skip_gate.py:143: DeprecationWarning: There is no current event loop
+    err = asyncio.Future()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+614 passed, 1 warning in 38.85s
+```
