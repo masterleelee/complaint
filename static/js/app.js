@@ -190,6 +190,8 @@ try {
       rpLoading, rpResult, rpErr,
       dlContract, ulContract, confirmContract, startManualEdit, doAnalyze, confirmAnalysis,
       recalc, addDeduction, removeDeduction, exportDeductions, updatePenaltyRate, genReply,
+      dongchengServiceFee, dongchengTrainingMode, dongchengSaving, isDongchengTier,
+      saveDongchengFields,
       OUTCOME_OPTIONS, COOPERATION_OPTIONS, NEGOTIATION_OPTIONS,
       feeConfirmed, feeConfirming, feeConfirmedAt, feePlanVersion,
       communications, communicationsLoading, commForm,
@@ -616,12 +618,14 @@ try {
     // 标签 → 合同原文短语：直接在条款正文里检索费用原文（如"科目二实际操作培训费人民币 1200 元"），
     // 不再假设费用一定写在"第二部分/第三部分"条款里。自上而下首个命中的标签类别生效。
     const LABEL_TEXT_PHRASES = [
-      ["科目二实操培训费", ["科目二实际操作培训费", "科目二实操培训费"]],
-      ["科目二学时单价", ["科目二实际操作培训费", "科目二实操培训费"]],
-      ["科目二实操费", ["科目二实际操作培训费", "科目二实操培训费"]],
-      ["科目三实操培训费", ["科目三实际操作培训费", "科目三实操培训费"]],
-      ["科目三学时单价", ["科目三实际操作培训费", "科目三实操培训费"]],
-      ["科目三实操费", ["科目三实际操作培训费", "科目三实操培训费"]],
+      // 电子合同（东莞驾培平台）用「第二部分/第三部分」表述费用定义句，放最前优先命中；
+      // 旧纸质/旧电子合同无此短语，自动落回后面的原文短语，行为不变。
+      ["科目二实操培训费", ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费"]],
+      ["科目二学时单价", ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费"]],
+      ["科目二实操费", ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费"]],
+      ["科目三实操培训费", ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费"]],
+      ["科目三学时单价", ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费"]],
+      ["科目三实操费", ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费"]],
       ["科目二补训", ["科目二补训费", "科目二补训"]],
       ["科目三补训", ["科目三补训费", "科目三补训"]],
       ["平台备案", ["补训", "接送服务"]],
@@ -635,15 +639,19 @@ try {
       const clauses = (cmpData.value && cmpData.value.clauses) || [];
       if (!clauses.length) return [];
       const text = String(label || "");
-      // ① 优先按标签对应的合同原文短语在条款正文中直接检索（最可靠）
+      // ① 优先按标签对应的合同原文短语在条款正文中直接检索（最可靠）。
+      // 短语按优先级排序，首个命中任何条款的短语生效（避免低优短语把退费条款等误带进来）
       for (const [k, phrases] of LABEL_TEXT_PHRASES) {
         if (!text.includes(k)) continue;
-        const nos = clauses
-          .filter(c => { const t = clauseFullText(c); return phrases.some(p => t.includes(p.replace(/\s+/g, ""))); })
-          .map(c => c.no)
-          .filter(Boolean);
-        if (nos.length) return nos;
-        break; // 该类标签未命中原文短语时，再走条款标题关键词兜底
+        for (const p of phrases) {
+          const np = p.replace(/\s+/g, "");
+          const nos = clauses
+            .filter(c => clauseFullText(c).includes(np))
+            .map(c => c.no)
+            .filter(Boolean);
+          if (nos.length) return nos;
+        }
+        break; // 该类标签所有短语均未命中原文时，再走条款标题关键词兜底
       }
       // ② 兜底：按条款标题/正文关键词（如"第二部分""基础和场地驾驶培训"）定位
       const kws = [];
@@ -704,11 +712,12 @@ try {
     const cmpActive = ref({ nos: [], kws: [], locked: false });
     function feeKeywordsOf(label) {
       const t = String(label || "");
-      // 优先用合同原文短语做高亮（如"科目二实际操作培训费…学时单价…"整句命中）
-      if (t.includes("科目二实操培训费") || t.includes("科目二学时单价")) return ["科目二实际操作培训费", "科目二实操培训费", "科目二"];
-      if (t.includes("科目二实操费")) return ["科目二实际操作培训费", "科目二实操培训费", "科目二实操费"];
-      if (t.includes("科目三实操培训费") || t.includes("科目三学时单价")) return ["科目三实际操作培训费", "科目三实操培训费", "科目三"];
-      if (t.includes("科目三实操费")) return ["科目三实际操作培训费", "科目三实操培训费", "科目三实操费"];
+      // 优先用合同原文短语做高亮（如"科目二实际操作培训费…学时单价…"整句命中；
+      // 电子合同的费用定义句是"第二部分基础和场地驾驶培训费…学时单价…"，两套命名并存覆盖）
+      if (t.includes("科目二实操培训费") || t.includes("科目二学时单价")) return ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费", "科目二"];
+      if (t.includes("科目二实操费")) return ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费", "科目二实操费"];
+      if (t.includes("科目三实操培训费") || t.includes("科目三学时单价")) return ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费", "科目三"];
+      if (t.includes("科目三实操费")) return ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费", "科目三实操费"];
       if (t.includes("科目二补训")) return ["科目二补训"];
       if (t.includes("科目三补训")) return ["科目三补训"];
       if (t.includes("平台备案")) return ["补训", "接送"];
@@ -734,7 +743,9 @@ try {
       const body = String(cl.body || "");
       const kws = cmpActive.value.nos.includes(cl.no) ? cmpActive.value.kws : [];
       if (!kws.length) return escHtml(body);
-      const parts = body.split(/(。|；|\n)/);
+      // 按完整句（。；）切分后逐句比对（比对时去空白，PDF 跨行句可整句命中）；
+      // 不按 \n 切——PDF 换行会把"…折算⏎学时单价150.00元/学时"拦腰截断导致半句高亮
+      const parts = body.split(/(。|；)/);
       const norm = s => String(s).replace(/\s+/g, "");
       let html = "";
       for (const p of parts) {

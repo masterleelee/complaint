@@ -243,7 +243,11 @@ def test_penalty_rate_conflict_warns():
     result = identify_tier(registration_date="2021-03-26", contract_text=conflict_text)
     conflicts = [e for e in result["evidence"] if e["type"] == "conflict"]
     assert conflicts, f"应有冲突告警: {result['evidence']}"
-    assert "20" in conflicts[0]["detail"] and "10" in conflicts[0]["detail"]
+    # 该用例的文本被改写后同时触发两类告警：①缺少档位必含特征句（required_features）
+    # ②违约金率与档位默认值不符。故按内容定位「违约金率」那条，不依赖 evidence 顺序。
+    penalty = [c for c in conflicts if "违约金率" in c["detail"]]
+    assert penalty, f"应有违约金率冲突告警: {conflicts}"
+    assert "20" in penalty[0]["detail"] and "10" in penalty[0]["detail"]
     # 告警不改变档位判定（权威数据仍收敛到 2021_2022）
     assert result["tier_id"] == "2021_2022"
 

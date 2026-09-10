@@ -245,6 +245,8 @@ def _run_pipeline(
         registration_date=str(ticket.get("registration_date") or ""),
         org_unit_type=str(ticket.get("organization_unit_type") or ""),
         contract_text=contract_text,
+        # P0-2：把提取来源透传，本地 OCR 文本禁止自动定档
+        text_source=text_source,
     )
     tier_id = str(tier_result.get("tier_id") or "")
 

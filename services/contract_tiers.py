@@ -54,7 +54,10 @@ CONTRACT_TIERS = [
             ("协助乙方驾驶报考服务相关事宜", 2),
             ("受理服务和学员卡", 1),
         ],
-        "required_features": [],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "驾驶报考协助服务合同",
+        ],
         "absent_features": [],
         "year_from": None,
         "year_to": 2019,
@@ -74,7 +77,10 @@ CONTRACT_TIERS = [
             ("东莞市机动车驾驶报考代收代交考试费合同", 3),
             ("协助乙方代收代交考试费相关事宜", 2),
         ],
-        "required_features": [],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "代收代交考试费合同",
+        ],
         "absent_features": [],
         "year_from": None,
         "year_to": 2019,
@@ -94,7 +100,10 @@ CONTRACT_TIERS = [
             ("不包含协助乙方驾驶考试服务的相关事项", 3),
             ("如乙方在参加理论培训前退学，甲方应退回乙方理论培训费", 2),
         ],
-        "required_features": [],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "中华人民共和国合同法",
+        ],
         "absent_features": [],
         "year_from": None,
         "year_to": 2019,
@@ -114,7 +123,11 @@ CONTRACT_TIERS = [
             ("违约金为全部培训费用的10%", 3),
             ("《中华人民共和国民法典》", 1),
         ],
-        "required_features": [],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "中华人民共和国民法典",
+            "违约金为全部培训费用的",
+        ],
         "absent_features": [],
         "year_from": 2020,
         "year_to": 2022,
@@ -136,7 +149,11 @@ CONTRACT_TIERS = [
         "practical_rates": dict(DEFAULT_PRACTICAL_RATES),
         "features": list(_F_2023_COMMON),
         # 分校版退费表没有场地费行——文本若连「场地费」都没有，反而佐证分校版
-        "required_features": [],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "中华人民共和国民法典",
+            "建档费",
+        ],
         "absent_features": [("场地费", 3)],
         "year_from": 2023,
         "year_to": None,
@@ -159,7 +176,12 @@ CONTRACT_TIERS = [
         "practical_rates": dict(DEFAULT_PRACTICAL_RATES),
         "features": list(_F_2023_COMMON) + [("场地费", 3), ("700", 1)],
         # 场地费是分店版身份条款：文本缺失即告警（可能传错合同/分店代用分校版）
-        "required_features": ["场地费"],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "场地费",
+            "中华人民共和国民法典",
+            "建档费",
+        ],
         "absent_features": [],
         "year_from": 2023,
         "year_to": None,
@@ -190,7 +212,11 @@ CONTRACT_TIERS = [
             ("甲方作为担保", 2),
             ("消费者权益保护法", 1),
         ],
-        "required_features": [],
+        # 必含特征句（P0-3）：纯汉字无标点，OCR 稳健；缺失即告警疑似传错合同
+        "required_features": [
+            "中华人民共和国合同法",
+            "先培后付",
+        ],
         "absent_features": [],
         "year_from": None,
         "year_to": None,
@@ -202,6 +228,11 @@ TIERS_BY_ID = {tier["id"]: tier for tier in CONTRACT_TIERS}
 
 # 特征打分所需的最短正文长度（规范化后字符数），防止空文本/碎片文本误判
 _MIN_SCORABLE_LEN = 10
+
+# 低质量文本来源（来自 contract_service 提取链的 source 字段）：
+# 这些来源的正文字形/数字错识率高，特征句整片失配，据此自动定档不可信 → 强制 low。
+# `vision_text`（多模态）与 `pdf_text`（文本层直读）、`docx_text` 不在其列。
+LOW_QUALITY_TEXT_SOURCES = frozenset({"local_ocr", "ocr"})
 
 # 只认「全部培训费用」基数的违约金率句式——与档位 penalty_rate 语义一致。
 # 注意 2021/2022 版预约培训段另有「已交理论培训费及相关服务费的20%」条款，
@@ -285,13 +316,24 @@ def _hit_features(tier: dict, norm_text: str) -> list[dict]:
     return hits
 
 
-def identify_tier(registration_date: str = "", org_unit_type: str = "", contract_text: str = "") -> dict:
+def identify_tier(
+    registration_date: str = "",
+    org_unit_type: str = "",
+    contract_text: str = "",
+    text_source: str = "",
+) -> dict:
     """识别合同档位（纯函数）。
 
-    输入：报名日期、网点类型（分校/分店等，来自 org_unit_service 字典）、合同文本。
+    输入：报名日期、网点类型（分校/分店等，来自 org_unit_service 字典）、合同文本、
+    文本来源（text_source，见 `contract_service` 提取链的 source 字段）。
     输出：{tier_id, display_name, confidence, score, candidates, evidence}。
     tier_id 为 "" 表示无法定档（调用方应让用户手动选择）；
     confidence: high（权威收敛+特征确认）/ medium（特征分不足或存在冲突告警）/ low（无特征依据）。
+
+    文本来源闸门（P0-2）：`text_source` 落在 `LOW_QUALITY_TEXT_SOURCES`（本地 OCR）
+    时置信度**强制降为 low** 并附 `type="degradation"` 证据——OCR 噪声会让特征句
+    整片失配，此时自动定档不可信，须由经办人在下拉框手选。
+    未传 text_source（旧调用方）时保持原行为，不破坏既有契约。
     """
     year = _parse_year(registration_date)
     norm_text = _norm(contract_text)
@@ -361,6 +403,19 @@ def identify_tier(registration_date: str = "", org_unit_type: str = "", contract
         evidence.append({"type": "conflict", "tier": tier_id, "detail": message})
     if conflicts and confidence == "high":
         confidence = "medium"
+
+    # ── 文本来源闸门（P0-2）：低质量 OCR 文本禁止自动定档 ──────────────
+    source_key = (text_source or "").strip().lower()
+    if source_key in LOW_QUALITY_TEXT_SOURCES:
+        confidence = "low"
+        evidence.append({
+            "type": "degradation",
+            "tier": tier_id,
+            "detail": (
+                f"合同正文来自本地 OCR（text_source={source_key}），识别质量不可靠，"
+                "档位未自动确认，请人工核对后手选档位"
+            ),
+        })
 
     return {
         "tier_id": tier_id,

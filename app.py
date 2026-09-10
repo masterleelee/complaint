@@ -4320,9 +4320,7 @@ _COMPARISON_ITEM_LABELS = [
     ("service_fee", "综合服务费"),
     ("theory_fee", "理论培训费"),
     ("subject2_fee", "科目二实操培训费"),
-    ("subject2_unit", "科目二学时单价(元/学时)"),
     ("subject3_fee", "科目三实操培训费"),
-    ("subject3_unit", "科目三学时单价(元/学时)"),
 ]
 
 _BREAKDOWN_KEYS = (
