@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>批量操作条定位修复 · 对比 Demo</title>
+<style>
+  :root{--bd:#E5E6EB;--txt:#1F2329;--sub:#646A73;--pri:#2563EB;--bg:#F7F8FA;--ok:#00A870;--err:#E34D59}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);padding:20px}
+  .wrap{max-width:1700px;margin:0 auto}
+  h1{font-size:18px;margin-bottom:4px}
+  .lead{color:var(--sub);font-size:13px;margin-bottom:16px}
+
+  .panel{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .ctl{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .ctl label{display:flex;align-items:center;gap:8px;font-size:13px}
+  .ctl input[type=range]{width:260px}
+  .ctl select,.ctl button{padding:6px 12px;border:1px solid var(--bd);border-radius:8px;background:#fff;font-size:13px;cursor:pointer}
+  .ctl button:hover{border-color:var(--pri);color:var(--pri)}
+  .ctl button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+  .vw-val{font-weight:700;color:var(--pri);min-width:52px;display:inline-block}
+
+  .stage-box{position:relative}
+  iframe{width:100%;height:600px;border:1px solid var(--bd);border-radius:12px;background:#fff;display:block;transition:width .15s}
+
+  .diag{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-top:14px}
+  .cell{background:#fff;border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+  .cell .k{font-size:11px;color:var(--sub);letter-spacing:.4px}
+  .cell .v{font-size:19px;font-weight:700;margin-top:2px}
+  .cell .v small{font-size:12px;font-weight:400;color:var(--sub)}
+  .v.good{color:var(--ok)} .v.bad{color:var(--err)}
+
+  .legend{display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:var(--sub);margin-top:10px}
+  .legend i{display:inline-block;width:22px;height:0;border-top:2px dashed;margin-right:6px;vertical-align:middle}
+  .l-old i{border-color:var(--err)} .l-new i{border-style:solid;border-color:var(--ok)}
+
+  .note{font-size:12.5px;color:var(--sub);line-height:1.9}
+  .note b{color:var(--txt)}
+  code{background:#F2F3F5;padding:1px 6px;border-radius:4px;font-size:12px;font-family:ui-monospace,Menlo,monospace}
+
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#F7F8FA;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>批量操作条（batch-bar）定位修复 · 对比 Demo</h1>
+  <p class="lead">拖动「视口宽度」模拟页面缩小 —— 观察底部操作条是否始终对齐<b>主区域中心</b>（绿线），而不是视口中心（红线）。CSS 逻辑与生产代码一致。</p>
+
+  <div class="panel">
+    <div class="ctl">
+      <label>视口宽度 <input type="range" id="vw" min="320" max="1600" step="10" value="1280"> <span class="vw-val" id="vwVal">1280px</span></label>
+      <label>侧栏 <button id="btnSb">收起侧栏</button></label>
+      <label>已选条数
+        <select id="selN">
+          <option value="0">0 条（应隐藏）</option>
+          <option value="1" selected>1 条</option>
+          <option value="3">3 条</option>
+          <option value="8">8 条</option>
+        </select>
+      </label>
+      <label><button id="btnGhost" class="on">对比：显示修复前位置</button></label>
+    </div>
+    <div class="legend">
+      <span class="l-old"><i></i>红线 = 视口中心（<b>修复前</b>的错误位置）</span>
+      <span class="l-new"><i></i>绿线 = 主区域中心（<b>修复后</b>的正确位置）</span>
+    </div>
+  </div>
+
+  <div class="stage-box">
+    <iframe id="stage" title="舞台"></iframe>
+  </div>
+
+  <div class="diag" id="diag">
+    <div class="cell"><div class="k">侧栏实际宽度</div><div class="v" id="dSbW">—</div></div>
+    <div class="cell"><div class="k">--sidebar-w 解析值</div><div class="v" id="dVar">—</div></div>
+    <div class="cell"><div class="k">主区域中心 X</div><div class="v" id="dMainC">—</div></div>
+    <div class="cell"><div class="k">操作条中心 X</div><div class="v" id="dBarC">—</div></div>
+    <div class="cell"><div class="k">偏差</div><div class="v" id="dDiff">—</div></div>
+    <div class="cell"><div class="k">操作条显隐</div><div class="v" id="dShow">—</div></div>
+  </div>
+
+  <div class="panel" style="margin-top:14px">
+    <div class="note">
+      <b>修复要点：</b><br>
+      1. 位置 — <code>left: calc(50% + var(--sidebar-w,0px) / 2)</code>，<code>--sidebar-w</code> 由 <code>.app-shell</code> 按三档下发：<code>224px</code>（默认）/ <code>64px</code>（手动折叠或 ≤900px）/ <code>0px</code>（≤640px 顶部横栏）。<br>
+      2. 显隐 — 由 <code>clSelectedIds.length&gt;0</code> 改为 <code>batchBarVisible</code>（选中的 id 至少有一条落在当前筛选结果中）；同时 watch 清理已被筛掉的 id，避免"页面没勾选、底部却挂着已选 N 条"。<br>
+      3. ≤640px — pill 胶囊放不下 5 个按钮，改为左右留边、可换行的矩形条。
+    </div>
+  </div>
+</div>
+
+<script>
+// ── 舞台内容：CSS 与生产代码保持一致（含修复后的 batch-bar）──
+var STAGE = `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{overflow-x:clip}
+  body{min-height:100vh;background:#fff;color:#1F2329;font:400 13.5px/1.6 -apple-system,"PingFang SC",sans-serif}
+  .app-shell{display:flex;min-height:100vh;--sidebar-w:224px}
+  .app-shell.sb-collapsed{--sidebar-w:64px}
+  .sidebar{width:224px;flex:none;display:flex;flex-direction:column;padding:20px 12px 16px;
+    position:sticky;top:0;height:100vh;background:#F2F3F5;border-right:1px solid #E5E6EB}
+  .sidebar .brand{font:700 15px/1.3 sans-serif;padding:2px 6px 16px;border-bottom:1px solid #E5E6EB;white-space:nowrap;overflow:hidden}
+  .nav-link{display:flex;align-items:center;gap:10px;color:#646A73;padding:9px 12px;border-radius:9px;
+    font-weight:500;margin-bottom:2px;font-size:14px;white-space:nowrap;overflow:hidden}
+  .nav-link.active{background:#EFF6FF;color:#2563EB;font-weight:600}
+  .main{flex:1;min-width:0;padding:20px 32px}
+  .page-title{font-size:20px;font-weight:700;margin-bottom:16px}
+  .kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+  .kpi{background:#fff;border:1px solid #E5E6EB;border-radius:10px;padding:12px 14px}
+  .kpi .n{font-size:22px;font-weight:700} .kpi .l{font-size:12px;color:#646A73}
+  .card{background:#fff;border:1px solid #E5E6EB;border-radius:12px;overflow:hidden}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:9px 10px;border-bottom:1px solid #F0F1F3;text-align:left;white-space:nowrap}
+  th{background:#F7F8FA;font-weight:600;color:#646A73}
+  .grp{background:#F7F8FA;padding:8px 12px;font-weight:600;font-size:13px;border-bottom:1px solid #E5E6EB}
+  .chk{width:15px;height:15px;accent-color:#2563EB}
+  tr.selrow td{background:#EFF6FF}
+
+  /* ===== 修复后的 batch-bar ===== */
+  .batch-bar{position:fixed;left:calc(50% + var(--sidebar-w,0px) / 2);bottom:28px;
+    transform:translateX(-50%) translateY(90px);display:flex;gap:10px;align-items:center;
+    background:rgba(15,23,42,.95);color:#fff;padding:10px 20px;border-radius:999px;
+    box-shadow:0 8px 24px rgba(0,0,0,.18);transition:transform .25s;z-index:4000;
+    max-width:calc(100vw - var(--sidebar-w,0px) - 32px)}
+  .batch-bar.show{transform:translateX(-50%) translateY(0)}
+  .batch-bar b{font-weight:700;white-space:nowrap}
+  .batch-bar .btn{padding:5px 12px;border-radius:7px;font-size:13px;cursor:pointer;white-space:nowrap}
+  .batch-bar .btn-batch{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.35)}
+  .batch-bar .btn-pri{background:#2563EB;color:#fff;border:1px solid #2563EB}
+  .batch-bar .vline{width:1px;height:18px;background:rgba(255,255,255,.25)}
+
+  /* 修复前的旧行为（仅 demo 对比用）*/
+  .batch-bar.ghost{left:50%;background:rgba(227,77,89,.9);bottom:96px;z-index:3999}
+  .batch-bar.ghost::after{content:'修复前（视口居中）';position:absolute;left:50%;top:-22px;
+    transform:translateX(-50%);font-size:11px;color:var(--err,#E34D59);white-space:nowrap;font-weight:600}
+
+  /* 参考线 */
+  .ref{position:fixed;top:0;bottom:0;width:0;z-index:3998;pointer-events:none}
+  .ref-vp{border-left:2px dashed rgba(227,77,89,.75)}
+  .ref-main{border-left:2px solid rgba(0,168,112,.9)}
+  .ref-tip{position:fixed;bottom:8px;font-size:11px;font-weight:700;padding:2px 7px;border-radius:4px;z-index:3998;white-space:nowrap}
+
+  @media(min-width:901px){
+    .sidebar.collapsed{width:64px;padding:20px 8px}
+    .sidebar.collapsed .brand,.sidebar.collapsed .nav-link span.txt{display:none}
+    .sidebar.collapsed .nav-link{justify-content:center;padding:10px 0;gap:0}
+  }
+  @media(max-width:900px){
+    .app-shell,.app-shell.sb-collapsed{--sidebar-w:64px}
+    .sidebar{width:64px;padding:12px 4px}
+    .sidebar .brand{display:none}
+    .nav-link span.txt{display:none}
+  }
+  @media(max-width:640px){
+    .app-shell,.app-shell.sb-collapsed{--sidebar-w:0px}
+    .app-shell{flex-direction:column}
+    .sidebar{width:100%;height:auto;position:static;flex-direction:row;align-items:center;gap:4px;padding:8px 10px;overflow-x:auto}
+    .sidebar .nav-link span.txt{display:inline}
+    .main{padding:16px 12px}
+    .kpi-row{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}
+    /* ≤640px：pill 改为可换行的矩形条 */
+    .batch-bar{left:16px;right:16px;max-width:none;border-radius:14px;padding:10px 12px;
+      flex-wrap:wrap;justify-content:center;gap:8px;transform:translateY(90px)}
+    .batch-bar.show{transform:translateY(0)}
+    .batch-bar .vline{display:none}
+    .batch-bar.ghost{left:16px;right:16px;bottom:auto;top:70px}
+  }
+</style></head><body>
+<div class="app-shell" id="shell">
+  <aside class="sidebar" id="sb">
+    <div class="brand">投诉系统</div>
+    <button class="nav-link active"><span>📋</span> <span class="txt">投诉列表</span></button>
+    <button class="nav-link"><span>➕</span> <span class="txt">新增投诉</span></button>
+    <button class="nav-link"><span>👤</span> <span class="txt">学员信息</span></button>
+    <button class="nav-link"><span>📊</span> <span class="txt">投诉统计</span></button>
+    <button class="nav-link"><span>⚙️</span> <span class="txt">系统设置</span></button>
+  </aside>
+  <main class="main">
+    <div class="page-title">投诉列表</div>
+    <div class="kpi-row">
+      <div class="kpi"><div class="n">62</div><div class="l">在途</div></div>
+      <div class="kpi"><div class="n">57</div><div class="l">超时</div></div>
+      <div class="kpi"><div class="n">39</div><div class="l">已归档</div></div>
+      <div class="kpi"><div class="n">13</div><div class="l">已撤诉</div></div>
+    </div>
+    <div class="card">
+      <div class="grp">在途 <span style="font-weight:400;color:#646A73">62</span></div>
+      <table><thead><tr>
+        <th style="width:34px"></th><th>序号</th><th>学员姓名</th><th>代号</th><th>类型</th>
+        <th>投诉日期</th><th>最近操作</th><th>电话</th>
+      </tr></thead><tbody id="tb"></tbody></table>
+      <div class="grp" style="border-top:1px solid #E5E6EB">已归档 <span style="font-weight:400;color:#646A73">39</span></div>
+      <table><thead><tr>
+        <th style="width:34px"></th><th>序号</th><th>学员姓名</th><th>代号</th><th>类型</th>
+        <th>投诉日期</th><th>最近操作</th><th>电话</th>
+      </tr></thead><tbody>
+        <tr><td><input type="checkbox" class="chk"></td><td>63</td><td>刘XX</td><td>快捷·黄埔</td><td>退费纠纷</td><td>2026-07-11</td><td>08-14 10:22</td><td>139****4521</td></tr>
+      </tbody></table>
+    </div>
+  </main>
+</div>
+
+<div class="batch-bar" id="bar">
+  <b>已选 <span id="n">1</span> 条</b>
+  <button class="btn btn-batch">全选当前结果</button>
+  <button class="btn btn-batch">清除</button>
+  <span class="vline"></span>
+  <button class="btn btn-pri">批量导出</button>
+  <button class="btn btn-pri">批量转办</button>
+  <button class="btn btn-batch" style="color:#ff8f8f;border-color:rgba(255,143,143,.5)">删除</button>
+</div>
+<div class="batch-bar ghost" id="ghost">
+  <b>已选 <span class="gn">1</span> 条</b>
+  <button class="btn btn-batch">全选当前结果</button>
+  <button class="btn btn-batch">清除</button>
+  <span class="vline"></span>
+  <button class="btn btn-pri">批量导出</button>
+  <button class="btn btn-pri">批量转办</button>
+  <button class="btn btn-batch">删除</button>
+</div>
+<div class="ref ref-vp" id="refVp"></div>
+<div class="ref ref-main" id="refMain"></div>
+<div class="ref-tip" id="tipVp" style="color:#E34D59;border:1px dashed #E34D59;background:#fff">视口中心</div>
+<div class="ref-tip" id="tipMain" style="color:#00A870;border:1px solid #00A870;background:#fff">主区中心</div>
+</body></html>`;
+
+var ROWS = [
+  ["陈丽华","快捷·天河","退费纠纷","2026-08-23","08-23 16:38","138****2847"],
+  ["黄子豪","快捷·白云","教学服务","2026-08-22","08-22 09:11","139****6620"],
+  ["陈XX","快捷·越秀","考试安排","2026-08-21","08-21 14:05","137****3391"],
+  ["李XX","快捷·海珠","合同争议","2026-08-20","08-20 11:47","135****8812"],
+  ["张XX","快捷·荔湾","退费纠纷","2026-08-19","08-19 17:23","136****1104"]
+];
+
+var iframe = document.getElementById("stage");
+var doc = iframe.contentDocument;
+doc.open(); doc.write(STAGE); doc.close();
+
+var w = doc.defaultView;
+var $ = function(id){ return doc.getElementById(id); };
+
+// 填充在途表格行
+var tb = $("tb");
+ROWS.forEach(function(r,i){
+  var tr = doc.createElement("tr");
+  tr.innerHTML = '<td><input type="checkbox" class="chk"></td><td>'+(i+1)+'</td><td>'+r[0]+'</td><td>'+r[1]+'</td><td>'+r[2]+'</td><td>'+r[3]+'</td><td>'+r[4]+'</td><td>'+r[5]+'</td>';
+  tb.appendChild(tr);
+});
+
+// ── 控件 ──
+var vw = document.getElementById("vw"), vwVal = document.getElementById("vwVal");
+var btnSb = document.getElementById("btnSb"), btnGhost = document.getElementById("btnGhost");
+var selN = document.getElementById("selN");
+var shell = $("shell"), sb = $("sb"), bar = $("bar"), ghost = $("ghost");
+var refVp = $("refVp"), refMain = $("refMain"), tipVp = $("tipVp"), tipMain = $("tipMain");
+var collapsed = false, showGhost = true;
+
+function render(){
+  var v = parseInt(vw.value,10);
+  vwVal.textContent = v + "px";
+  iframe.style.width = v + "px";
+
+  shell.classList.toggle("sb-collapsed", collapsed);
+  sb.classList.toggle("collapsed", collapsed);
+
+  var n = parseInt(selN.value,10);
+  bar.classList.toggle("show", n > 0);
+  ghost.classList.toggle("show", n > 0 && showGhost);
+  ghost.style.display = (n > 0 && showGhost) ? "" : "none";
+  $("n").textContent = n;
+  doc.querySelector("#ghost .gn").textContent = n;
+
+  // 勾选前 n 行（演示选中态）
+  var boxes = tb.querySelectorAll(".chk");
+  boxes.forEach(function(b,i){
+    b.checked = i < n;
+    b.closest("tr").classList.toggle("selrow", i < n);
+  });
+
+  // 参考线
+  var vpHalf = v / 2;
+  refVp.style.left = vpHalf + "px";
+  var sbW = sb.getBoundingClientRect().width;
+  var isStacked = w.getComputedStyle(shell).flexDirection === "column";
+  var mainStart = isStacked ? 0 : sbW;
+  var mainC = (mainStart + v) / 2;
+  refMain.style.left = mainC + "px";
+
+  tipVp.style.left = Math.max(0, vpHalf - 34) + "px";
+  tipMain.style.left = Math.min(v - 70, Math.max(0, mainC - 34)) + "px";
+
+  // 诊断
+  requestAnimationFrame(function(){
+    var barR = bar.getBoundingClientRect();
+    var barC = barR.left + barR.width / 2;
+    var cssVar = w.getComputedStyle(shell).getPropertyValue("--sidebar-w").trim();
+
+    document.getElementById("dSbW").textContent = Math.round(sbW) + "px";
+    document.getElementById("dSbW").innerHTML += ' <small>' + (isStacked ? '顶部横栏' : (collapsed ? '已折叠' : '展开')) + '</small>';
+    document.getElementById("dVar").textContent = cssVar || "0px";
+    document.getElementById("dMainC").textContent = Math.round(mainC) + "px";
+
+    if (n === 0) {
+      document.getElementById("dBarC").textContent = "—";
+      var d0 = document.getElementById("dDiff");
+      d0.textContent = "已隐藏"; d0.className = "v good";
+    } else {
+      document.getElementById("dBarC").textContent = Math.round(barC) + "px";
+      var diff = Math.abs(barC - mainC);
+      var d = document.getElementById("dDiff");
+      d.textContent = diff.toFixed(1) + "px";
+      d.className = "v " + (diff <= 1.5 ? "good" : "bad");
+    }
+    var s = document.getElementById("dShow");
+    s.textContent = n > 0 ? "显示（" + n + " 条）" : "隐藏";
+    s.className = "v " + (n > 0 ? "" : "good");
+  });
+}
+
+vw.addEventListener("input", render);
+selN.addEventListener("change", render);
+btnSb.addEventListener("click", function(){
+  collapsed = !collapsed;
+  btnSb.textContent = collapsed ? "展开侧栏" : "收起侧栏";
+  btnSb.classList.toggle("on", collapsed);
+  render();
+});
+btnGhost.addEventListener("click", function(){
+  showGhost = !showGhost;
+  btnGhost.classList.toggle("on", showGhost);
+  render();
+});
+w.addEventListener("resize", render);
+render();
+</script>
+</body>
+</html>

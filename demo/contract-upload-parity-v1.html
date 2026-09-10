@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>上传合同分析预览 · 版式 demo v2</title>
+<style>
+  :root{ --ink:#1f2329; --sub:#646a73; --line:#dee0e3; --bg:#f5f6f7; --card:#fff;
+         --red:#d64541; --green:#2ea121; --amber:#d48806; --blue:#3370ff; --mark:#fff1a8; }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font:13px/1.65 "PingFang SC","Microsoft YaHei",sans-serif; color:var(--ink); background:var(--bg);}
+  .topbar{background:var(--card); border-bottom:1px solid var(--line); padding:10px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+  .topbar h1{font-size:15px; font-weight:600;}
+  .chip{border:1px solid var(--line); border-radius:4px; padding:2px 8px; background:#f7f8fa; font-size:12px; color:var(--sub);}
+  .tier{display:flex; align-items:center; gap:6px; background:#eef3ff; border:1px solid #bacefd; border-radius:4px; padding:2px 8px; font-size:12px;}
+  .tier b{color:var(--blue);}
+  .tier select{border:1px solid var(--line); border-radius:3px; font-size:12px; padding:1px 4px; background:#fff;}
+  .conf{font-size:11px; padding:1px 6px; border-radius:8px;}
+  .conf.hi{background:#e8f7ea; color:var(--green); border:1px solid #b7e0bd;}
+  .demo-tag{margin-left:auto; font-size:11px; color:#fff; background:#8f959e; border-radius:4px; padding:2px 8px;}
+
+  .summary{display:flex; gap:1px; background:var(--line); border-bottom:1px solid var(--line);}
+  .sum-cell{flex:1; background:var(--card); padding:8px 12px; min-width:0;}
+  .sum-cell .k{font-size:11px; color:var(--sub); display:flex; align-items:center; gap:4px;}
+  .sum-cell .v{font-size:17px; font-weight:600; margin-top:2px; font-variant-numeric:tabular-nums;}
+  .sum-cell .v.red{color:var(--red);}
+  .dot{width:7px; height:7px; border-radius:50%; display:inline-block;}
+  .dot.amber{background:var(--amber);} .dot.green{background:var(--green);}
+
+  .panes{display:grid; grid-template-columns: 1fr 330px 280px; gap:1px; background:var(--line); height:calc(100vh - 135px); min-height:480px;}
+  .pane{background:var(--card); overflow-y:auto; display:flex; flex-direction:column;}
+  .pane-h{position:sticky; top:0; background:#f7f8fa; border-bottom:1px solid var(--line); padding:6px 12px; font-size:12px; font-weight:600; color:var(--sub); z-index:2; display:flex; justify-content:space-between; align-items:center;}
+  .fold-btn{font-size:11px; font-weight:400; color:var(--blue); cursor:pointer; user-select:none;}
+  .pane-body{overflow-y:auto; flex:1;}
+
+  .page-card{margin:12px; border:1px solid var(--line); border-radius:4px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:14px; color:#555; font-size:11.5px; filter:grayscale(.3); transition:all .2s;}
+  .page-card .ph{height:8px; background:#e9ebee; border-radius:2px; margin:7px 0;}
+  .page-card .ph.w60{width:60%;} .page-card .ph.w80{width:80%;} .page-card .ph.w40{width:40%;}
+  .page-card .pno{text-align:center; color:#999; font-size:10px; margin-top:10px;}
+  .page-card.flash{outline:3px solid #fa8c16; animation:pulse 1s ease 2;}
+  .orig.folded .page-card{display:inline-block; width:44%; margin:6px; padding:6px; filter:grayscale(.5); opacity:.85;}
+  .orig.folded .page-card .ph{height:4px; margin:4px 0;}
+  .orig.folded .page-card .pno{margin-top:4px; font-size:9px;}
+
+  .clause{padding:10px 14px; border-bottom:1px dashed #eceeef;}
+  .clause h3{font-size:12.5px; color:#444; margin-bottom:4px;}
+  .clause p{font-size:12.5px; color:#333; text-align:justify;}
+  .clause mark{background:var(--mark); padding:0 1px; border-radius:2px;}
+  .clause mark.hit{background:#ffd666; outline:2px solid #fa8c16; animation:pulse 1s ease 2;}
+  @keyframes pulse{50%{outline-color:transparent;}}
+  .clause .pg{float:right; font-size:10px; color:#bbb;}
+
+  .ded{padding:8px 12px; border-bottom:1px solid #f0f1f2; cursor:pointer; display:flex; justify-content:space-between; gap:8px; align-items:baseline;}
+  .ded:hover{background:#f2f6ff;}
+  .ded.active{background:#e7efff; box-shadow:inset 2px 0 0 var(--blue);}
+  .ded .nm{font-size:12.5px;}
+  .ded .amt{font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap;}
+  .tag{font-size:10px; border-radius:3px; padding:0 4px; margin-left:4px; white-space:nowrap;}
+  .tag.must{background:#fdeceb; color:var(--red); border:1px solid #f5c4c2;}
+  .tag.actual{background:#eaf3ff; color:var(--blue); border:1px solid #c2d8f8;}
+  .tag.pen{background:#fdf3e0; color:var(--amber); border:1px solid #f0d9a8;}
+  .ded .basis{display:block; font-size:11px; color:var(--sub); margin-top:2px;}
+  .legend{padding:8px 12px; font-size:11px; color:var(--sub); border-top:1px solid var(--line); background:#fbfbfc;}
+  .cache-note{margin:10px 12px; font-size:11px; color:var(--sub); background:#f7f8fa; border:1px dashed var(--line); border-radius:4px; padding:8px 10px;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>上传合同分析 · 预览定位</h1>
+  <span class="chip">工单 TS-2026-0812（示例）</span>
+  <span class="chip">王小明 · 4403**********1234</span>
+  <span class="chip">李发良分店（发）</span>
+  <div class="tier">
+    合同档位：<b id="tierName">2023 · 分店</b>
+    <span class="conf hi">置信度 96%</span>
+    <select id="tierSel">
+      <option>2019·服务</option><option>2019·代缴</option><option>2019·培训</option>
+      <option>2021-2022</option><option>2023·分校</option><option selected>2023·分店</option>
+    </select>
+    <span style="font-size:10px;color:#7a8699">依据：报名 2023-08 · 网点=分店 · 特征句「建档费」「20%」</span>
+  </div>
+  <span class="demo-tag">示例数据 · 虚构学员</span>
+</div>
+
+<div class="summary">
+  <div class="sum-cell"><div class="k">培训费总额 <span class="dot amber" title="OCR 置信度 62%，请核对原件"></span></div><div class="v">¥5,800</div></div>
+  <div class="sum-cell"><div class="k">已缴金额 <span class="dot green" title="人工录入"></span></div><div class="v">¥5,800</div></div>
+  <div class="sum-cell"><div class="k">必扣项（4 项）</div><div class="v">¥1,700</div></div>
+  <div class="sum-cell"><div class="k">依实项（2 项）</div><div class="v">¥730</div></div>
+  <div class="sum-cell"><div class="k">违约金 20%</div><div class="v">¥1,160</div></div>
+  <div class="sum-cell"><div class="k">应退金额</div><div class="v red">¥2,210</div></div>
+</div>
+
+<div class="panes">
+  <div class="pane">
+    <div class="pane-h"><span>结构化原文（2023·分店 培训合同）</span><span style="font-weight:400;font-size:11px;color:#9aa0a8">字符锚点已落库</span></div>
+    <div class="pane-body" id="clauses"></div>
+  </div>
+
+  <div class="pane orig" id="origPane">
+    <div class="pane-h"><span>原件影像（2 页）</span><span class="fold-btn" id="foldBtn">收起为缩略图 ⇤</span></div>
+    <div class="pane-body" id="pages">
+      <div class="page-card" id="page1">
+        <b>东莞市机动车驾驶员培训合同</b>
+        <div class="ph w60"></div><div class="ph w80"></div><div class="ph"></div>
+        <div class="ph w80"></div><div class="ph"></div><div class="ph w40"></div>
+        <div class="ph w80"></div><div class="ph"></div><div class="ph w60"></div>
+        <div class="ph"></div><div class="ph w80"></div><div class="ph w40"></div>
+        <div class="pno">第 1 页 · 第一条～第七条</div>
+      </div>
+      <div class="page-card" id="page2">
+        <b>第八条 退学退费（退费表）</b>
+        <div class="ph w80"></div><div class="ph"></div><div class="ph w60"></div>
+        <div class="ph w80"></div><div class="ph"></div><div class="ph w40"></div>
+        <div class="ph w80"></div><div class="ph"></div><div class="ph w60"></div>
+        <div class="ph w40"></div><div class="ph w80"></div>
+        <div class="pno">第 2 页 · 第八条～第十四条 · 含退费表</div>
+      </div>
+      <div class="cache-note">📄 原件渲染说明：PDF → 浏览器端渲染（零服务器产物）；照片 → 直接显示上传原件。仅扫描版 PDF 才按页生成缓存图（约 0.2MB/页，按合同 sha256 整目录管理、LRU 上限整目录清理，无碎片）。6 页合同最坏约 1.2MB。</div>
+    </div>
+  </div>
+
+  <div class="pane">
+    <div class="pane-h"><span>扣费明细（点击定位）</span></div>
+    <div class="pane-body">
+      <div id="dedList"></div>
+      <div class="legend">● 必扣＝不论进度一律扣除<br>● 依实＝按学时/已考科目<br>● 违约金＝培训费×档位比例</div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* 扣费明细（示例：档位=2023·分店，学员科一已通过→实操中，科二已学5学时，科二已考1次） */
+const DEDS = [
+  {id:'svc',   name:'服务费',       amt:600,  tag:'must',   anchor:'服务费 600',        basis:'第八条退费表 · 必扣',            page:2},
+  {id:'reg',   name:'建档费',       amt:300,  tag:'must',   anchor:'建档费 300',        basis:'第八条退费表 · 必扣',            page:2},
+  {id:'ic',    name:'学员IC卡',     amt:100,  tag:'must',   anchor:'学员IC卡 100',      basis:'第八条退费表 · 必扣',            page:2},
+  {id:'site',  name:'场地费',       amt:700,  tag:'must',   anchor:'场地费 700',        basis:'第八条退费表 · 必扣（仅分店档）', page:2},
+  {id:'exam2', name:'科目二考试费', amt:130,  tag:'actual', anchor:'科目二考试费 130',  basis:'已考 1 次（内部系统）',           page:2},
+  {id:'train2',name:'科目二实操费', amt:600,  tag:'actual', anchor:'120元/学时',        basis:'5 学时 × 120 元（第三系统审核学时）', page:2},
+  {id:'pen',   name:'违约金',       amt:1160, tag:'pen',    anchor:'20%作为违约金',     basis:'5,800 × 20%（档位默认）',        page:2},
+];
+const TAGN = {must:'必扣', actual:'依实', pen:'违约金'};
+
+/* 结构化原文（摘自 2023·分店 模板真实文本，仅保留与扣费相关条款） */
+const CLAUSES = [
+ {no:'第四条', title:'费用及支付', page:1, body:
+  '（一）培训费用：实行普通培训，培训费用总额合计人民币 5800 元，一次性支付。' +
+  '（二）补充学时培训费用：乙方参加公安部门考试任意一科不合格的，甲方为乙方提供该科 1 学时的免费培训，超过免费培训学时的，按照人民币 150 元/学时的标准另外收取补训费。' +
+  '（三）代收代交考试费、工本费、补考费：费用合计 490 元，包含科目一 70 元、科目二 130 元、科目三 280 元、工本费 10 元。'},
+ {no:'第八条', title:'退学退费', page:2, body:
+  '（一）实行普通培训和按时收费培训的，按下表进行退费：' +
+  '【基础服务（必扣项）】服务费 600 元；建档费 300 元；学员IC卡 100 元；场地费 700 元。' +
+  '【代收代缴（依实项）】科目一考试费 70 元（补考费 35 元/次）；科目二考试费 130 元（补考费 65 元/次）；科目三考试费 280 元（补考费 140 元/次）；工本费 10 元。' +
+  '【实操培训（依实项）】科目二实操 C1 120元/学时、C2 150元/学时；科目三实操 C1 120元/学时、C2 150元/学时。' +
+  '备注：合同期内乙方申请提前解除合同，扣除基础服务、其他双方约定的费用两项必扣项及乙方解除合同时已完成（含已开始）的考试科目（阶段）已经代收代交的考试行政事业收费及已产生的实操培训费，再扣除全部培训费用的20%作为违约金后，甲方将剩余的费用退还给乙方。'},
+ {no:'第九条', title:'合同的变更、终止', page:2, body:
+  '（五）根据《机动车驾驶证申领和使用规定》，乙方参加科目二或科目三单科 5 次不及格的，《机动车驾驶技能准考证明》作废，本合同终止，甲方无须退款。'},
+];
+
+/* 渲染原文并记录偏移量锚点 */
+const clausesEl = document.getElementById('clauses');
+let cursor = 0; const offsets = {};
+CLAUSES.forEach(c=>{
+  const div = document.createElement('div'); div.className='clause';
+  let body = c.body;
+  DEDS.forEach(d=>{
+    const i = body.indexOf(d.anchor);
+    if(i>=0 && offsets[d.id]===undefined){
+      offsets[d.id] = {clause:c.no, start:cursor+i, end:cursor+i+d.anchor.length, page:c.page};
+      body = body.slice(0,i)+'<mark data-id="'+d.id+'">'+d.anchor+'</mark>'+body.slice(i+d.anchor.length);
+    }
+  });
+  cursor += c.body.length;
+  div.innerHTML = '<span class="pg">原件第 '+c.page+' 页</span><h3>'+c.no+' '+c.title+'</h3><p>'+body+'</p>';
+  clausesEl.appendChild(div);
+});
+
+/* 渲染右侧扣费明细 */
+const listEl = document.getElementById('dedList');
+DEDS.forEach(d=>{
+  const el = document.createElement('div'); el.className='ded'; el.dataset.id=d.id;
+  el.innerHTML = '<div><span class="nm">'+d.name+'</span><span class="tag '+d.tag+'">'+TAGN[d.tag]+'</span>' +
+                 '<span class="basis">'+d.basis+'</span></div><span class="amt">¥'+d.amt+'</span>';
+  el.onclick = ()=>locate(d.id);
+  listEl.appendChild(el);
+});
+
+function locate(id){
+  document.querySelectorAll('.ded').forEach(e=>e.classList.toggle('active', e.dataset.id===id));
+  const m = document.querySelector('mark[data-id="'+id+'"]');
+  document.querySelectorAll('mark').forEach(x=>x.classList.remove('hit'));
+  if(m){ m.classList.add('hit'); m.scrollIntoView({behavior:'smooth', block:'center'}); }
+  const pg = offsets[id] && offsets[id].page;
+  if(pg){ const card=document.getElementById('page'+pg);
+    card.classList.remove('flash'); void card.offsetWidth; card.classList.add('flash');
+    card.scrollIntoView({behavior:'smooth', block:'center'}); }
+}
+
+/* 原件折叠为缩略图条 */
+document.getElementById('foldBtn').onclick = function(){
+  const p = document.getElementById('origPane');
+  p.classList.toggle('folded');
+  this.textContent = p.classList.contains('folded') ? '展开原件 ⇥' : '收起为缩略图 ⇤';
+};
+</script>
+</body>
+</html>

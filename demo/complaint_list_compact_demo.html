@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投诉列表 · 方案B 信息分层 Demo</title>
+<style>
+  /* ===== 沿用项目 token（DESIGN.md 政务信赖蓝） ===== */
+  :root{
+    --color-primary:#2563EB; --color-primary-dark:#1D4ED8; --color-primary-50:#EFF6FF;
+    --color-success:#16A34A; --color-success-50:#F0FDF4;
+    --color-warning:#D97706; --color-warning-50:#FFFBEB;
+    --color-danger:#DC2626;  --color-danger-50:#FEF2F2;
+    --color-text:#0F172A; --color-text-secondary:#475569; --color-text-disabled:#94A3B8;
+    --color-border:#E2E8F0; --color-surface-50:#F8FAFC; --color-bg:#EEF3F8; --color-surface:#FFFFFF;
+    --font-sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --radius:10px; --radius-sm:6px;
+    --sidebar-w:224px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:#e8edf3;color:var(--color-text);font:400 13.5px/1.6 var(--font-sans);padding-bottom:60px}
+  .mono{font-family:var(--font-mono)}
+
+  /* ===== 顶部控制条 ===== */
+  .demo-bar{position:sticky;top:0;z-index:100;background:#0F172A;color:#fff;padding:10px 16px;
+    display:flex;align-items:center;gap:14px;flex-wrap:wrap;font-size:12.5px;box-shadow:0 2px 12px rgba(0,0,0,.25)}
+  .demo-bar .ttl{font-weight:700;font-size:13.5px;letter-spacing:.3px}
+  .demo-bar .grp{display:flex;align-items:center;gap:6px;padding-left:14px;border-left:1px solid rgba(255,255,255,.18)}
+  .demo-bar label{opacity:.75;font-size:12px}
+  .seg{display:flex;background:rgba(255,255,255,.1);border-radius:7px;padding:2px}
+  .seg button{border:none;background:none;color:rgba(255,255,255,.7);padding:5px 11px;border-radius:5px;
+    cursor:pointer;font:500 12px/1 var(--font-sans);transition:all .15s}
+  .seg button:hover{color:#fff}
+  .seg button.on{background:var(--color-primary);color:#fff;box-shadow:0 1px 4px rgba(37,99,235,.5)}
+  .chk-l{display:flex;align-items:center;gap:5px;cursor:pointer;opacity:.85;font-size:12px}
+  .chk-l input{cursor:pointer}
+  .demo-bar .badge-new{background:#16A34A;color:#fff;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:700}
+
+  /* ===== 模拟视口 ===== */
+  .sim-wrap{padding:18px;display:flex;justify-content:center}
+  .sim-viewport{background:var(--color-bg);border-radius:12px;overflow:hidden;box-shadow:0 12px 40px rgba(15,23,42,.18);
+    display:flex;min-height:640px;transition:width .25s ease;border:1px solid #cbd5e1}
+  .sim-tag{text-align:center;font-size:12px;color:#475569;padding:0 0 8px}
+  .sim-tag b{color:var(--color-primary)}
+
+  /* ===== 侧栏（复刻） ===== */
+  .sidebar{width:var(--sidebar-w);flex:none;display:flex;flex-direction:column;padding:20px 12px 16px;
+    background:var(--color-surface-50);border-right:1px solid var(--color-border)}
+  .sidebar .brand{display:flex;align-items:center;gap:9px;font:700 16px/1.3 var(--font-sans);padding:2px 6px 16px;
+    white-space:nowrap;border-bottom:1px solid var(--color-border)}
+  .sidebar .brand::before{content:'';flex:none;width:11px;height:11px;border-radius:3px;background:linear-gradient(135deg,#3B82F6,#8B5CF6)}
+  .nav-link{display:flex;align-items:center;gap:10px;color:var(--color-text-secondary);padding:9px 12px;border-radius:9px;
+    font-weight:500;margin-bottom:2px;font-size:14px;white-space:nowrap}
+  .nav-link.active{background:var(--color-primary-50);color:var(--color-primary);font-weight:600}
+  .nav-ico{width:16px;height:16px;flex:none;opacity:.85}
+
+  /* ===== 主区域 ===== */
+  .main{flex:1;min-width:0;padding:16px 20px}
+  .page-title{font:700 20px/1.3 var(--font-sans);margin-bottom:2px}
+  .hint{color:var(--color-text-secondary);font-size:12px}
+
+  .grp{margin-top:14px}
+  .grp-card{background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius);overflow:hidden}
+  .grp-head-bar{display:flex;align-items:center;gap:8px;padding:9px 12px;background:var(--color-surface-50);
+    border-bottom:1px solid var(--color-border);cursor:pointer}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:11.5px;font-weight:600;
+    border:1px solid transparent;white-space:nowrap}
+  .badge-processing{background:var(--color-warning-50);color:var(--color-warning);border-color:#FDE68A}
+  .badge-completed{background:var(--color-success-50);color:var(--color-success);border-color:#BBF7D0}
+  .badge-muted{background:var(--color-surface-50);color:var(--color-text-secondary);border-color:var(--color-border)}
+  .badge-overdue{background:var(--color-danger)!important;color:#fff!important;border-color:var(--color-danger)!important}
+  .g-num{font:700 12px/1 var(--font-sans);color:var(--color-text-secondary)}
+
+  /* ===== 表格通用 ===== */
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  thead th{text-align:left;font-size:12px;font-weight:600;color:var(--color-text-secondary);
+    padding:8px 10px;border-bottom:1px solid var(--color-border);white-space:nowrap;background:#fff}
+  tbody td{padding:9px 10px;border-top:1px solid var(--color-border);vertical-align:middle}
+  tbody tr.rowlink{cursor:pointer}
+  tbody tr.rowlink:hover{background:var(--color-primary-50)}
+  tbody tr.selrow td{background:var(--color-primary-50)}
+  .sm{font-size:11.5px;color:var(--color-text-secondary)}
+  .sort-icon{opacity:.4;font-size:10px;margin-left:2px}
+
+  /* ===== 现状：12 列（列宽由内容撑开，低分屏被挤压） ===== */
+  #tblNow td,#tblNow th{white-space:nowrap}
+
+  /* ===== 方案B：固定紧凑列宽 ===== */
+  #tblNew{table-layout:fixed}
+  #tblNew td,#tblNew th{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 列宽：chk 34 / chevron 30 / 序号 44 / 代号 62 / 姓名 92 / 日期 92 / 状态 96 / 删除 42 = 492px */
+  .c-chk{width:34px} .c-exp{width:30px} .c-seq{width:44px} .c-code{width:62px}
+  .c-name{width:92px} .c-date{width:92px} .c-status{width:96px} .c-act{width:42px}
+  .namecell{display:flex;align-items:center;gap:5px;min-width:0}
+  .namecell .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+  .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .dotA{background:var(--color-danger)} .dotB{background:var(--color-warning)}
+  .dotC{background:var(--color-primary)} .dotD{background:#8B5CF6} .dotE{background:var(--color-text-disabled)}
+  .exp-btn{border:none;background:none;cursor:pointer;color:var(--color-text-disabled);padding:2px 4px;
+    border-radius:4px;line-height:1;transition:all .15s;display:flex;align-items:center}
+  .exp-btn:hover{background:var(--color-primary-50);color:var(--color-primary)}
+  .exp-btn .arw{display:inline-block;transition:transform .18s;font-size:10px}
+  .exp-btn.open .arw{transform:rotate(90deg);color:var(--color-primary)}
+  .row-del{border:none;background:none;cursor:pointer;color:var(--color-text-disabled);padding:4px 6px;border-radius:5px;line-height:1}
+  .row-del:hover{background:var(--color-danger-50);color:var(--color-danger)}
+  .tpill{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:600;white-space:nowrap}
+  .tp-A{background:var(--color-danger-50);color:var(--color-danger)}
+  .tp-B{background:var(--color-warning-50);color:var(--color-warning)}
+  .tp-C{background:var(--color-primary-50);color:var(--color-primary)}
+  .tp-D{background:#F5F3FF;color:#7C3AED}
+  .tp-E{background:var(--color-surface-50);color:var(--color-text-secondary)}
+  .days-warn{color:var(--color-danger);font-weight:700}
+  .fresh{color:var(--color-success);font-weight:600}
+  .outcome-txt{color:var(--color-text-secondary)}
+  .unmapped{color:var(--color-text-disabled);font-style:italic}
+
+  /* ===== 展开的行内详情 ===== */
+  tr.detail-row > td{padding:0!important;background:var(--color-surface-50)!important;border-top:none!important}
+  tr.detail-row:hover > td{background:var(--color-surface-50)!important}
+  .dt-inner{padding:12px 14px 12px 44px;border-left:3px solid var(--color-primary);border-bottom:1px solid var(--color-border)}
+  .dt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(196px,1fr));gap:9px 20px}
+  .dt-item{display:flex;align-items:baseline;gap:8px;min-width:0}
+  .dt-k{flex:none;width:54px;color:var(--color-text-secondary);font-size:11.5px}
+  .dt-v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px}
+  .dt-foot{margin-top:11px;padding-top:9px;border-top:1px dashed var(--color-border);display:flex;gap:8px;align-items:center}
+  .btn{border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);
+    padding:5px 11px;border-radius:7px;cursor:pointer;font:500 12px/1.4 var(--font-sans);display:inline-flex;align-items:center;gap:5px}
+  .btn:hover{border-color:var(--color-primary);color:var(--color-primary)}
+  .btn-primary{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+  .btn-primary:hover{background:var(--color-primary-dark);color:#fff;border-color:var(--color-primary-dark)}
+
+  /* 列宽标尺 */
+  .ruler{display:flex;background:#fff;border-bottom:1px solid var(--color-border);font-size:10px;color:var(--color-primary)}
+  .ruler div{flex:none;text-align:center;padding:2px 0;border-right:1px dashed #CBD5E1;overflow:hidden}
+
+  /* ===== 说明区 ===== */
+  .notes{max-width:1180px;margin:0 auto;padding:0 18px}
+  .notes h3{font:700 15px/1.4 var(--font-sans);margin:22px 0 10px;padding-left:9px;border-left:3px solid var(--color-primary)}
+  .notes table{background:#fff;border:1px solid var(--color-border);border-radius:8px;overflow:hidden;font-size:12.5px}
+  .notes th{background:var(--color-surface-50);padding:9px 12px;text-align:left;font-weight:600;white-space:nowrap}
+  .notes td{padding:9px 12px;border-top:1px solid var(--color-border);vertical-align:top;line-height:1.65}
+  .notes td.w{white-space:nowrap}
+  code{background:#F1F5F9;padding:1px 5px;border-radius:4px;font-family:var(--font-mono);font-size:11.5px;color:#0F172A}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:#0F172A;color:#fff;
+    padding:10px 18px;border-radius:8px;font-size:13px;opacity:0;transition:all .25s;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.3)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  svg{vertical-align:-2px}
+</style>
+</head>
+<body>
+
+<!-- ══════════ 顶部控制条 ══════════ -->
+<div class="demo-bar">
+  <span class="ttl">投诉列表 · 方案B 信息分层</span>
+  <span class="badge-new">DEMO</span>
+
+  <div class="grp">
+    <label>模拟屏幕宽度</label>
+    <div class="seg" id="segW">
+      <button data-w="1280">1280</button>
+      <button data-w="1366" class="on">1366</button>
+      <button data-w="1440">1440</button>
+      <button data-w="1600">1600</button>
+      <button data-w="1920">1920</button>
+    </div>
+  </div>
+
+  <div class="grp">
+    <label>布局</label>
+    <div class="seg" id="segL">
+      <button data-l="now">现状（12列）</button>
+      <button data-l="new" class="on">方案B（推荐）</button>
+    </div>
+  </div>
+
+  <div class="grp">
+    <label class="chk-l"><input type="checkbox" id="ckRuler"> 显示列宽标尺</label>
+    <label class="chk-l"><input type="checkbox" id="ckSeq" checked> 显示序号列</label>
+    <label class="chk-l"><input type="checkbox" id="ckSide" checked> 显示侧栏</label>
+    <label class="chk-l"><input type="checkbox" id="ckAll"> 展开全部详情</label>
+  </div>
+</div>
+
+<div class="sim-tag">模拟视口宽度 <b id="wTag">1366</b> px ｜ 主内容区可用宽度 <b id="mTag">1122</b> px</div>
+
+<!-- ══════════ 模拟视口 ══════════ -->
+<div class="sim-wrap">
+  <div class="sim-viewport" id="sim" style="width:1366px">
+
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><br><small style="font-weight:400;font-size:11px;color:var(--color-text-secondary)">投诉处理系统</small></div>
+      <div style="padding-top:14px">
+        <div class="nav-link active"><svg class="nav-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3h12v10H2V3zm1 1v8h10V4H3z"/><path d="M4 6h8v1H4V6zm0 3h5v1H4V9z"/></svg>投诉列表</div>
+        <div class="nav-link"><svg class="nav-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1v6h6a7 7 0 11-6-6z"/></svg>新增投诉</div>
+        <div class="nav-link"><svg class="nav-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5v5H2V2zm7 0h5v5H9V2zM2 9h5v5H2V9zm7 0h5v5H9V9z"/></svg>数据看板</div>
+        <div class="nav-link"><svg class="nav-ico" viewBox="0 0 16 16" fill="currentColor"><path d="M8 5a3 3 0 100 6 3 3 0 000-6z"/></svg>系统设置</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-title">投诉列表</div>
+      <div class="hint">口径：投诉即入账 · 撤诉不计有效投诉 · 在途超 2 天可用「只看超时」筛选</div>
+
+      <!-- 分组：在途 -->
+      <div class="grp">
+        <div class="grp-card">
+          <div class="grp-head-bar">
+            <input type="checkbox">
+            <span class="badge badge-processing">在途</span>
+            <span class="g-num">8</span>
+            <span class="badge badge-overdue">⚠ 超时 2</span>
+            <span style="flex:1"></span>
+            <span style="color:var(--color-text-disabled);font-size:11px">▾</span>
+          </div>
+          <div id="tableHost"></div>
+        </div>
+      </div>
+
+      <!-- 分组：已归档 -->
+      <div class="grp">
+        <div class="grp-card">
+          <div class="grp-head-bar">
+            <input type="checkbox">
+            <span class="badge badge-completed">已归档</span>
+            <span class="g-num">3</span>
+            <span style="flex:1"></span>
+            <span style="color:var(--color-text-disabled);font-size:11px">▾</span>
+          </div>
+          <div id="tableHost2"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════ 说明 ══════════ -->
+<div class="notes">
+  <h3>方案B：改了什么 / 有什么用 / 注意事项</h3>
+  <table>
+    <thead><tr><th style="width:150px">改动</th><th>有什么用</th><th style="width:290px">注意事项</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="w"><b>主行只留 5 个高频字段</b><br><span class="hint">代号 / 姓名 / 投诉日期 / 状态 / 删除</span></td>
+        <td>表格从 12 列降到 8 列（含复选框、展开箭头、序号），<b>总宽约 492px</b>。1280 分辨率下主内容区 1056px，表格只占 47%，<b>彻底消除挤压</b>。</td>
+        <td>删除高频字段需你确认：目前「类型」以<b>彩色小圆点</b>保留在姓名前（不占额外列宽），若不需要可去掉。</td>
+      </tr>
+      <tr>
+        <td class="w"><b>点击 ▶ 展开行内详情</b></td>
+        <td>身份证、手机号、类型、来源、最近操作、在途/结局、处理人一次性展开，网格自适应排列。<b>点击行本体仍是打开案件详情</b>，两种操作分离不冲突。</td>
+        <td>展开态<b>不记忆</b>：翻页/刷新后收起（避免列表过长）。如需记忆可加 <code>localStorage</code>。</td>
+      </tr>
+      <tr>
+        <td class="w"><b>姓名超 4 字截断</b><br><code>张伟</code> / <code>欧阳夏木..</code></td>
+        <td>姓名列从「内容撑开」改为固定 <b>92px</b>。鼠标悬浮显示完整姓名 <code>title</code>。</td>
+        <td>4 字截断对复姓（欧阳/司马）会切掉姓，<b>详情区显示完整姓名</b>兜底；若嫌短可改 5 字（宽度 104px）。</td>
+      </tr>
+      <tr>
+        <td class="w"><b>在途/结局 收紧</b><br>110px → 移入详情</td>
+        <td>该列原宽（"3 天" + "超 1 天"徽章 ≈ 150px）。移入详情后作为独立网格项，超时徽章仍在旁边高亮，信息不丢。</td>
+        <td>在途分组的<b>超时提醒</b>是高频关注点，需要考虑是否在主行保留一个红色小标识（见下方待确认项）。</td>
+      </tr>
+      <tr>
+        <td class="w"><b>处理人固定 4 字宽</b></td>
+        <td>处理人列原按「姓名（部门）」格式撑开。改为固定宽度 + 超出省略，未映射人员显示灰色斜体。</td>
+        <td>处理人名超 4 字时显示 <code>李静..</code>，悬浮显示全名。</td>
+      </tr>
+      <tr>
+        <td class="w"><b>table-layout:fixed</b></td>
+        <td>列宽由 <code>&lt;col&gt;</code> 固定，不再被长内容顶宽，渲染更稳定、滚动无跳动。</td>
+        <td>fixed 布局下每列必须显式给宽，新增列时记得同步补 <code>.c-xxx</code>。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>待你确认（4 项）</h3>
+  <table>
+    <thead><tr><th style="width:150px">项目</th><th>说明</th><th style="width:150px">我的建议</th></tr></thead>
+    <tbody>
+      <tr><td class="w">① 类型小圆点</td><td>姓名前的彩色圆点（A红/B橙/C蓝/D紫/E灰）替代原来的彩色 pill，保留类型可扫描性又不占宽度</td><td>保留</td></tr>
+      <tr><td class="w">② 超时标识</td><td>在途超时的案件，是否在主行状态列旁加一个红色 ⚠ 小标记（不放天数文字）</td><td>建议加，超时是高频关注</td></tr>
+      <tr><td class="w">③ 序号列</td><td>序号列 44px，可通过顶部开关取消，去掉后表格总宽 448px</td><td>保留（计数核对用）</td></tr>
+      <tr><td class="w">④ 详情里的操作</td><td>详情底部放「打开案件详情 / 复制手机号 / 转办」快捷按钮，还是只放「打开案件详情」</td><td>先只放打开，保持简洁</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ══════════ Mock 数据（含长姓名用于验证截断） ══════════ */
+var T_OPEN = [
+  {id:1, seq:1, name:'张伟',       idcard:'440301********1234', phone:'138****8888', code:'SZ01', type:'A', src:'12345热线', date:'2026-08-26', act:'08-27 10:12', days:3,  handler:'李静',   mapped:true,  status:'处理中', outcome:''},
+  {id:2, seq:2, name:'欧阳夏木子', idcard:'440302********5678', phone:'139****6666', code:'SZ02', type:'A', src:'驾培平台',   date:'2026-08-25', act:'08-27 09:40', days:4,  handler:'王强',   mapped:true,  status:'处理中', outcome:''},
+  {id:3, seq:3, name:'李',         idcard:'440303********9012', phone:'137****2222', code:'GZ11', type:'B', src:'内部转办',   date:'2026-08-27', act:'08-28 16:05', days:2,  handler:'未分配', mapped:false, status:'待处理', outcome:''},
+  {id:4, seq:4, name:'司马相如之子', idcard:'440304********3456', phone:'136****1234', code:'SZ03', type:'D', src:'12345热线', date:'2026-08-24', act:'08-28 11:20', days:5,  handler:'陈晓明', mapped:true,  status:'处理中', outcome:''},
+  {id:5, seq:5, name:'王大锤',     idcard:'440305********7890', phone:'135****4321', code:'DG07', type:'C', src:'现场来访',   date:'2026-08-28', act:'08-28 18:00', days:1,  handler:'刘洋',   mapped:true,  status:'待处理', outcome:''},
+  {id:6, seq:6, name:'赵四',       idcard:'440306********2345', phone:'134****8765', code:'SZ01', type:'A', src:'12345热线', date:'2026-08-20', act:'08-26 08:30', days:9,  handler:'李静',   mapped:true,  status:'处理中', outcome:''},
+  {id:7, seq:7, name:'诸葛孔明',   idcard:'440307********6789', phone:'133****5678', code:'HZ02', type:'E', src:'微信',       date:'2026-08-27', act:'08-28 14:45', days:2,  handler:'周涛',   mapped:false, status:'待处理', outcome:''},
+  {id:8, seq:8, name:'孙尚香',     idcard:'440308********0123', phone:'132****9012', code:'SZ02', type:'B', src:'驾培平台',   date:'2026-08-28', act:'08-29 09:15', days:1,  handler:'王强',   mapped:true,  status:'待处理', outcome:''}
+];
+var T_ARCH = [
+  {id:9,  seq:9,  name:'钱多多',   idcard:'440309********4567', phone:'131****3456', code:'SZ01', type:'A', src:'12345热线', date:'2026-08-10', act:'08-18 15:30', days:0, handler:'李静', mapped:true, status:'已归档', outcome:'全额退费 6800 元'},
+  {id:10, seq:10, name:'郑十一郎', idcard:'440310********8901', phone:'130****7890', code:'GZ11', type:'C', src:'内部转办',   date:'2026-08-08', act:'08-15 10:00', days:0, handler:'刘洋', mapped:true, status:'已归档', outcome:'调整考试安排'},
+  {id:11, seq:11, name:'冯小二',   idcard:'440311********2345', phone:'159****2345', code:'DG07', type:'B', src:'现场来访',   date:'2026-08-05', act:'08-12 09:20', days:0, handler:'陈晓明', mapped:true, status:'已归档', outcome:'补训 4 学时'}
+];
+var OVERDUE_DAYS = 2;
+var TYPE_LABEL = {A:'退费纠纷',B:'教学服务',C:'考试安排',D:'合同争议',E:'其他'};
+
+/* ══════════ 状态 ══════════ */
+var state = { w:1366, layout:'new', ruler:false, seq:true, side:true, all:false, openIds:{} };
+
+/* ══════════ 工具 ══════════ */
+function cut(s, n){ s = s || ''; return s.length > n ? s.slice(0, n) + '..' : s; }
+function isOverdue(t){ return t.days > OVERDUE_DAYS; }
+function toast(msg){ var el = document.getElementById('toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(function(){ el.classList.remove('show'); }, 1600); }
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+/* ══════════ 渲染：现状（12 列，复刻当前线上） ══════════ */
+function renderNow(host, list, group){
+  var h = '<table id="tblNow"><thead><tr>' +
+    '<th></th><th>序号</th><th>学员姓名</th><th>身份证</th><th>手机号</th><th>代号</th>' +
+    '<th>类型</th><th>来源</th><th>投诉日期</th><th>最近操作</th><th>在途/结局</th><th>处理人</th><th>状态</th><th style="width:44px"></th>' +
+    '</tr></thead><tbody>';
+  list.forEach(function(t){
+    var overdue = group === 'open' && isOverdue(t);
+    h += '<tr class="rowlink" onclick="toast(\'→ 打开案件详情：' + esc(t.name) + '\')">' +
+      '<td><input type="checkbox" onclick="event.stopPropagation()"></td>' +
+      '<td class="mono sm">' + t.seq + '</td>' +
+      '<td><b>' + esc(t.name) + '</b></td>' +
+      '<td class="mono sm">' + esc(t.idcard) + '</td>' +
+      '<td class="mono sm">' + esc(t.phone) + '</td>' +
+      '<td>' + esc(t.code) + '</td>' +
+      '<td><span class="tpill tp-' + t.type + '">' + t.type + ' ' + TYPE_LABEL[t.type] + '</span></td>' +
+      '<td>' + esc(t.src) + '</td>' +
+      '<td class="mono sm">' + t.date + '</td>' +
+      '<td class="mono sm">' + t.act + '</td>' +
+      '<td>' + (group === 'open'
+          ? '<span class="' + (overdue ? 'days-warn' : (t.days <= 1 ? 'fresh' : '')) + '">' + t.days + ' 天</span>' +
+            (overdue ? ' <span class="badge badge-overdue">⚠超 ' + (t.days - OVERDUE_DAYS) + ' 天</span>' : '')
+          : '<span class="outcome-txt">' + esc(t.outcome) + '</span>') + '</td>' +
+      '<td><span class="' + (t.mapped ? '' : 'unmapped') + '">' + esc(t.handler) + '</span></td>' +
+      '<td><span class="badge ' + (group === 'open'
+          ? (t.status === '处理中' ? 'badge-processing' : 'badge-muted')
+          : 'badge-completed') + '">' + t.status + '</span></td>' +
+      '<td><button class="row-del" title="删除该案件" onclick="event.stopPropagation();toast(\'删除确认弹窗\')">🗑</button></td>' +
+    '</tr>';
+  });
+  h += '</tbody></table>';
+  host.innerHTML = h;
+}
+
+/* ══════════ 渲染：方案B（8 列 + 行内详情） ══════════ */
+function renderNew(host, list, group){
+  var showSeq = state.seq;
+  // 列顺序：chk / exp / [seq] / code / name / date / status / act（宽度 px）
+  var colDef = [['chk',34],['exp',30]];
+  if (showSeq) colDef.push(['seq',44]);
+  colDef = colDef.concat([['code',62],['name',92],['date',92],['status',96],['act',42]]);
+  var total = colDef.reduce(function(s, c){ return s + c[1]; }, 0);
+
+  var h = '<table id="tblNew"><colgroup>';
+  colDef.forEach(function(c){ h += '<col style="width:' + c[1] + 'px">'; });
+  h += '</colgroup><thead><tr>' +
+    '<th class="c-chk"></th>' +
+    '<th class="c-exp"></th>' +
+    (showSeq ? '<th class="c-seq">序号</th>' : '') +
+    '<th class="c-code">代号</th>' +
+    '<th class="c-name">姓名</th>' +
+    '<th class="c-date">投诉日期</th>' +
+    '<th class="c-status">状态</th>' +
+    '<th class="c-act"></th>' +
+  '</tr></thead><tbody>';
+
+  list.forEach(function(t){
+    var op = state.all || state.openIds[t.id];
+    var overdue = group === 'open' && isOverdue(t);
+    var full = t.name, short = cut(t.name, 4);
+    var colspan = colDef.length;
+
+    h += '<tr class="rowlink" onclick="toast(\'→ 打开案件详情：' + esc(full) + '\')">' +
+      '<td onclick="event.stopPropagation()"><input type="checkbox"></td>' +
+      '<td onclick="event.stopPropagation()"><button class="exp-btn' + (op ? ' open' : '') + '" title="展开/收起详情" ' +
+        'onclick="toggle(' + t.id + ')"><span class="arw">▶</span></button></td>' +
+      (showSeq ? '<td class="mono sm">' + t.seq + '</td>' : '') +
+      '<td>' + esc(t.code) + '</td>' +
+      '<td><span class="namecell" title="' + esc(full) + '">' +
+        '<i class="dot dot' + t.type + '" title="' + t.type + ' ' + TYPE_LABEL[t.type] + '"></i>' +
+        '<span class="nm">' + esc(short) + '</span></span></td>' +
+      '<td class="mono sm">' + t.date + '</td>' +
+      '<td><span class="badge ' + (group === 'open'
+          ? (t.status === '处理中' ? 'badge-processing' : 'badge-muted')
+          : 'badge-completed') + '">' + t.status + '</span>' +
+        (overdue ? ' <span title="已超时 ' + (t.days - OVERDUE_DAYS) + ' 天" style="color:var(--color-danger);font-weight:700">⚠</span>' : '') +
+      '</td>' +
+      '<td onclick="event.stopPropagation()"><button class="row-del" title="删除该案件" onclick="toast(\'删除确认弹窗\')">🗑</button></td>' +
+    '</tr>';
+
+    if (op){
+      h += '<tr class="detail-row"><td colspan="' + colspan + '"><div class="dt-inner">' +
+        '<div class="dt-grid">' +
+          item('姓名', esc(full)) +
+          item('身份证', '<span class="mono">' + esc(t.idcard) + '</span>') +
+          item('手机号', '<span class="mono">' + esc(t.phone) + '</span>') +
+          item('类型', '<span class="tpill tp-' + t.type + '">' + t.type + ' ' + TYPE_LABEL[t.type] + '</span>') +
+          item('来源', esc(t.src)) +
+          item('最近操作', '<span class="mono">' + t.act + '</span>') +
+          (group === 'open'
+            ? item('在途', '<span class="' + (overdue ? 'days-warn' : (t.days <= 1 ? 'fresh' : '')) + '">' + t.days + ' 天</span>' +
+                (overdue ? ' <span class="badge badge-overdue">⚠超 ' + (t.days - OVERDUE_DAYS) + ' 天</span>' : ''))
+            : item('结局', '<span class="outcome-txt">' + esc(t.outcome) + '</span>')) +
+          item('处理人', '<span class="' + (t.mapped ? '' : 'unmapped') + '" title="' + esc(t.handler) + '">' + esc(cut(t.handler, 4)) + '</span>') +
+        '</div>' +
+        '<div class="dt-foot">' +
+          '<button class="btn btn-primary" onclick="event.stopPropagation();toast(\'→ 打开案件详情：' + esc(full) + '\')">打开案件详情 →</button>' +
+          '<button class="btn" onclick="event.stopPropagation();toast(\'已复制手机号 ' + esc(t.phone) + '\')">复制手机号</button>' +
+          '<span class="hint" style="margin-left:auto">工单号 #' + t.id + '</span>' +
+        '</div>' +
+      '</div></td></tr>';
+    }
+  });
+  h += '</tbody></table>';
+
+  if (state.ruler){
+    var ruler = '<div class="ruler">';
+    colDef.forEach(function(c){ ruler += '<div style="width:' + c[1] + 'px">' + c[1] + '</div>'; });
+    ruler += '<div style="flex:1;border-right:none;padding-left:8px;text-align:left;color:var(--color-text-disabled)">← 表格总宽 ' + total + 'px，右侧为主内容区剩余空间</div></div>';
+    h = ruler + h;
+  }
+  host.innerHTML = h;
+}
+function item(k, v){ return '<div class="dt-item"><span class="dt-k">' + k + '</span><span class="dt-v">' + v + '</span></div>'; }
+
+function toggle(id){
+  if (state.all){ toast('当前为「展开全部」，请先取消勾选'); return; }
+  state.openIds[id] = !state.openIds[id];
+  render();
+}
+
+/* ══════════ 主渲染 ══════════ */
+function render(){
+  var h1 = document.getElementById('tableHost');
+  var h2 = document.getElementById('tableHost2');
+  if (state.layout === 'now'){ renderNow(h1, T_OPEN, 'open'); renderNow(h2, T_ARCH, 'archived'); }
+  else { renderNew(h1, T_OPEN, 'open'); renderNew(h2, T_ARCH, 'archived'); }
+
+  document.getElementById('sim').style.width = state.w + 'px';
+  document.getElementById('sidebar').style.display = state.side ? '' : 'none';
+  var mainW = state.w - (state.side ? 224 : 0) - 40;
+  document.getElementById('wTag').textContent = state.w;
+  document.getElementById('mTag').textContent = mainW;
+}
+
+/* ══════════ 控制条事件 ══════════ */
+document.getElementById('segW').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if (!b) return;
+  [].forEach.call(this.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+  b.classList.add('on'); state.w = parseInt(b.dataset.w, 10); render();
+});
+document.getElementById('segL').addEventListener('click', function(e){
+  var b = e.target.closest('button'); if (!b) return;
+  [].forEach.call(this.querySelectorAll('button'), function(x){ x.classList.remove('on'); });
+  b.classList.add('on'); state.layout = b.dataset.l; render();
+});
+document.getElementById('ckRuler').addEventListener('change', function(){ state.ruler = this.checked; render(); });
+document.getElementById('ckSeq').addEventListener('change', function(){ state.seq = this.checked; render(); });
+document.getElementById('ckSide').addEventListener('change', function(){ state.side = this.checked; render(); });
+document.getElementById('ckAll').addEventListener('change', function(){
+  state.all = this.checked; if (this.checked) state.openIds = {}; render();
+});
+
+render();
+</script>
+</body>
+</html>
