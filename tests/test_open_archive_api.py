@@ -116,6 +116,7 @@ def test_open_archive_dir_missing_returns_404(client, tmp_path, monkeypatch):
     assert resp.status_code == 404
     body = resp.get_json()
     assert body["success"] is False
+    assert body["code"] == "dir_missing"
     assert "不存在" in body["errors"][0]
     assert "登记表" in body["errors"][0]
 
@@ -133,6 +134,7 @@ def test_open_archive_root_unavailable_returns_400(client, tmp_path, monkeypatch
     assert resp.status_code == 400
     body = resp.get_json()
     assert body["success"] is False
+    assert body["code"] == "root_unavailable"
     assert "归档根目录不可用" in body["errors"][0]
 
 
@@ -151,6 +153,7 @@ def test_open_archive_launch_failure_returns_error(client, tmp_path, monkeypatch
     assert resp.status_code == 500
     body = resp.get_json()
     assert body["success"] is False
+    assert body["code"] == "launch_failed"
     assert "打开归档文件夹失败" in body["errors"][0]
 
 

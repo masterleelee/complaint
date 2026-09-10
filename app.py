@@ -1,4 +1,5 @@
 """驾校投诉处理系统 - Flask 后端"""
+"""驾校投诉处理系统 - Flask 后端"""
 import asyncio
 import os
 import sys
@@ -72,6 +73,8 @@ from services.archive_service import (
     generate_helper_bat,
     generate_diagnose_bat,
     HELPER_VBS,
+    is_plain_file_name,
+    safe_member_path,
 )
 from services.intake_service import parse_complaint_file, parse_complaint_text, ensure_upload_dir, ai_summarize_complaint
 from services.org_unit_service import ORGANIZATION_UNITS, resolve_org_unit
@@ -3839,6 +3842,26 @@ def _request_from_server_host() -> bool:
     return bool(host) and remote == host
 
 
+# 归档定位类失败的 code → HTTP 状态码（root_unavailable 找管理员 / dir_missing 自己解决）
+_RESOLVE_FAIL_STATUS = {"root_unavailable": 400, "dir_missing": 404, "launch_failed": 500}
+
+
+def _err_resolved(failure: dict):
+    """把 `resolve_case_dir()` / `open_case_dir()` 的失败结果映射成 HTTP 响应。
+
+    保留结构化 `code`，前端据此分级渲染「该找谁」：
+    - `root_unavailable` → 共享盘/权限问题，提示联系管理员；
+    - `dir_missing`      → 提示先去生成登记表/回复函（用户自己能解决）；
+    并透传人话 `message` 与技术 `detail`（detail 只用于排查，不在界面展示）。
+    """
+    status = _RESOLVE_FAIL_STATUS.get(failure.get("code"), 500)
+    body = {"success": False, "errors": failure.get("errors", [])}
+    for key in ("code", "message", "detail"):
+        if failure.get(key) is not None:
+            body[key] = failure[key]
+    return jsonify(body), status
+
+
 @app.route("/api/tickets/<ticket_id>/open-archive", methods=["POST"])
 @login_required
 def api_tickets_open_archive(ticket_id):
@@ -3858,17 +3881,14 @@ def api_tickets_open_archive(ticket_id):
         resolved = resolve_case_dir(ticket)
         if not resolved.get("success"):
             # root_unavailable=400（配置/挂载问题）；dir_missing=404（夹子还没建）
-            status = {"root_unavailable": 400, "dir_missing": 404}.get(resolved.get("code"), 500)
-            return jsonify({"success": False, "errors": resolved.get("errors", [])}), status
+            return _err_resolved(resolved)
         case_dir = resolved["dir"]
 
         if _request_from_server_host():
             # 本机：保持既有行为，直接在服务器屏幕上打开
             launched = open_case_dir(ticket)
             if not launched.get("success"):
-                status = {"root_unavailable": 400, "dir_missing": 404}.get(
-                    launched.get("code"), 500)
-                return jsonify({"success": False, "errors": launched.get("errors", [])}), status
+                return _err_resolved(launched)
             return _ok({"mode": "local", "dir": case_dir, "opened": True})
 
         # 远程客户端：不在服务器端打开；转换 UNC 路径交浏览器端处理
@@ -3954,8 +3974,7 @@ def api_tickets_archive_files(ticket_id):
             return _err("工单不存在", 404)
         resolved = resolve_case_dir(ticket)
         if not resolved.get("success"):
-            status = {"root_unavailable": 400, "dir_missing": 404}.get(resolved.get("code"), 500)
-            return jsonify({"success": False, "errors": resolved.get("errors", [])}), status
+            return _err_resolved(resolved)
         case_dir = resolved["dir"]
         files = []
         try:
@@ -3981,25 +4000,79 @@ def api_tickets_archive_files(ticket_id):
 def api_tickets_archive_file_download(ticket_id):
     """下载归档夹内的单个文件（as_attachment，浏览器直接另存）。
 
-    安全：name 参数只接受纯文件名——先反斜杠归一成斜杠再取 basename，
-    与原串不等（含路径分隔符/穿越段）即 400 拒绝。
+    安全：与 preview 共用 `safe_member_path()` —— 先按「纯文件名」校验
+    （带路径分隔符/穿越段一律 400），再用 realpath 前缀校验挡住符号链接
+    绕出案件夹（夹内软链指向夹外时同样 400，不会外泄文件）。
     """
     try:
         ticket = get_ticket(ticket_id)
         if not ticket:
             return _err("工单不存在", 404)
         name = (request.args.get("name") or "").strip()
-        safe = os.path.basename(name.replace("\\", "/")).strip()
-        if not safe or safe in (".", "..") or safe != name:
+        if not is_plain_file_name(name):
             return _err("非法文件名", 400)
         resolved = resolve_case_dir(ticket)
         if not resolved.get("success"):
-            status = {"root_unavailable": 400, "dir_missing": 404}.get(resolved.get("code"), 500)
-            return jsonify({"success": False, "errors": resolved.get("errors", [])}), status
-        fp = os.path.join(resolved["dir"], safe)
+            return _err_resolved(resolved)
+        fp = safe_member_path(resolved["dir"], name)
+        if not fp:
+            return _err("非法文件名", 400)
         if not os.path.isfile(fp):
             return _err("文件不存在", 404)
-        return send_file(fp, as_attachment=True, download_name=safe)
+        return send_file(fp, as_attachment=True, download_name=name)
+    except Exception as e:
+        traceback.print_exc()
+        return _err(str(e), 500)
+
+
+# 可内联预览的扩展名白名单（其余一律 415，提示下载后打开）
+# 按**扩展名**判定，不用 mimetypes.guess_type——后者对未知类型返回 None 或
+# application/octet-stream，容易把不该放行的类型误放行。
+# 注意：text/* 的 charset 由 Flask/werkzeug 自动追加，此处**不要**再写 charset，
+# 否则会得到 `text/plain; charset=utf-8; charset=utf-8` 这种重复参数。
+_ARCHIVE_PREVIEW_MIME = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".txt": "text/plain",
+}
+
+
+@app.route("/api/tickets/<ticket_id>/archive-files/preview")
+@login_required
+def api_tickets_archive_file_preview(ticket_id):
+    """内联预览归档夹内的单个文件（PDF / 图片 / TXT 白名单）。
+
+    安全口径与 `archive-files/download` **逐字一致**：两者共用
+    `is_plain_file_name()` 做文件名校验、`safe_member_path()` 做案件夹内定位
+    （含符号链接越界拦截）。
+
+    校验顺序（已由测试固化）：文件名合法性 → 扩展名白名单 → 案件夹可用性 →
+    文件存在性。扩展名先于夹子探测 → docx 等不可预览类型恒 415，与夹子状态无关。
+    """
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+        name = (request.args.get("name") or "").strip()
+        if not is_plain_file_name(name):
+            return _err("非法文件名", 400)
+        mimetype = _ARCHIVE_PREVIEW_MIME.get(os.path.splitext(name)[1].lower())
+        if not mimetype:
+            return _err("该类型不支持在线预览，请下载后打开", 415)
+        resolved = resolve_case_dir(ticket)
+        if not resolved.get("success"):
+            return _err_resolved(resolved)
+        fp = safe_member_path(resolved["dir"], name)
+        if not fp:
+            return _err("非法文件名", 400)
+        if not os.path.isfile(fp):
+            return _err("文件不存在", 404)
+        return send_file(fp, mimetype=mimetype, as_attachment=False)
     except Exception as e:
         traceback.print_exc()
         return _err(str(e), 500)

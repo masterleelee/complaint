@@ -5,6 +5,7 @@ GET /api/tickets/<id>/archive-files/download?name=（单文件下载）：
 1. 列目录：200 + 文件清单（name/size/mtime）、空目录 200、夹子缺失 404、工单 404
 2. 下载：200 内容一致、目录穿越 400、文件不存在 404、工单 404
 """
+import os
 import tempfile
 from pathlib import Path
 
@@ -179,3 +180,87 @@ def test_download_ticket_404(client, tmp_path, monkeypatch):
     resp = client.get(
         "/api/tickets/no-such-id/archive-files/download?name=x.txt")
     assert resp.status_code == 404
+
+
+# ───────────────────────────────────────────────────────────
+# 3) ISS-AP-01 错误分级：list / download 共用同一套 code 语义
+#    root_unavailable=400（找管理员） / dir_missing=404（自己去生成文档）
+# ───────────────────────────────────────────────────────────
+def test_list_files_dir_missing_returns_code(client, tmp_path, monkeypatch):
+    _patch_root(monkeypatch, tmp_path)
+    ticket = _make_ticket()  # 故意不建案件夹
+    resp = client.get(f"/api/tickets/{ticket['id']}/archive-files")
+    assert resp.status_code == 404
+    body = resp.get_json()
+    assert body["success"] is False
+    assert body["code"] == "dir_missing"
+    assert "登记表" in body["errors"][0]
+    assert body.get("detail")
+
+
+def test_list_files_root_unavailable_returns_code(client, tmp_path, monkeypatch):
+    blocker = tmp_path / "blocker.txt"
+    blocker.write_text("x", encoding="utf-8")
+    _patch_root(monkeypatch, blocker)  # 归档根指向一个文件 → 不可用
+    ticket = _make_ticket()
+    resp = client.get(f"/api/tickets/{ticket['id']}/archive-files")
+    assert resp.status_code == 400
+    body = resp.get_json()
+    assert body["code"] == "root_unavailable"
+    assert "归档根目录不可用" in body["errors"][0]
+    # 展示文案不得包含程序员语言（技术细节只在 detail 里）
+    assert "Permission denied" not in body["errors"][0]
+    assert "无法创建归档根目录" not in body["errors"][0]
+
+
+def test_download_dir_missing_returns_code(client, tmp_path, monkeypatch):
+    _patch_root(monkeypatch, tmp_path)
+    ticket = _make_ticket()
+    resp = client.get(
+        f"/api/tickets/{ticket['id']}/archive-files/download?name=x.txt")
+    assert resp.status_code == 404
+    assert resp.get_json()["code"] == "dir_missing"
+
+
+def test_download_root_unavailable_returns_code(client, tmp_path, monkeypatch):
+    blocker = tmp_path / "blocker.txt"
+    blocker.write_text("x", encoding="utf-8")
+    _patch_root(monkeypatch, blocker)
+    ticket = _make_ticket()
+    resp = client.get(
+        f"/api/tickets/{ticket['id']}/archive-files/download?name=x.txt")
+    assert resp.status_code == 400
+    assert resp.get_json()["code"] == "root_unavailable"
+
+
+def test_download_absolute_path_400(client, tmp_path, monkeypatch):
+    """绝对路径必须 400，不得被 basename 化后在案件夹内找同名文件放行。"""
+    _patch_root(monkeypatch, tmp_path)
+    ticket = _make_ticket()
+    case_dir = Path(app_module.build_archive_dir(ticket, root=str(tmp_path))[0])
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "x.txt").write_text("in-case", encoding="utf-8")
+
+    resp = client.get(
+        f"/api/tickets/{ticket['id']}/archive-files/download",
+        query_string={"name": str(case_dir / "x.txt")})
+    assert resp.status_code == 400
+
+
+def test_download_symlink_escape_400(client, tmp_path, monkeypatch):
+    """夹内软链指向夹外 → realpath 越界拦截（补上 download 原先缺失的这道闸）。"""
+    _patch_root(monkeypatch, tmp_path)
+    ticket = _make_ticket()
+    case_dir = Path(app_module.build_archive_dir(ticket, root=str(tmp_path))[0])
+    case_dir.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("top-secret", encoding="utf-8")
+    try:
+        os.symlink(str(outside), str(case_dir / "内联.txt"))
+    except (OSError, NotImplementedError):
+        pytest.skip("当前环境不支持创建符号链接")
+
+    resp = client.get(
+        f"/api/tickets/{ticket['id']}/archive-files/download?name=内联.txt")
+    assert resp.status_code == 400
+    assert b"top-secret" not in resp.data

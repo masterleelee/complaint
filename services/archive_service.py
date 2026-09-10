@@ -34,6 +34,17 @@ FALLBACK_NAME = "未命名学员"
 FALLBACK_ID_CARD = "无证件"
 DEFAULT_ARCHIVE_ROOT = str(BASE_DIR / "案件归档")
 
+# 面向用户的失败提示（前端只展示这一段；技术细节走 resolve_case_dir 的 detail 键）
+# 两个 code 对应两种完全不同的用户动作，措辞必须能让用户判断「该找谁」：
+#   root_unavailable → 找管理员（共享盘/权限问题，用户自己解决不了）
+#   dir_missing      → 自己解决（去工单里生成登记表/回复函）
+MSG_ROOT_UNAVAILABLE = (
+    "归档根目录不可用：共享盘可能未挂载或当前路径无权限，请联系管理员，或稍后重试"
+)
+MSG_DIR_MISSING = (
+    "案件归档夹不存在：该学员尚未生成投诉登记表/回复函，请先在工单里生成后再查看"
+)
+
 
 def archive_gate_errors(ticket: dict) -> list[str]:
     """归档三闸门：处理情况已填 + 配合度已评 + 费用明细已确认。
@@ -85,6 +96,34 @@ def _assert_within(child: str, parent: str) -> None:
     real_parent = os.path.realpath(parent)
     if real_child != real_parent and not real_child.startswith(real_parent + os.sep):
         raise ValueError(f"路径越界: {real_child} 不在 {real_parent} 内")
+
+
+def is_plain_file_name(name: str) -> bool:
+    """name 是否是「纯文件名」：非空、非 `.`/`..`、不含任何路径分隔符。
+
+    反斜杠先归一成斜杠再取 basename 并与原串比对 —— 不等即说明原串带了路径
+    （`../x`、`a/b`、`/etc/passwd`、`C:\\x`），一律判非法。
+    """
+    raw = str(name or "").strip()
+    if not raw or raw in (".", ".."):
+        return False
+    return os.path.basename(raw.replace("\\", "/")).strip() == raw
+
+
+def safe_member_path(case_dir: str, name: str) -> str | None:
+    """把用户传来的文件名解析成**案件夹内**的安全绝对路径。
+
+    非法文件名（含路径/穿越/空）或最终路径越出案件夹（含符号链接绕路）→ 返回 None。
+    下载/预览两条链路共用本函数，保证两者的安全口径**逐字一致**。
+    """
+    if not is_plain_file_name(name):
+        return None
+    fp = os.path.join(case_dir, str(name).strip())
+    try:
+        _assert_within(fp, case_dir)
+    except ValueError:
+        return None
+    return fp
 
 
 def _safe_segment(value: str, fallback: str) -> str:
@@ -194,20 +233,31 @@ def archive_case(ticket: dict, files: dict, open_folder: bool = False) -> dict:
 def resolve_case_dir(ticket: dict, root: str | None = None) -> dict:
     """定位案件归档夹（只拼路径+探测磁盘，不做任何打开动作，不校验三闸门）。
 
-    返回值不抛出：
+    返回值不抛出。失败时带结构化 `code` 供上层/前端分级渲染：
+
         {"success": True, "dir": ...}
         {"success": False, "code": "root_unavailable"|"dir_missing",
-         "errors": [...], "dir": ...?}
+         "message": <人话>, "errors": [<人话>], "detail": <技术细节>, "dir": ...?}
+
+    * `root_unavailable` —— 共享盘未挂载 / 路径无权限：**用户无能为力，要找管理员**；
+    * `dir_missing`      —— 该学员还没生成登记表/回复函：**用户自己能解决**。
+
+    `errors` 恒为**单元素**（既有多处断言 `len(errors) == 1`）；技术细节放 `detail`，
+    避免把 "Permission denied" 这类程序员语言直接甩给用户看。
     """
     try:
         case_dir, _, _ = build_archive_dir(ticket, root=root)
     except ValueError as exc:
         return {"success": False, "code": "root_unavailable",
-                "errors": [f"归档根目录不可用: {exc}"]}
+                "message": MSG_ROOT_UNAVAILABLE,
+                "errors": [MSG_ROOT_UNAVAILABLE],
+                "detail": str(exc)}
     if not os.path.isdir(case_dir):
         return {
             "success": False, "code": "dir_missing", "dir": case_dir,
-            "errors": ["案件归档夹不存在：该学员尚未生成登记表/回复函，或归档根目录不可用（共享盘未挂载？）"],
+            "message": MSG_DIR_MISSING,
+            "errors": [MSG_DIR_MISSING],
+            "detail": f"案件归档夹不存在: {case_dir}",
         }
     return {"success": True, "dir": case_dir}
 
@@ -223,7 +273,7 @@ def open_case_dir(ticket: dict, root: str | None = None) -> dict:
     在途工单（闸门未过）也能查看已生成的文档。返回值不抛出：
         {"success": True, "dir": ...}
         {"success": False, "code": "root_unavailable"|"dir_missing"|"launch_failed",
-         "errors": [...], "dir": ...?}
+         "message": <人话>, "errors": [...], "detail": <技术细节>, "dir": ...?}
     """
     resolved = resolve_case_dir(ticket, root=root)
     if not resolved.get("success"):

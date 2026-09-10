@@ -2,6 +2,8 @@
 import os
 from pathlib import Path
 
+import pytest
+
 import services.archive_service as archive_service
 from services.archive_service import archive_case, archive_gate_errors, build_archive_dir
 
@@ -127,3 +129,51 @@ class TestArchiveCase:
         result = archive_case(_ticket(), {"register_form": reg, "reply": None}, open_folder=True)
         assert result["opened"] is True
         assert calls == [["open", result["dir"]]]
+
+
+class TestIsPlainFileName:
+    """归档文件名合法性判据（download / preview 共用同一口径）。"""
+
+    @pytest.mark.parametrize("name", [
+        "投诉登记表.docx", "张三_合同_2021级.pdf", "a.txt", "证据 页1.PNG",
+    ])
+    def test_plain_names_accepted(self, name):
+        assert archive_service.is_plain_file_name(name) is True
+
+    @pytest.mark.parametrize("name", [
+        "", "   ", ".", "..",
+        "../secret.txt", "..\\secret.txt", "a/b.txt",
+        "/etc/passwd", "/etc/passwd.pdf", "C:\\Windows\\x.txt",
+        "./x.txt",
+    ])
+    def test_path_like_names_rejected(self, name):
+        assert archive_service.is_plain_file_name(name) is False
+
+
+class TestSafeMemberPath:
+    """案件夹内安全定位：越界/穿越/软链绕路一律 None。"""
+
+    def test_normal_member_resolved(self, tmp_path):
+        case = tmp_path / "案件夹"
+        case.mkdir()
+        (case / "a.pdf").write_bytes(b"%PDF")
+        got = archive_service.safe_member_path(str(case), "a.pdf")
+        assert got == str(case / "a.pdf")
+
+    @pytest.mark.parametrize("name", ["../x.pdf", "a/b.pdf", "/etc/passwd", "", ".."])
+    def test_illegal_names_return_none(self, tmp_path, name):
+        case = tmp_path / "案件夹"
+        case.mkdir()
+        assert archive_service.safe_member_path(str(case), name) is None
+
+    def test_symlink_escape_returns_none(self, tmp_path):
+        case = tmp_path / "案件夹"
+        case.mkdir()
+        outside = tmp_path / "outside.pdf"
+        outside.write_bytes(b"%PDF-outside")
+        try:
+            os.symlink(str(outside), str(case / "link.pdf"))
+        except (OSError, NotImplementedError):
+            pytest.skip("当前环境不支持创建符号链接")
+        assert archive_service.safe_member_path(str(case), "link.pdf") is None
+
