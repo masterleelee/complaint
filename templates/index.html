@@ -1755,14 +1755,32 @@
                 </button>
               </div>
 
-              <!-- ④ 处理情况 + 配合度 -->
-              <div class="card panel"><div class="card-header"><i class="bi bi-clipboard-check text-primary"></i> ④ 处理情况 与 分校/分店配合度</div>
+              <!-- ④ 投诉内容/诉求 + 处理情况 + 配合度 -->
+              <div class="card panel"><div class="card-header"><i class="bi bi-clipboard-check text-primary"></i> ④ 投诉内容/诉求 · 处理情况 与 分校/分店配合度
+                  <span class="ch-extra">
+                    <button class="btn btn-secondary btn-sm" @click="saveProgress()"><i class="bi bi-save"></i> 保存进度</button>
+                  </span>
+                </div>
                 <div class="card-body">
                   <div style="display:flex;align-items:center;margin-bottom:6px">
+                    <label class="form-label" for="f_complaint_content" style="margin:0">投诉内容 <span class="hint" style="font-weight:400">（已从材料自动提取，可编辑 · 将写入登记表）</span></label>
+                    <span style="flex:1"></span>
+                    <button class="btn btn-secondary btn-sm" :disabled="!!complaintPolishing" @click="aiOptimizeComplaint('content')"><i class="bi" :class="complaintPolishing==='content' ? 'bi-hourglass-split' : 'bi-stars'"></i> [[ complaintPolishing==='content' ? '优化中…' : 'AI优化' ]]</button>
+                  </div>
+                  <textarea id="f_complaint_content" class="form-control" rows="3" v-model="extractContent" placeholder="库内无投诉内容时可在此补录，或留空按投诉类型使用通用话术"></textarea>
+                  <p class="hint" style="margin-top:6px">修正错别字、理顺表述点「AI优化」；确认无误后点右上「保存进度」写入工单。</p>
+
+                  <div style="display:flex;align-items:center;margin:14px 0 6px">
+                    <label class="form-label" for="f_complaint_demands" style="margin:0">投诉诉求 <span class="hint" style="font-weight:400">（一句话核心诉求 · ≤40字）</span></label>
+                    <span style="flex:1"></span>
+                    <button class="btn btn-secondary btn-sm" :disabled="!!complaintPolishing" @click="aiOptimizeComplaint('demands')"><i class="bi" :class="complaintPolishing==='demands' ? 'bi-hourglass-split' : 'bi-stars'"></i> [[ complaintPolishing==='demands' ? '优化中…' : 'AI优化' ]]</button>
+                  </div>
+                  <textarea id="f_complaint_demands" class="form-control" rows="2" v-model="extractDemands" placeholder="例：要求尽快查明情况并完成退费"></textarea>
+
+                  <div style="display:flex;align-items:center;margin:14px 0 6px">
                     <label class="form-label" for="f_handling_notes" style="margin:0">处理情况</label>
                     <span style="flex:1"></span>
                     <button class="btn btn-secondary btn-sm" :disabled="notesPolishing" @click="aiOptimizeNotes()"><i class="bi" :class="notesPolishing ? 'bi-hourglass-split' : 'bi-stars'"></i> [[ notesPolishing ? '优化中…' : 'AI优化' ]]</button>
-                    <button class="btn btn-secondary btn-sm" @click="saveProgress()"><i class="bi bi-save"></i> 保存进度</button>
                   </div>
                   <textarea id="f_handling_notes" class="form-control" rows="3" v-model="handlingNotes" placeholder="例如：已电话联系学员说明扣费依据，约定本周退款……（将引用至归档登记表）"></textarea>
                   <p class="hint" style="margin-top:6px">随手记几个关键词即可，「AI优化」会整理成通顺、有条理的正式表述。</p>

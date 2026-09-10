@@ -4990,6 +4990,80 @@ def api_complaint_extract():
 
 
 # ═══════════════════════════════════════════════════════════════
+#  API: ④卡片 投诉内容/诉求 AI 润色（错别字/病句/口语化修正）
+# ═══════════════════════════════════════════════════════════════
+
+# 与 /api/notes/polish（处理情况专用）同属「文字润色」族，但目标栏位与字数上限不同：
+# 投诉内容=客观事实陈述≤120字，投诉诉求=一句话≤40字，各用独立提示词避免语义串味。
+COMPLAINT_POLISH_PROMPTS = {
+    "content": """你是驾校投诉登记表撰写助手。下面是登记表「投诉内容」栏的一段文字，请只做文字润色，不要重写。要求：
+1. 只修正错别字、病句、口语化表述，统一标点，使语句通顺、客观、正式
+2. 严禁编造或新增原文没有的姓名、金额、日期、时间、机构等任何事实
+3. 严禁删除原文已有的任何事实信息
+4. 保持客观陈述语气，不加评价性用语
+5. 全文控制在 120 字以内，不得扩写
+6. 只输出润色后的文字本身，不要任何解释、前缀、后缀或括号说明
+
+投诉内容原文：
+""",
+    "demands": """你是驾校投诉登记表撰写助手。下面是登记表「投诉诉求」栏的一句话，请只做文字润色。要求：
+1. 只修正错别字、病句、口语化表述，统一标点
+2. 严禁改变诉求实质（退费金额、对象、要求等）或新增诉求
+3. 保持一句话表述，控制在 40 字以内
+4. 只输出润色后的文字本身，不要任何解释、前缀、后缀或括号说明
+
+投诉诉求原文：
+""",
+}
+
+
+@app.route("/api/complaint/polish", methods=["POST"])
+@login_required
+def api_complaint_polish():
+    """④卡片 投诉内容/诉求 AI 润色：只修正错别字/病句/口语化，忠实原文不编造不扩写。
+
+    field=content|demands 决定使用哪份提示词与字数上限；结果仅返回前端预览，
+    由用户点「保存进度」经 PUT /api/tickets/<id> 落库。
+    """
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        field = str(body.get("field") or "").strip()
+        text = (body.get("text") or "").strip()
+        if field not in ("content", "demands"):
+            return _err("field 参数非法（应为 content 或 demands）", 400)
+        if not text:
+            return _err("请先填写投诉内容/诉求再润色", 400)
+
+        import requests as _requests
+        llm = _llm_config("llm")
+        if not llm.get("api_url") or not llm.get("api_key") or not llm.get("model"):
+            return _err("未配置大模型接口，请在系统设置中填写后重试", 400)
+        resp = _requests.post(
+            llm["api_url"],
+            headers={"Authorization": f"Bearer {llm['api_key']}", "Content-Type": "application/json"},
+            json={
+                "model": llm["model"],
+                "messages": [{"role": "user", "content": COMPLAINT_POLISH_PROMPTS[field] + text}],
+                # 与 /api/notes/polish 同口径：保留思考模式识别错别字/口语化，256 预算限速
+                "max_tokens": 768,
+                "temperature": 0.3,
+                "enable_thinking": True,
+                "thinking_budget": 256,
+            },
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return _err(_format_llm_error(resp), 400)
+        polished = ((resp.json().get("choices") or [{}])[0].get("message") or {}).get("content", "")
+        polished = (polished or "").strip()
+        if not polished:
+            return _err("AI 未返回有效内容，请重试", 400)
+        return _ok({"polished": polished})
+    except Exception as e:
+        return _err(f"AI 优化失败：{e}", 500)
+
+
+# ═══════════════════════════════════════════════════════════════
 #  API: 回复函 AI 润色
 # ═══════════════════════════════════════════════════════════════
 

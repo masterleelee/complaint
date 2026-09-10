@@ -343,6 +343,27 @@ try {
       }
     }
 
+    // 投诉内容/诉求 AI 润色（④卡片）：只修正错别字/病句/口语化，忠实原文不重写
+    const complaintPolishing = ref(""); // "" | "content" | "demands"：追踪正在润色的栏位
+    async function aiOptimizeComplaint(field) {
+      if (complaintPolishing.value) return;
+      const target = field === "content" ? extractContent : extractDemands;
+      const raw = (target.value || "").trim();
+      const label = field === "content" ? "投诉内容" : "投诉诉求";
+      if (!raw) { toast(`${label}为空`, `请先确认${label}已有文字后再「AI优化」`, "warning"); return; }
+      complaintPolishing.value = field;
+      try {
+        const d = await postJ("/api/complaint/polish", { field, text: raw });
+        if (!d.success) throw new Error(d.error || "AI 优化失败");
+        target.value = (d.data?.polished || "").trim() || raw;
+        toast("AI 已优化", `已修正错别字并整理为规范表述（${label}）`, "success");
+      } catch (e) {
+        toast("AI 优化失败", e.message, "danger");
+      } finally {
+        complaintPolishing.value = "";
+      }
+    }
+
     // ── 合同获取 + AI 分析（工作台一键链路）──
     const contractFileInput = Vue.ref(null);
 
@@ -895,6 +916,7 @@ try {
       // 工作台
       allTickets, ticketsOpen, ticketsArchived, ticketsWithdrawn, ticketsLoading,
       selectedTicketId, selectedTicket, selectedLoading, openCase, aiOptimizeNotes, notesPolishing,
+      aiOptimizeComplaint, complaintPolishing,
       handlingNotes, branchCooperation, coopOptions, feeUnlocked, studentNameEdit,
       requeryIdCard, requerying, requerySkipped, requerySources, requeryMsg, requeryWithIdCard,
       extractInput, extractContent, extractDemands, extracting, extractDirty, aiExtractComplaint,
