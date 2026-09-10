@@ -44,6 +44,9 @@ class QueryResult:
     duration_ms: int = 0
     phase_durations_ms: Dict[str, int] = field(default_factory=dict)
     retry_count: int = 0
+    # 第三系统「学员申请登记」档案检查状态（与阶段审核学时独立）。
+    # success=有档案 / not_found=查无 / error=查询异常；仅第三系统使用，其余系统为 None。
+    profile_status: Optional["QueryStatus"] = None
 
 
 @dataclass
@@ -452,27 +455,30 @@ class QueryEngine:
 
     @staticmethod
     def _need_third_profile(internal_result: Optional[QueryResult]) -> bool:
-        """内部系统已给出完整基本信息时，不必再查第三系统档案页（避免无谓请求）。
+        """第三系统「学员申请登记」档案检查——现为常驻查询。
 
-        档案页能补的是报名时间 / 手机号 / 学员状态——内部这三项都齐了就没必要补。
+        原因：三系统查询图标需依据「学员档案 + 培训学时」双维度上色
+        （绿=档案+学时 / 橙=仅档案 / 红=都无），故无论内部系统是否完整，
+        都必须发起档案检查以拿到 profile_status。档案数据本身仍用于补位
+        （报名时间/手机号/学员状态），与图标判定互不干扰。
         """
-        if not internal_result or internal_result.status != QueryStatus.SUCCESS:
-            return True
-        data = getattr(internal_result, "data", None)
-        if data is None:
-            return True
-        return not all(
-            str(getattr(data, f, "") or "").strip()
-            for f in ("registration_date", "phone", "student_status")
-        )
+        return True
 
     def _fetch_third_profile(self, id_card: str):
-        """补查第三系统学员档案。任何异常一律吞掉返回 None——它只是补充，不能影响主流程。"""
+        """补查第三系统学员档案，返回 (status, profile) 元组。
+
+        status: "found" 命中 / "not_found" 查无 / "error" 查询异常。
+        与 _query_third（阶段审核学时）互补：本方法走「学员申请登记」模块，
+        判定的是「该学员是否在第三系统有档案」，用于图标橙/红判定。
+        任何异常都吞掉返回 ("error", None)——它是补充，不能影响主流程。
+        """
         try:
-            return self._get_third().fetch_registration_profile(id_card)
+            prof = self._get_third().fetch_registration_profile(id_card)
+            # fetch_registration_profile：查无返回 None，登录失败抛 RuntimeError
+            return ("found" if prof is not None else "not_found"), prof
         except Exception as e:
             system_logger.warning("[Query] third 档案补查失败: %s", e)
-            return None
+            return ("error", None)
 
     async def _profile_task(self, id_card: str, internal_task):
         """第三系统档案补查任务（third 合并补位与 driving 跳过判断共用）。
@@ -519,8 +525,23 @@ class QueryEngine:
         except Exception:
             profile = None
 
-        if profile is not None and base.data is not None:
-            base.data.registration_profile = profile
+        # profile 为 (pstatus, prof) 元组；pstatus: "found"/"not_found"/"error"
+        pstatus, prof = (None, None)
+        if isinstance(profile, tuple):
+            pstatus, prof = profile
+        elif profile is not None:
+            prof = profile  # 防御：理论上 _fetch_third_profile 恒返回元组
+
+        if pstatus == "found":
+            base.profile_status = QueryStatus.SUCCESS
+        elif pstatus == "not_found":
+            base.profile_status = QueryStatus.NOT_FOUND
+        elif pstatus == "error":
+            base.profile_status = QueryStatus.ERROR
+
+        # 学时数据对象存在时，把档案补位挂上去（沿用既有补位逻辑）
+        if prof is not None and base.data is not None:
+            base.data.registration_profile = prof
         return base
 
     def _warm_driving_login(self) -> bool:
@@ -559,7 +580,7 @@ class QueryEngine:
             return _skipped()
 
         # 内部没有可判定的报名日期 → 等第三档案补查结果再判一次。
-        # 档案补查只在内部信息不全时才真正发起（_need_third_profile 闸门），正常学员零开销。
+        # 档案补查现为常驻查询（_need_third_profile 恒返回 True），用于图标双维度判定。
         internal_reg = getattr(getattr(internal_result, "data", None), "registration_date", "")
         if _parse_date_str(internal_reg) is None:
             try:
@@ -603,10 +624,24 @@ class QueryEngine:
         info.id_card = id_card
         
         # 来源状态
+        # 第三系统图标按「学员档案(学员申请登记) + 培训学时(阶段审核)」双维度上色：
+        #   绿 = 档案命中 且 学时命中 / 橙 = 档案命中 但 学时查无 / 红 = 都无。
+        # 档案查询异常时回落到学时状态（不误红）。
+        third_base = results.get(SystemType.THIRD, QueryResult("third", QueryStatus.ERROR)).status.value
+        third_pstat = third_result.profile_status.value if third_result and third_result.profile_status else None
+        if third_pstat == "success" and third_base == "success":
+            third_combined = "success"          # 绿：档案 + 学时
+        elif third_pstat == "success":
+            third_combined = "profile"          # 橙：有档案无学时
+        elif third_pstat == "error":
+            third_combined = third_base         # 档案异常 → 回落学时（成功则绿，否则红）
+        else:  # not_found / None
+            third_combined = "success" if third_base == "success" else "not_found"
         info.sources = {
             "internal": results.get(SystemType.INTERNAL, QueryResult("internal", QueryStatus.ERROR)).status.value,
-            "third": results.get(SystemType.THIRD, QueryResult("third", QueryStatus.ERROR)).status.value,
+            "third": third_combined,
             "driving": results.get(SystemType.DRIVING, QueryResult("driving", QueryStatus.ERROR)).status.value,
+            "third_profile": third_pstat,
         }
         info.query_durations_ms = {
             "internal": results.get(SystemType.INTERNAL, QueryResult("internal", QueryStatus.ERROR)).duration_ms,

@@ -435,6 +435,7 @@ export function useComplaint(onAutoQueryDone = null) {
       success: "查询成功，有学员记录",
       not_found: "查询成功，但该系统无此学员记录",
       no_contract: "2024年3月15日前报名，东莞驾培无电子合同",
+      profile: "查到学员档案，无培训学时记录",
       error: "查询失败（登录或网络异常）",
       timeout: "查询超时，可稍后重试或只查看已返回系统结果",
     };
@@ -442,12 +443,16 @@ export function useComplaint(onAutoQueryDone = null) {
       pending: { class: "source-pending", icon: "bi-circle" },
       running: { class: "source-running", icon: "bi-arrow-repeat spin" },
       success: { class: "source-success", icon: "bi-check-circle-fill" },
+      profile: { class: "source-warning", icon: "bi-folder-check" },
       not_found: { class: "source-info", icon: "bi-info-circle-fill" },
       no_contract: { class: "source-info", icon: "bi-dash-circle" },
       error: { class: "source-error", icon: "bi-x-circle-fill" },
       timeout: { class: "source-error", icon: "bi-clock-fill" },
     };
     for (const k in sources) {
+      // 后端 sources 可能带非进度卡键（如 third_profile 档案子状态），
+      // 只处理已在 resetQueryProgress 初始化的 internal/third/driving。
+      if (!queryProgress.items[k]) continue;
       const s = sources[k];
       const st = statusMap[s] || statusMap.pending;
       queryProgress.items[k].class = st.class;
@@ -455,7 +460,7 @@ export function useComplaint(onAutoQueryDone = null) {
       const ms = durations[k] || 0;
       queryProgress.items[k].duration = ms ? `${(ms / 1000).toFixed(1)}s` : "";
       queryProgress.items[k].tip = `${statusTips[s] || ""}${ms ? `，耗时 ${(ms / 1000).toFixed(1)} 秒` : ""}`;
-      if (s === "success" || s === "not_found" || s === "no_contract" || s === "error" || s === "timeout") completed++;
+      if (s === "success" || s === "not_found" || s === "no_contract" || s === "profile" || s === "error" || s === "timeout") completed++;
       if (s === "error" || s === "timeout") hasError = true;
     }
     queryProgress.percent = Math.round((completed / 3) * 100);
@@ -482,9 +487,11 @@ export function useComplaint(onAutoQueryDone = null) {
     if (status === "timeout") return "查询超时";
     if (status === "no_contract") return "无合同";
     if (status === "not_found") return system === "third" ? "无学时记录" : "无学员记录";
+    // 第三系统「学员申请登记」档案命中、但阶段审核无学时 → 橙
+    if (status === "profile") return system === "third" ? "查到档案·无学时" : "有档案无学时";
     if (status !== "success") return "状态未知";
     if (system === "internal") return "查到数据";
-    if (system === "third") return "查到学时";
+    if (system === "third") return "查到档案与学时";
     return "查到学员";
   }
 
@@ -510,6 +517,7 @@ export function useComplaint(onAutoQueryDone = null) {
 
   function sourceStatusColor(status) {
     if (status === "success") return "var(--green)";
+    if (status === "profile") return "var(--color-warning)";
     if (status === "pending" || status === "running") return "var(--gray-500)";
     if (status === "not_found" || status === "no_contract") return "var(--gray-600)";
     return "#dc2626";
@@ -517,6 +525,7 @@ export function useComplaint(onAutoQueryDone = null) {
 
   function sourceStatusIcon(status) {
     if (status === "success") return "bi-check-circle-fill";
+    if (status === "profile") return "bi-folder-check";
     if (status === "running") return "bi-arrow-repeat spin";
     if (status === "pending") return "bi-circle";
     if (status === "timeout") return "bi-clock-fill";
@@ -526,9 +535,11 @@ export function useComplaint(onAutoQueryDone = null) {
     return "bi-info-circle-fill";
   }
 
-  // ① 三系统查询卡片右上角徽章：二档 ✅绿=查到数据 / ❌红=其余（含查无/无合同/失败/查询中）
+  // ① 三系统查询卡片右上角徽章：
+  //   ok(绿)=查到数据 / warn(橙)=第三系统有档案无学时 / na-err(红)=其余（查无/无合同/失败/查询中）
   function sourcePillClass(status) {
     if (status === "success") return "ok";
+    if (status === "profile") return "warn";
     return "na-err";
   }
 
@@ -1148,6 +1159,8 @@ export function useComplaint(onAutoQueryDone = null) {
     qErr,
     qr,
     queryProgress,
+    resetQueryProgress,
+    updateQueryProgress,
     sourceStatusText,
     sourceStatusColor,
     sourceStatusIcon,

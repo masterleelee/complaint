@@ -415,6 +415,7 @@ textarea.form-control { resize: vertical; min-height: 60px; }
 .source-success { background: var(--success-light); color: var(--success); padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; }
 .source-error { background: var(--danger-light); color: var(--danger); padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; }
 .source-info { background: #f0f9ff; color: #0284c7; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; }
+.source-warning { background: var(--warning-light); color: var(--warning); padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; }
 
 /* ── Info grid ── */
 .info-grid {
