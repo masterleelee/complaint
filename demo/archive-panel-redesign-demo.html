@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>「查看归档文件」面板 · 交互演示（方案 A）</title>
+<style>
+  :root{
+    --primary:#2563eb; --primary-light:#e0ecff; --primary-dark:#1d4ed8;
+    --success:#059669; --success-light:#ecfdf5;
+    --warning:#d97706; --warning-light:#fffbeb;
+    --danger:#dc2626; --danger-light:#fef2f2;
+    --surface:#ffffff; --bg:#eef3f8; --text:#0f172a; --text-secondary:#64748b;
+    --border:#e2e8f0; --radius:10px; --radius-lg:14px;
+    --shadow-sm:0 1px 2px rgba(15,23,42,.05), 0 8px 24px rgba(15,23,42,.04);
+    --shadow:0 12px 32px rgba(15,23,42,.08);
+    --shadow-lg:0 18px 48px rgba(15,23,42,.12);
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro","Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1120px;margin:0 auto;padding:28px 20px 80px}
+  h1{font-size:20px;margin:0 0 6px}
+  .sub{color:var(--text-secondary);font-size:13px;margin:0 0 22px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);margin-bottom:18px}
+  .card-h{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .card-h h2{font-size:15px;margin:0;font-weight:600}
+  .card-h .hint{color:var(--text-secondary);font-size:12px;font-weight:400}
+  .card-b{padding:18px}
+  .tag{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;background:var(--primary-light);color:var(--primary-dark);font-weight:600}
+  .tag.sm{font-size:11px;padding:1px 7px}
+
+  /* 按钮 */
+  button{font-family:inherit;font-size:13px;cursor:pointer;border:1px solid var(--border);background:#fff;color:var(--text);
+    padding:6px 12px;border-radius:8px;transition:.15s;display:inline-flex;align-items:center;gap:6px}
+  button:hover:not(:disabled){border-color:var(--primary);color:var(--primary-dark);background:var(--primary-light)}
+  button:disabled{cursor:not-allowed;opacity:.5}
+  button.on{background:var(--primary);border-color:var(--primary);color:#fff}
+  button.on:hover{background:var(--primary-dark);border-color:var(--primary-dark);color:#fff}
+  button.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  button.primary:hover{background:var(--primary-dark);border-color:var(--primary-dark);color:#fff}
+  button.ghost{border-color:transparent;background:transparent;color:var(--text-secondary)}
+  button.ghost:hover{background:#f1f5f9;color:var(--text)}
+  .scenes{display:flex;gap:8px;flex-wrap:wrap}
+
+  /* 投诉列表行：入口对照 */
+  table.cl{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  table.cl th{text-align:left;font-weight:600;color:var(--text-secondary);font-size:12px;padding:8px 10px;background:#f8fafc;border-bottom:1px solid var(--border)}
+  table.cl td{padding:10px;border-bottom:1px solid var(--border);vertical-align:middle}
+  table.cl tr:last-child td{border-bottom:none}
+  .muted{color:var(--text-secondary)}
+  .row-view-files{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:8px;
+    border:1px solid var(--border);background:#fff;color:var(--primary-dark);font-size:12.5px;font-weight:500;cursor:pointer}
+  .row-view-files:hover{background:var(--primary-light);border-color:var(--primary)}
+  .old-row-open{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:8px;
+    border:1px dashed var(--danger);background:var(--danger-light);color:var(--danger);font-size:12.5px;text-decoration:line-through;cursor:not-allowed}
+  .cmp{display:grid;grid-template-columns:86px 1fr;gap:10px 14px;align-items:center}
+  .cmp .lbl{font-size:12px;color:var(--text-secondary)}
+  .strike-note{font-size:12px;color:var(--danger);margin-top:8px}
+
+  /* 模态 */
+  .overlay{position:fixed;inset:0;background:rgba(15,23,42,.42);display:none;align-items:center;justify-content:center;padding:24px;z-index:50}
+  .overlay.open{display:flex}
+  .modal{width:100%;max-width:760px;background:var(--surface);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);
+    display:flex;flex-direction:column;max-height:86vh;overflow:hidden}
+  .m-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+  .m-head .t{font-size:16px;font-weight:600}
+  .m-head .meta{font-size:12.5px;color:var(--text-secondary);margin-top:2px}
+  .m-head .sp{flex:1}
+  .m-tools{padding:10px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#f8fafc}
+  .m-tools .sp{flex:1}
+  .m-body{overflow:auto;flex:1;min-height:220px}
+  .m-foot{padding:11px 20px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--text-secondary);background:#f8fafc}
+  .m-foot .sp{flex:1}
+
+  /* 文件列表视图 */
+  table.files{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  table.files th{text-align:left;font-weight:600;color:var(--text-secondary);font-size:12px;padding:9px 20px;background:#fff;border-bottom:1px solid var(--border);position:sticky;top:0}
+  table.files td{padding:10px 20px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+  table.files tr:last-child td{border-bottom:none}
+  table.files tr:hover td{background:#f8fafc}
+  table.files td.nowrap{white-space:nowrap}
+  .fname{display:flex;align-items:center;gap:9px}
+  .fname .nm{word-break:break-all}
+  .ftype{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+  .ftype.docx{background:var(--primary-light);color:var(--primary-dark)}
+  .ftype.pdf{background:var(--danger-light);color:var(--danger)}
+  .ftype.img{background:var(--warning-light);color:var(--warning)}
+  .ftype.txt{background:var(--success-light);color:var(--success)}
+  .ops{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap}
+  .ops button{padding:4px 9px;font-size:12px;white-space:nowrap;flex:none}
+
+  /* 图标视图 */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;padding:16px 20px}
+  .gcard{border:1px solid var(--border);border-radius:var(--radius);padding:14px 12px;text-align:center;background:#fff}
+  .gcard:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
+  .gcard .thumb{height:64px;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+  .gcard .gname{font-size:12.5px;word-break:break-all;margin-bottom:4px;line-height:1.45}
+  .gcard .gmeta{font-size:11.5px;color:var(--text-secondary);margin-bottom:10px}
+  .gcard .gops{display:flex;gap:6px;justify-content:center}
+  .gcard .gops button{padding:3px 8px;font-size:11.5px}
+
+  /* 状态块 */
+  .state{padding:44px 28px;text-align:center}
+  .state .ic{width:56px;height:56px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;margin-bottom:14px}
+  .state h3{margin:0 0 8px;font-size:15.5px}
+  .state p{margin:0 auto 4px;max-width:520px;color:var(--text-secondary);font-size:13px}
+  .state .act{margin-top:18px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+  .state .who{margin-top:14px;font-size:12.5px;display:inline-flex;align-items:center;gap:6px;padding:5px 11px;border-radius:999px}
+  .who.admin{background:var(--warning-light);color:var(--warning)}
+  .who.self{background:var(--primary-light);color:var(--primary-dark)}
+  .err-detail{margin:16px auto 0;max-width:520px;text-align:left;font-size:12px;color:var(--text-secondary)}
+  .err-detail summary{cursor:pointer;color:var(--text-secondary);font-size:12px}
+  .err-detail pre{margin:8px 0 0;background:#0f172a;color:#e2e8f0;padding:10px 12px;border-radius:8px;overflow:auto;font-size:11.5px;line-height:1.5}
+  .spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite;display:inline-block}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* 预览视图 */
+  .pv{padding:16px 20px}
+  .pv-bar{display:flex;align-items:center;gap:10px;margin-bottom:12px;font-size:13px}
+  .pv-bar .sp{flex:1}
+  .pv-stage{border:1px solid var(--border);border-radius:var(--radius);background:#f8fafc;min-height:300px;display:flex;align-items:center;justify-content:center;overflow:auto;padding:16px}
+  .pv-paper{background:#fff;box-shadow:var(--shadow);border-radius:6px;padding:26px 30px;max-width:520px;width:100%;font-size:12.5px;color:#334155;line-height:1.9}
+  .pv-paper h4{margin:0 0 4px;text-align:center;font-size:15px;color:var(--text)}
+  .pv-paper .ctr{text-align:center;color:var(--text-secondary);font-size:11.5px;margin-bottom:16px}
+  .pv-paper .kv{display:grid;grid-template-columns:88px 1fr;gap:6px 10px}
+  .pv-paper .kv .k{color:var(--text-secondary)}
+  .pv-img{width:230px;height:300px;border-radius:8px;box-shadow:var(--shadow);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px;letter-spacing:.5px}
+  .pv-txt{background:#fff;border:1px solid var(--border);border-radius:8px;padding:18px 20px;width:100%;max-width:560px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;white-space:pre-wrap;line-height:1.85;color:#334155}
+
+  /* toast */
+  #toast{position:fixed;left:50%;bottom:32px;transform:translateX(-50%) translateY(18px);background:#0f172a;color:#fff;
+    padding:10px 18px;border-radius:999px;font-size:13px;opacity:0;transition:.24s;pointer-events:none;z-index:99;box-shadow:var(--shadow-lg)}
+  #toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+  .note{background:var(--primary-light);border:1px solid #bfdbfe;border-radius:var(--radius);padding:12px 14px;font-size:12.5px;color:#1e3a8a;margin:14px 0 0}
+  .note b{color:var(--primary-dark)}
+  details.desig{margin-top:14px}
+  details.desig summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--primary-dark)}
+  details.desig .dl{font-size:12.5px;color:var(--text-secondary);margin-top:10px}
+  details.desig .dl li{margin-bottom:7px}
+  code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>「查看归档文件」面板 · 交互演示</h1>
+  <p class="sub">方案 A 落地前的可操作原型。点按钮就能看到真实效果，可直接在下方切换 5 个场景（含 4 种失败态）。</p>
+
+  <!-- ① 入口对照 -->
+  <div class="card">
+    <div class="card-h">
+      <h2>① 入口改造：按钮说了什么，就必须做到什么</h2>
+      <span class="hint">原来的按钮承诺「弹出资源管理器」，但远程电脑上做不到 → 用户以为坏了</span>
+    </div>
+    <div class="card-b">
+      <div class="cmp">
+        <div class="lbl">改造前</div>
+        <div>
+          <span class="old-row-open">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 3.5A1.5 1.5 0 0 1 3 2h3.2l1.2 1.5H13A1.5 1.5 0 0 1 14.5 5v6A1.5 1.5 0 0 1 13 12.5H3A1.5 1.5 0 0 1 1.5 11z"/></svg>
+            打开归档
+          </span>
+          <span class="muted" style="margin-left:10px;font-size:12px">标题「在系统文件管理器中打开该学员的归档文件夹」</span>
+        </div>
+        <div class="lbl">改造后</div>
+        <div>
+          <button class="row-view-files" onclick="openPanel()">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M7 4.5h5L15.5 8v6.5h-9z"/></svg>
+            查看归档文件
+          </button>
+          <span class="muted" style="margin-left:10px;font-size:12px">标题「查看该学员的归档文件（下载 / 预览）」</span>
+        </div>
+      </div>
+      <div class="strike-note">要点：按钮不再承诺「弹出资源管理器」，而是承诺「在这里看到文件」——按下去必有反应。</div>
+    </div>
+  </div>
+
+  <!-- ② 投诉列表中的入口 -->
+  <div class="card">
+    <div class="card-h">
+      <h2>② 它在投诉列表里的样子</h2>
+      <span class="hint">每行一个入口，点任意一行都能打开同一个面板</span>
+    </div>
+    <div class="card-b" style="padding:0">
+      <table class="cl">
+        <colgroup><col style="width:110px"><col style="width:90px"><col style="width:150px"><col style="width:80px"><col style="width:90px"><col></colgroup>
+        <thead><tr><th>投诉日期</th><th>学员姓名</th><th>归属网点</th><th>类型</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>2026-08-24</td><td>李四</td><td>南城-南城分校</td><td>A</td>
+            <td><span class="tag sm" style="background:var(--success-light);color:var(--success)">已归档</span></td>
+            <td style="text-align:right"><button class="row-view-files" onclick="openPanel('李四','2026-08-24')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M7 4.5h5L15.5 8v6.5h-9z"/></svg>查看归档文件</button></td>
+          </tr>
+          <tr>
+            <td>2026-08-26</td><td>王五</td><td>麻涌-麻涌分校</td><td>B</td>
+            <td><span class="tag sm" style="background:var(--warning-light);color:var(--warning)">处理中</span></td>
+            <td style="text-align:right"><button class="row-view-files" onclick="openPanel('王五','2026-08-26','dir_missing')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M7 4.5h5L15.5 8v6.5h-9z"/></svg>查看归档文件</button></td>
+          </tr>
+          <tr>
+            <td>2026-08-28</td><td>赵六</td><td>莞城-莞城分校</td><td>A</td>
+            <td><span class="tag sm" style="background:var(--success-light);color:var(--success)">已归档</span></td>
+            <td style="text-align:right"><button class="row-view-files" onclick="openPanel('赵六','2026-08-28')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M7 4.5h5L15.5 8v6.5h-9z"/></svg>查看归档文件</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-b" style="padding-top:0">
+      <div class="note">第 2 行「王五」故意演示<b>「还没生成文档」</b>的情况——点开可以看到系统怎么把话说清楚，而不是丢一个程序报错。</div>
+    </div>
+  </div>
+
+  <!-- ③ 场景切换 -->
+  <div class="card">
+    <div class="card-h">
+      <h2>③ 5 个场景一键切换</h2>
+      <span class="hint">正常 / 加载中 / 未生成文档 / 共享盘不可用 / 其他错误</span>
+    </div>
+    <div class="card-b">
+      <div class="scenes">
+        <button id="s-ok" class="on" onclick="setScene('ok')">✅ 正常（6 个文件）</button>
+        <button id="s-loading" onclick="setScene('loading')">⏳ 加载中</button>
+        <button id="s-dir_missing" onclick="setScene('dir_missing')">📄 还没生成文档</button>
+        <button id="s-root_unavailable" onclick="setScene('root_unavailable')">🔌 共享盘不可用</button>
+        <button id="s-other" onclick="setScene('other')">⚠️ 其他错误</button>
+      </div>
+      <div class="note" style="margin-top:14px">
+        切好场景后点上方任意一个<b>「查看归档文件」</b>按钮，面板就会按该场景渲染。
+      </div>
+    </div>
+  </div>
+
+  <!-- 设计说明 -->
+  <div class="card">
+    <div class="card-b">
+      <details class="desig" open>
+        <summary>设计说明：为什么这样改（点开/收起）</summary>
+        <div class="dl">
+          <ul>
+            <li><b>为什么不弹文件夹了？</b>系统装在你这台 Mac 上，其他同事用局域网访问。网页出于安全限制<b>不能</b>直接打开别人电脑上的文件夹。所以改成「在网页里把文件列出来」——零安装、一定有反应。</li>
+            <li><b>docx 为什么不能预览？</b>浏览器原生只认 PDF、图片、纯文本。Word 文档要在线预览得另外装转换组件，本期先不做，按钮置灰并提示「请下载后打开」。</li>
+            <li><b>为什么区分两种失败？</b>「还没生成文档」是操作人自己能解决的（去生成）；「共享盘不可用」只能找管理员。混成一句话，用户不知道该找谁。</li>
+            <li><b>技术细节去哪了？</b>折叠在「查看技术细节」里，默认不显示。界面上只说人话，排查时再展开。</li>
+            <li><b>为什么没有「打包下载」？</b>按你的要求：需要哪个文件自己下载，不压缩打包。</li>
+          </ul>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <p class="sub" style="margin:0">演示用的文件清单与错误文案均为<b>真实文案</b>（与后端接口一致），文件内容为示意。</p>
+</div>
+
+<!-- 面板 -->
+<div class="overlay" id="ov">
+  <div class="modal">
+    <div class="m-head">
+      <div>
+        <div class="t">归档文件</div>
+        <div class="meta" id="mMeta">学员：李四 · 投诉日期：2026-08-24</div>
+      </div>
+      <div class="sp"></div>
+      <button class="ghost" onclick="closePanel()" title="关闭">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M4.3 3.3 8 7l3.7-3.7 1 1L9 8l3.7 3.7-1 1L8 9l-3.7 3.7-1-1L7 8 3.3 4.3z"/></svg>
+      </button>
+    </div>
+
+    <div class="m-tools" id="mTools">
+      <button onclick="toast('已复制归档路径到剪贴板')">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M5 2h6v2H5zM3.5 3.5h9v10h-9z" opacity=".45"/><path d="M5.5 1h5v2.5h-5z"/></svg>复制路径</button>
+      <button onclick="refresh()">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M13 8a5 5 0 1 1-1.5-3.6V3h1v3.5H9v-1h1.6A4 4 0 1 0 12 8z"/></svg>刷新</button>
+      <div class="sp"></div>
+      <button class="ghost" id="vlist" onclick="setView('list')" title="列表视图">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 3.5h12v1.4H2zM2 7.3h12v1.4H2zM2 11.1h12v1.4H2z"/></svg></button>
+      <button class="ghost" id="vgrid" onclick="setView('grid')" title="图标视图">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h5.2v5.2H2zM8.8 2H14v5.2H8.8zM2 8.8h5.2V14H2zM8.8 8.8H14V14H8.8z"/></svg></button>
+    </div>
+
+    <div class="m-body" id="mBody"></div>
+    <div class="m-foot" id="mFoot"><span id="mCount"></span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const FILES = [
+  {name:'投诉登记表.docx',                size:88064,    mtime:'2026-08-24 15:32', type:'docx', mime:null},
+  {name:'投诉回复函.docx',                size:79872,    mtime:'2026-08-24 15:32', type:'docx', mime:null},
+  {name:'李四_合同_2021级.pdf',           size:1258291,  mtime:'2026-08-20 10:05', type:'pdf',  mime:'application/pdf'},
+  {name:'证据页1.png',                    size:348160,   mtime:'2026-08-23 09:41', type:'img',  mime:'image/png'},
+  {name:'证据页2.jpg',                    size:512000,   mtime:'2026-08-23 09:41', type:'img',  mime:'image/jpeg'},
+  {name:'2026-08-24_李四_撤诉说明.txt',   size:1024,     mtime:'2026-08-25 17:03', type:'txt',  mime:'text/plain'},
+];
+
+const MSG = {
+  dir_missing: {
+    icon:'doc', color:'var(--primary)', bg:'var(--primary-light)',
+    title:'还没生成归档文件',
+    body:'案件归档夹不存在：该学员尚未生成投诉登记表/回复函，请先在工单里生成后再查看',
+    who:['self','你可以自己解决'],
+    act:'去生成登记表',
+    detail:'案件归档夹不存在: /Volumes/File/…/南城-南城分校/2026-08-26_王五_441900********0011_南城',
+  },
+  root_unavailable: {
+    icon:'plug', color:'var(--warning)', bg:'var(--warning-light)',
+    title:'归档共享盘暂时不可用',
+    body:'归档根目录不可用：共享盘可能未挂载或当前路径无权限，请联系管理员，或稍后重试',
+    who:['admin','需要联系管理员'],
+    act:'重试',
+    detail:'无法创建归档根目录: /Volumes/File (PermissionError: [Errno 13] Permission denied)',
+  },
+  other: {
+    icon:'warn', color:'var(--danger)', bg:'var(--danger-light)',
+    title:'读取归档目录失败',
+    body:'读取案件归档夹时出错，请稍后重试；若反复出现请联系管理员。',
+    who:['admin','需要联系管理员'],
+    act:'重试',
+    detail:'OSError: [Errno 5] Input/output error',
+  },
+};
+
+let scene = 'ok', view = 'list', preview = null, cur = {name:'李四', date:'2026-08-24'};
+
+/* ── 图标 ── */
+function icon(kind){
+  const p = {
+    docx:'<path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M7 4.5h5L15.5 8v6.5h-9z"/>',
+    pdf :'<path d="M4 1.5h8v13H4z"/><path d="M6 10.5h4v1H6zM6 8h4v1H6z" fill="#fff" opacity=".85"/>',
+    img :'<path d="M2 3h12v10H2z" opacity=".3"/><path d="M2 12l3.4-4 2.4 2.8L10 8l4 4.6z"/><circle cx="5.4" cy="6" r="1.2"/>',
+    txt :'<path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M6 7h4.5v1H6zM6 9.2h4.5v1H6zM6 11.4h3v1H6z"/>',
+    doc :'<path d="M4 1.5h5L12.5 5v9.5h-9z"/><path d="M6 8h4.5v1H6zM6 10.2h3v1H6z" fill="#fff" opacity=".85"/>',
+    plug:'<path d="M6 2h1.2v4H6zM9 2h1.2v4H9z"/><path d="M4.6 6h7v2.6A3.6 3.6 0 0 1 8.1 12h-.2a3.6 3.6 0 0 1-3.5-3.6z"/><path d="M7.5 12h1v2.2h-1z"/>',
+    warn:'<path d="M8 1.6 15 14H1z"/><path d="M7.3 6h1.4v4H7.3zM7.3 11h1.4v1.4H7.3z" fill="#fff"/>',
+    down:'<path d="M7.3 2h1.4v6h2.6L8 11.4 4.7 8h2.6z"/><path d="M3 12.6h10V14H3z"/>',
+    eye :'<path d="M8 3.5C5 3.5 2.4 5.6 1.4 8c1 2.4 3.6 4.5 6.6 4.5S13.6 10.4 14.6 8C13.6 5.6 11 3.5 8 3.5zm0 6.8A2.3 2.3 0 1 1 8 5.7a2.3 2.3 0 0 1 0 4.6z"/>',
+    back:'<path d="M7 3 2.5 8 7 13v-3.2h6.5V6.2H7z"/>',
+    lock:'<path d="M4.4 7V5.4a3.6 3.6 0 0 1 7.2 0V7H13v7H3V7zm1.4 0h4.4V5.4a2.2 2.2 0 0 0-4.4 0z"/>',
+  }[kind] || '';
+  return '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">'+p+'</svg>';
+}
+function fileIcon(f){ return icon(f.type==='img'?'img':f.type); }
+function fmtSize(b){ return b>=1048576 ? (b/1048576).toFixed(1)+' MB' : (b/1024).toFixed(0)+' KB'; }
+function totalSize(){ return FILES.reduce((a,f)=>a+f.size,0); }
+
+/* ── 面板 ── */
+function openPanel(name, date, forcedScene){
+  if(name){ cur = {name, date}; }
+  if(forcedScene){ setScene(forcedScene); }
+  preview = null;
+  document.getElementById('mMeta').textContent = '学员：'+cur.name+' · 投诉日期：'+cur.date;
+  document.getElementById('ov').classList.add('open');
+  render();
+}
+function closePanel(){ document.getElementById('ov').classList.remove('open'); }
+
+function setScene(s){
+  scene = s; preview = null;
+  ['ok','loading','dir_missing','root_unavailable','other'].forEach(k=>{
+    const el = document.getElementById('s-'+k);
+    if(el) el.classList.toggle('on', k===s);
+  });
+  render();
+}
+function setView(v){
+  view = v; preview = null;
+  document.getElementById('vlist').classList.toggle('on', v==='list');
+  document.getElementById('vgrid').classList.toggle('on', v==='grid');
+  render();
+}
+function refresh(){ toast('已刷新'); render(); }
+
+function render(){
+  const body = document.getElementById('mBody');
+  const foot = document.getElementById('mFoot');
+  const tools = document.getElementById('mTools');
+  document.getElementById('vlist').classList.toggle('on', view==='list');
+  document.getElementById('vgrid').classList.toggle('on', view==='grid');
+
+  if(scene === 'loading'){
+    tools.style.visibility='hidden';
+    foot.innerHTML = '<span class="muted">正在读取归档目录…</span>';
+    body.innerHTML = '<div class="state"><span class="spinner"></span><p style="margin-top:16px">正在读取归档目录…</p></div>';
+    return;
+  }
+  tools.style.visibility='hidden';
+  foot.innerHTML = '';
+
+  if(scene !== 'ok'){
+    const m = MSG[scene];
+    body.innerHTML = `
+      <div class="state">
+        <div class="ic" style="background:${m.bg};color:${m.color}">${icon(m.icon)}</div>
+        <h3>${m.title}</h3>
+        <p>${m.body}</p>
+        <div class="who ${m.who[0]}">
+          ${icon(m.who[0]==='admin'?'plug':'doc')}
+          ${m.who[1]}
+        </div>
+        <div class="act">
+          <button class="primary" onclick="act('${m.act}')">${m.act}</button>
+          ${scene==='dir_missing' ? '' : '<button onclick="toast(\'已复制归档路径到剪贴板\')">复制路径</button>'}
+        </div>
+        <details class="err-detail">
+          <summary>查看技术细节（仅供排查，默认不显示）</summary>
+          <pre>${m.detail}</pre>
+        </details>
+      </div>`;
+    return;
+  }
+
+  /* 预览态 */
+  if(preview){
+    const f = FILES.find(x=>x.name===preview) || FILES[2];
+    let stage='';
+    if(f.type==='pdf'){
+      stage = `<div class="pv-paper">
+        <h4>学员投诉回复函</h4>
+        <div class="ctr">东莞市快捷机动车驾驶员培训有限公司</div>
+        <div class="kv">
+          <div class="k">学员姓名</div><div>${cur.name}</div>
+          <div class="k">身份证号</div><div>441900********0011</div>
+          <div class="k">投诉日期</div><div>${cur.date}</div>
+          <div class="k">处理情况</div><div>已协调网点退费 2000 元</div>
+          <div class="k">总扣费</div><div>1700 元</div>
+          <div class="k">应退回</div><div>2000 元</div>
+        </div>
+      </div>`;
+    } else if(f.type==='img'){
+      stage = `<div class="pv-img" style="background:linear-gradient(135deg,#94a3b8,#475569)">示意图（点击可放大）</div>`;
+    } else {
+      stage = `<div class="pv-txt">学员姓名：${cur.name}
+身份证号：441900********0011
+投诉日期：${cur.date}
+撤诉原因：已协商解决
+经办说明：网点已与学员达成一致，学员确认收到退款后撤诉。
+
+（本文件为纯文本，浏览器可直接显示）</div>`;
+    }
+    body.innerHTML = `
+      <div class="pv">
+        <div class="pv-bar">
+          <button onclick="preview=null;render()">${icon('back')} 返回文件列表</button>
+          <div class="sp"></div>
+          <span class="muted">正在预览：${f.name}</span>
+          <button onclick="toast('开始下载：${f.name}')">${icon('down')} 下载</button>
+        </div>
+        <div class="pv-stage">${stage}</div>
+      </div>`;
+    foot.innerHTML = `<span class="muted">共 ${FILES.length} 个文件 · 合计 ${fmtSize(totalSize())}</span>`;
+    return;
+  }
+
+  /* 列表 / 图标 */
+  tools.style.visibility='visible';
+  if(view === 'list'){
+    body.innerHTML = `<table class="files">
+      <thead><tr>
+        <th style="width:44%">文件名</th><th style="width:12%">大小</th>
+        <th style="width:18%">修改时间</th><th style="width:26%;text-align:right">操作</th>
+      </tr></thead>
+      <tbody>${FILES.map(f=>`
+        <tr>
+          <td><div class="fname">
+            <span class="ftype ${f.type}">${fileIcon(f)}</span>
+            <span class="nm">${f.name}</span>
+          </div></td>
+          <td class="muted nowrap">${fmtSize(f.size)}</td>
+          <td class="muted nowrap">${f.mtime}</td>
+          <td><div class="ops">
+            <button onclick="toast('开始下载：${f.name}')">${icon('down')} 下载</button>
+            ${f.mime
+              ? `<button onclick="preview='${f.name}';render()">${icon('eye')} 预览</button>`
+              : `<button disabled title="该类型不支持在线预览，请下载后打开">${icon('lock')} 预览</button>`}
+          </div></td>
+        </tr>`).join('')}</tbody></table>`;
+  } else {
+    body.innerHTML = `<div class="grid">${FILES.map(f=>`
+      <div class="gcard">
+        <div class="thumb ftype ${f.type}" style="width:100%;height:64px;border-radius:8px">${fileIcon(f)}</div>
+        <div class="gname">${f.name}</div>
+        <div class="gmeta">${fmtSize(f.size)} · ${f.mtime.slice(5)}</div>
+        <div class="gops">
+          <button onclick="toast('开始下载：${f.name}')">${icon('down')}</button>
+          ${f.mime
+            ? `<button onclick="preview='${f.name}';render()">${icon('eye')}</button>`
+            : `<button disabled title="该类型不支持在线预览，请下载后打开">${icon('lock')}</button>`}
+        </div>
+      </div>`).join('')}</div>`;
+  }
+  foot.innerHTML = `<span class="muted">共 ${FILES.length} 个文件 · 合计 ${fmtSize(totalSize())}</span>
+    <div class="sp"></div>
+    <span class="legend">
+      <span><i style="background:var(--primary)"></i>Word</span>
+      <span><i style="background:var(--danger)"></i>PDF</span>
+      <span><i style="background:var(--warning)"></i>图片</span>
+      <span><i style="background:var(--success)"></i>文本</span>
+    </span>`;
+}
+
+function act(label){
+  if(label==='去生成登记表'){ toast('跳转到「生成登记表」…（演示）'); return; }
+  toast('正在重试…（演示）');
+}
+let tid=null;
+function toast(msg){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(tid); tid=setTimeout(()=>t.classList.remove('show'),1800);
+}
+document.getElementById('ov').addEventListener('click', e=>{ if(e.target.id==='ov') closePanel(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closePanel(); });
+setView('list');
+</script>
+</body>
+</html>
