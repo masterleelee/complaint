@@ -1,6 +1,6 @@
 # ISS-AP-09 · 「复制路径」应复制 Windows UNC 路径，而非服务器本机挂载路径
 
-**Status:** done —— 2026-09-11 主 Agent 实现
+**Status:** done —— 2026-09-11 主 Agent 实现（code `9bf4eb9` / docs `d31f0f7`）
 **Priority:** P1（复制出去的路径在目标电脑上**打不开**，功能等于没做对）
 **依赖:** ISS-AP-04 ✅ / ISS-AP-05 ✅（面板已是主路径，本单只换复制载荷）
 **并行:** ❌ 触碰 `config.py` / `app.py` / `useWorkbench.js` 的工单互斥
