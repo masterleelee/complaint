@@ -69,6 +69,9 @@ from services.archive_service import (
     validate_archive_root,
     open_case_dir,
     resolve_case_dir,
+    # to_unc_path：/open-archive 收敛为仅本机后，app.py 已无调用方。
+    # 按 spec.md D1「冻结不删」保留导入（回滚方案 A 时无需重新接线）；
+    # 真正的清理归 ISS-AP-06，需单独审批。
     to_unc_path,
     generate_helper_bat,
     generate_diagnose_bat,
@@ -3865,15 +3868,24 @@ def _err_resolved(failure: dict):
 @app.route("/api/tickets/<ticket_id>/open-archive", methods=["POST"])
 @login_required
 def api_tickets_open_archive(ticket_id):
-    """打开该学员的案件归档夹（不走归档三闸门：夹子在磁盘上即可打开）。
+    """在本机（服务器）的文件管理器中打开该学员的案件归档夹。
 
-    两种模式（按请求来源自动分流）：
-    - 服务器本机 → 服务器直接打开 Finder，返回 mode=local；
-    - 局域网远程客户端 → 绝不在服务器端执行任何打开动作，返回 mode=remote
-      + UNC 网络路径（\\server\\share\\...），由浏览器端经 kjfolder:// 协议
-      在客户端自己的资源管理器中打开（未装归档助手时前端弹路径兜底）。
+    ⚠️ **仅限服务器本机使用**（2026-09-11 收敛，ISS-AP-05）：
+
+    方案 A 上线后，「查看归档文件」的主路径是**网页内置面板**
+    （`GET .../archive-files` + download / preview），局域网任意客户端零安装可用。
+    因此本接口不再承担「远程客户端打开文件夹」的职责——原 `mode=remote`
+    + UNC 路径 + `kjfolder://` 助手那套链路已无前端消费方（D1 决策：冻结不删）。
+
+    非本机来源直接 403，而不是静默弹在服务器屏幕上——避免用户误判「按钮坏了」。
+
+    语义边界：本接口**不走归档三闸门**，案件夹在磁盘上即可打开。
     """
     try:
+        if not _request_from_server_host():
+            return jsonify({"success": False,
+                            "error": "该功能仅限服务器本机使用",
+                            "code": "local_only"}), 403
         ticket = get_ticket(ticket_id)
         if not ticket:
             return _err("工单不存在", 404)
@@ -3884,17 +3896,10 @@ def api_tickets_open_archive(ticket_id):
             return _err_resolved(resolved)
         case_dir = resolved["dir"]
 
-        if _request_from_server_host():
-            # 本机：保持既有行为，直接在服务器屏幕上打开
-            launched = open_case_dir(ticket)
-            if not launched.get("success"):
-                return _err_resolved(launched)
-            return _ok({"mode": "local", "dir": case_dir, "opened": True})
-
-        # 远程客户端：不在服务器端打开；转换 UNC 路径交浏览器端处理
-        # （归档不在 SMB 共享盘上时 unc=None，前端弹窗展示服务器路径并提示）
-        return _ok({"mode": "remote", "dir": case_dir, "unc": to_unc_path(case_dir),
-                    "opened": False})
+        launched = open_case_dir(ticket)
+        if not launched.get("success"):
+            return _err_resolved(launched)
+        return _ok({"mode": "local", "dir": case_dir, "opened": True})
     except Exception as e:
         traceback.print_exc()
         return _err(str(e), 500)
@@ -3962,11 +3967,14 @@ def kopen_diagnose_bat():
 @app.route("/api/tickets/<ticket_id>/archive-files")
 @login_required
 def api_tickets_archive_files(ticket_id):
-    """列出该学员案件归档夹内的文件（远程客户端零安装兜底查看）。
+    """列出该学员案件归档夹内的文件（方案 A 的**主路径**，2026-09-11 起）。
 
-    2026-09-01：局域网 Windows 电脑 kjfolder:// 协议被浏览器拦截/未装助手时，
-    前端兜底弹窗可跳转本面板——服务器端直接 scandir 归档夹，网页里逐个下载，
-    完全不需要在客户端安装任何东西。
+    局域网任意客户端（含未装任何东西的 Windows）零配置即可查看该学员的归档文件，
+    再按需单文件下载或预览——不再依赖 `kjfolder://` 归档助手。
+
+    响应契约：`{dir, files:[{name,size,mtime}]}` 保持不变；`is_server_host`
+    为**追加键**，供前端决定是否显示「在服务器上打开文件夹」次要按钮
+    （D2 决策 b：本机才显示）。
     """
     try:
         ticket = get_ticket(ticket_id)
@@ -3989,7 +3997,8 @@ def api_tickets_archive_files(ticket_id):
         except OSError as exc:
             return _err(f"读取归档目录失败: {exc}", 500)
         files.sort(key=lambda x: x["mtime"], reverse=True)
-        return _ok({"dir": case_dir, "files": files})
+        return _ok({"dir": case_dir, "files": files,
+                    "is_server_host": _request_from_server_host()})
     except Exception as e:
         traceback.print_exc()
         return _err(str(e), 500)

@@ -5,7 +5,8 @@ r"""远程打开归档 + Windows 归档助手 测试（2026-09-01 修复方案 #
 2. UNC 转换 to_unc_path：/Volumes/File/... → \\kj-server\File\...；非 SMB 路径 → None；config smb_share 覆盖生效
 3. 助手脚本 generate_helper_bat：BASE_URL 注入、纯 ASCII、注册命令齐全；CRLF
 4. 路由 /kopen-helper（GBK bat）与 /kopen-helper.vbs（纯 ASCII）
-5. API remote 模式：绝不调起服务器端打开动作，返回 mode=remote + unc
+5. API 来源门禁（2026-09-11 收敛，ISS-AP-05）：open-archive 远程来源 → 403 且绝不调起打开动作；
+   archive-files 追加 is_server_host 供前端决定是否显示「在服务器上打开文件夹」
 """
 import tempfile
 from pathlib import Path
@@ -291,18 +292,43 @@ def test_vbs_decode_rejects_garbage_payload():
 
 
 # ───────────────────────────────────────────────────────────
-# 5) API remote 模式：绝不在服务器端打开
+# 5) API 来源门禁：远程客户端一律 403（2026-09-11 收敛，ISS-AP-05）
+#    —— 主路径已改为网页内置面板；服务器端「绝不打开」的约束反而更硬：
+#       不调起打开动作，也不再回传 UNC 路径（前端已无消费方）。
 # ───────────────────────────────────────────────────────────
-def test_open_archive_remote_mode_returns_unc(client, tmp_path, monkeypatch):
+def test_open_archive_remote_is_forbidden(client, tmp_path, monkeypatch):
     monkeypatch.setattr(config_module, "load_config", lambda: {"archive_root": str(tmp_path)})
     monkeypatch.setattr(archive_service_module, "load_config", lambda: {"archive_root": str(tmp_path)})
     ticket = _make_ticket()
     case_dir, _, _ = app_module.build_archive_dir(ticket, root=str(tmp_path))
     Path(case_dir).mkdir(parents=True, exist_ok=True)
 
+    # 伪造「局域网另一台电脑」发起
     monkeypatch.setattr(app_module, "_request_from_server_host", lambda: False)
-    monkeypatch.setattr(app_module, "to_unc_path",
-                        lambda p: "\\\\kj-server\\File" + p[len(str(tmp_path)):].replace("/", "\\"))
+
+    calls = []
+    monkeypatch.setattr(archive_service_module.subprocess, "run",
+                        lambda cmd, *a, **k: calls.append(cmd))
+
+    resp = client.post(f"/api/tickets/{ticket['id']}/open-archive")
+    body = resp.get_json()
+    assert resp.status_code == 403
+    assert body["success"] is False
+    assert body["code"] == "local_only"
+    assert "仅限服务器本机使用" in body["error"]
+    # 不再回传 UNC（该能力已由面板取代，D1 冻结不删但不再对外暴露）
+    assert "unc" not in body
+    # 核心：服务器端绝不执行任何打开动作
+    assert calls == []
+
+
+def test_open_archive_local_still_works(client, tmp_path, monkeypatch):
+    """本机来源（test_client 默认 127.0.0.1）不受门禁影响，仍能打开。"""
+    monkeypatch.setattr(config_module, "load_config", lambda: {"archive_root": str(tmp_path)})
+    monkeypatch.setattr(archive_service_module, "load_config", lambda: {"archive_root": str(tmp_path)})
+    ticket = _make_ticket()
+    case_dir, _, _ = app_module.build_archive_dir(ticket, root=str(tmp_path))
+    Path(case_dir).mkdir(parents=True, exist_ok=True)
 
     calls = []
     monkeypatch.setattr(archive_service_module.subprocess, "run",
@@ -311,8 +337,33 @@ def test_open_archive_remote_mode_returns_unc(client, tmp_path, monkeypatch):
     resp = client.post(f"/api/tickets/{ticket['id']}/open-archive")
     body = resp.get_json()
     assert resp.status_code == 200 and body["success"] is True
-    assert body["data"]["mode"] == "remote"
-    assert body["data"]["opened"] is False
-    assert body["data"]["unc"].startswith("\\\\kj-server\\File\\")
-    # 核心：服务器端绝不执行任何打开动作
-    assert calls == []
+    assert body["data"]["mode"] == "local"
+    assert body["data"]["opened"] is True
+    assert len(calls) == 1
+
+
+# ───────────────────────────────────────────────────────────
+# 6) archive-files 追加键 is_server_host（面板据以决定是否显示「打开文件夹」）
+# ───────────────────────────────────────────────────────────
+def test_archive_files_reports_is_server_host(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "load_config", lambda: {"archive_root": str(tmp_path)})
+    monkeypatch.setattr(archive_service_module, "load_config", lambda: {"archive_root": str(tmp_path)})
+    ticket = _make_ticket()
+    case_dir, _, _ = app_module.build_archive_dir(ticket, root=str(tmp_path))
+    Path(case_dir).mkdir(parents=True, exist_ok=True)
+    (Path(case_dir) / "回复函.docx").write_bytes(b"x")
+
+    # 本机
+    resp = client.get(f"/api/tickets/{ticket['id']}/archive-files")
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["is_server_host"] is True
+    # 既有键不变（契约不破坏）
+    assert set(data.keys()) >= {"dir", "files"}
+    assert data["files"][0]["name"] == "回复函.docx"
+
+    # 远程
+    monkeypatch.setattr(app_module, "_request_from_server_host", lambda: False)
+    resp = client.get(f"/api/tickets/{ticket['id']}/archive-files")
+    assert resp.status_code == 200
+    assert resp.get_json()["data"]["is_server_host"] is False
