@@ -264,3 +264,44 @@ def test_download_symlink_escape_400(client, tmp_path, monkeypatch):
         f"/api/tickets/{ticket['id']}/archive-files/download?name=内联.txt")
     assert resp.status_code == 400
     assert b"top-secret" not in resp.data
+
+
+# ───────────────────────────────────────────────────────────
+# 4) ISS-AP-09 追加键 unc：Windows UNC 路径（「复制路径」的主载荷）
+#    dir 是服务器本机的挂载路径（/Volumes/File/...），局域网 Windows 同事拿到打不开；
+#    unc（\\192.0.2.199\File\...）才是可分享的。server 必须是 IP——
+#    挂载点给出的主机名（kj-server）在部分 Windows 客户端上解析不了。
+# ───────────────────────────────────────────────────────────
+def test_list_files_returns_unc_when_mapping_configured(client, tmp_path, monkeypatch):
+    _patch_root(monkeypatch, tmp_path)
+    ticket = _make_ticket()
+    case_dir = Path(app_module.build_archive_dir(ticket, root=str(tmp_path))[0])
+    case_dir.mkdir(parents=True, exist_ok=True)
+    (case_dir / "投诉登记表.docx").write_bytes(b"%PK")
+
+    mp = os.path.realpath(str(tmp_path))
+    monkeypatch.setattr(archive_service_module, "get_smb_mappings",
+                        lambda: [{"server": "192.0.2.199", "share": "File",
+                                  "mount_point": mp}])
+    resp = client.get(f"/api/tickets/{ticket['id']}/archive-files")
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    # dir 保持不变（本机路径仍有用：服务器端排查）
+    assert data["dir"] == str(case_dir)
+    real_dir = os.path.realpath(str(case_dir))
+    assert real_dir.startswith(mp + os.sep)
+    expected = "\\\\192.0.2.199\\File\\" + real_dir[len(mp) + 1:].replace("/", "\\")
+    assert data["unc"] == expected
+
+
+def test_list_files_unc_empty_when_no_mapping(client, tmp_path, monkeypatch):
+    """无 SMB 映射时 unc 为空串（不能编造），前端回退用 dir。"""
+    _patch_root(monkeypatch, tmp_path)
+    ticket = _make_ticket()
+    Path(app_module.build_archive_dir(ticket, root=str(tmp_path))[0]).mkdir(parents=True)
+    monkeypatch.setattr(archive_service_module, "get_smb_mappings", lambda: [])
+    resp = client.get(f"/api/tickets/{ticket['id']}/archive-files")
+    assert resp.status_code == 200
+    data = resp.get_json()["data"]
+    assert data["unc"] == ""
+    assert data["dir"]

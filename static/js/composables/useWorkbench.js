@@ -548,6 +548,10 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const apLoading = Vue.ref(false);
   const apFiles = Vue.ref([]);
   const apDir = Vue.ref("");
+  // Windows UNC 路径（\\192.0.2.199\File\...，后端追加键 `unc`）。
+  // 为什么要有它：apDir 是**服务器本机**的挂载路径（/Volumes/File/...），
+  // 局域网 Windows 同事拿到它根本打不开——只有这台 Mac 认识。UNC 才是可分享的。
+  const apUncPath = Vue.ref("");
   const apError = Vue.ref("");        // 人话错误信息（直接展示）
   const apErrorCode = Vue.ref("");    // 后端结构化 code，决定「该找谁」
   const apErrorDetail = Vue.ref("");  // 技术明细：默认折叠，仅排查用
@@ -651,8 +655,18 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
 
   function apToggleView() { apIconView.value = !apIconView.value; }
 
+  // 「复制路径」按钮的 tooltip：把将要复制的字符串**直接亮出来**——
+  // 若哪天 SMB 映射配错（比如挂载点给出的主机名解析不了），用户悬停当场就能看见，
+  // 而不是贴进资源管理器打不开才发现。
+  const apCopyHint = Vue.computed(() => {
+    const t = apUncPath.value || apDir.value || "";
+    return t ? "复制共享路径（可直接粘到资源管理器）：" + t : "复制共享路径";
+  });
+
   async function apCopyPath() {
-    const text = apDir.value || "";
+    // 优先 UNC（\\192.0.2.199\File\...）：局域网 Windows 同事贴进资源管理器就能打开；
+    // apDir（/Volumes/File/...）只有服务器这台 Mac 认识，分享出去是死路径。
+    const text = apUncPath.value || apDir.value || "";
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -675,6 +689,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     // 上一条工单读成功后的 apDir/apIsServerHost 会残留到本条工单的失败面板上
     // （表现为「复制路径」可点但复制的是别的学员的路径、「在服务器上打开」凭空出现）。
     apDir.value = "";
+    apUncPath.value = "";
     apIsServerHost.value = false;
     try {
       const resp = await fetch(`/api/tickets/${encodeURIComponent(apLastTicketId.value)}/archive-files`);
@@ -683,6 +698,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
         const d = data.data || {};
         apFiles.value = d.files || [];
         apDir.value = String(d.dir || "");
+        apUncPath.value = String(d.unc || "");
         apIsServerHost.value = !!d.is_server_host;
       } else {
         // 失败态**不关面板**：面板本身是错误信息的载体（旧实现关面板+toast，等于没提示）
@@ -1228,6 +1244,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     // 归档文件面板（方案 A 主路径）
     apOpen, apLoading, apFiles, apDir, apError, apErrorCode, apErrorDetail,
     apIsServerHost, apIconView, apLastTicketId, apLastName, apLastDate, apMeta,
+    apUncPath, apCopyHint,
     apLoad, apRefresh, apOpenPanel, apOpenLocalDir, apToggleView, apCopyPath,
     apCanPreview, apFileIcon, apFileKind, apDownloadUrl, apPreviewUrl, apOpenPreview,
     fmtApSize, apTotalSize, apErrorAction,

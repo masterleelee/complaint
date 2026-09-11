@@ -83,6 +83,17 @@ DEFAULT_CONFIG = {
     },
     # 绝对路径默认值：避免相对路径按服务进程 CWD 解析导致落盘位置漂移
     "archive_root": os.getenv("ARCHIVE_ROOT", str(BASE_DIR / "案件归档")),
+    # ⚠️ smb_share 必须出现在 DEFAULT_CONFIG 里：load_config() 的合并逻辑只遍历
+    #    DEFAULT_CONFIG 的顶层键，文件里多出来的键会被**静默丢弃**（踩过一次：
+    #    往 data/config.json 写了 smb_share，load_config() 却读不到）。
+    #    留空 = 不配置，get_smb_mappings() 会回退去解析 macOS `mount` 输出。
+    #    server 建议**填固定 IP 而不是主机名**——实测挂载点给出的主机名（kj-server）
+    #    在部分 Windows 客户端上解析不了，UNC 路径贴过去打不开。
+    "smb_share": {
+        "server": os.getenv("SMB_SERVER", ""),
+        "share": os.getenv("SMB_SHARE", ""),
+        "mount_point": os.getenv("SMB_MOUNT_POINT", ""),
+    },
 }
 
 

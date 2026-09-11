@@ -69,9 +69,8 @@ from services.archive_service import (
     validate_archive_root,
     open_case_dir,
     resolve_case_dir,
-    # to_unc_path：/open-archive 收敛为仅本机后，app.py 已无调用方。
-    # 按 spec.md D1「冻结不删」保留导入（回滚方案 A 时无需重新接线）；
-    # 真正的清理归 ISS-AP-06，需单独审批。
+    # ISS-AP-09：/archive-files 用 to_unc_path 把 /Volumes/... 转 UNC（\\server\share\...）
+    # 返回给前端，供远程 Windows 复制路径；映射来源 config.smb_share / macOS mount。
     to_unc_path,
     generate_helper_bat,
     generate_diagnose_bat,
@@ -3967,14 +3966,16 @@ def kopen_diagnose_bat():
 @app.route("/api/tickets/<ticket_id>/archive-files")
 @login_required
 def api_tickets_archive_files(ticket_id):
-    """列出该学员案件归档夹内的文件（方案 A 的**主路径**，2026-09-11 起）。
+    r"""列出该学员案件归档夹内的文件（方案 A 的**主路径**，2026-09-11 起）。
 
     局域网任意客户端（含未装任何东西的 Windows）零配置即可查看该学员的归档文件，
     再按需单文件下载或预览——不再依赖 `kjfolder://` 归档助手。
 
     响应契约：`{dir, files:[{name,size,mtime}]}` 保持不变；`is_server_host`
     为**追加键**，供前端决定是否显示「在服务器上打开文件夹」次要按钮
-    （D2 决策 b：本机才显示）。
+    （D2 决策 b：本机才显示）；`unc` 亦为**追加键**（ISS-AP-09）——该夹子的
+    Windows UNC 路径（如 `\\192.0.2.199\File\...`），前端「复制路径」优先复制它，
+    局域网 Windows 同事贴进资源管理器就能打开。无 SMB 映射时为空串，前端回退用 `dir`。
     """
     try:
         ticket = get_ticket(ticket_id)
@@ -3997,7 +3998,10 @@ def api_tickets_archive_files(ticket_id):
         except OSError as exc:
             return _err(f"读取归档目录失败: {exc}", 500)
         files.sort(key=lambda x: x["mtime"], reverse=True)
+        # unc：to_unc_path() 依赖 config 的 smb_share（人工指定，服务器不挂载也能转换），
+        # 其次解析 macOS mount 输出。转不出来时回退空串，前端沿用 dir。
         return _ok({"dir": case_dir, "files": files,
+                    "unc": to_unc_path(case_dir) or "",
                     "is_server_host": _request_from_server_host()})
     except Exception as e:
         traceback.print_exc()

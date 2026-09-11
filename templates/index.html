@@ -2734,7 +2734,7 @@
         <!-- 工具栏只在「有文件可管」时出现。加载 / 失败 / 空态下可操作按钮收进状态块内
              —— 与 demo 一致，也避免「一排置灰按钮压在错误信息上方」的观感。 -->
         <div class="m-tools" v-if="apFiles.length && !apLoading && !apError">
-          <button @click="apCopyPath()" :disabled="!apDir" title="复制该学员归档夹在服务器上的完整路径"><span class="ico" v-html="apIcon('copy', 13)"></span>复制路径</button>
+          <button @click="apCopyPath()" :disabled="!apUncPath && !apDir" :title="apCopyHint"><span class="ico" v-html="apIcon('copy', 13)"></span>复制路径</button>
           <button @click="apRefresh()" :disabled="apLoading" title="重新读取文件列表"><span class="ico" v-html="apIcon('refresh', 13)"></span>刷新</button>
           <!-- D2(b)：仅服务器本机显示（远程来源后端 403，显示出来只会误导）。
                放在左侧有框按钮组里，右侧留给纯 ghost 的视图切换 —— 与 demo 的语法一致。 -->
@@ -2992,10 +2992,10 @@
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=2",
       "useSettings": "/static/js/composables/useSettings.js?v=22",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=34"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=35"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=47"></script>
+  <script type="module" src="/static/js/app.js?v=48"></script>
 </body>
 </html>

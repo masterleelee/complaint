@@ -8,6 +8,7 @@ r"""远程打开归档 + Windows 归档助手 测试（2026-09-01 修复方案 #
 5. API 来源门禁（2026-09-11 收敛，ISS-AP-05）：open-archive 远程来源 → 403 且绝不调起打开动作；
    archive-files 追加 is_server_host 供前端决定是否显示「在服务器上打开文件夹」
 """
+import json
 import tempfile
 from pathlib import Path
 
@@ -135,6 +136,21 @@ def test_smb_mappings_config_override(monkeypatch):
     maps = archive_service_module.get_smb_mappings()
     assert maps == [{"server": "kj-server", "share": "File",
                      "mount_point": "/Volumes/File"}]
+
+
+def test_load_config_preserves_smb_share_section(tmp_path, monkeypatch):
+    """回归（ISS-AP-09）：load_config() 的合并逻辑只遍历 DEFAULT_CONFIG 的顶层键，
+    文件里多出来的键会被**静默丢弃** —— 曾导致往 data/config.json 写了 smb_share
+    却读不到，UNC 回退去解析 mount 拿到主机名（Windows 客户端解析不了）。"""
+    cfg_file = tmp_path / "config.json"
+    want = {"server": "192.0.2.199", "share": "File",
+            "mount_point": "/Volumes/File"}
+    cfg_file.write_text(json.dumps(
+        {"archive_root": str(tmp_path / "archive"), "smb_share": want},
+        ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(config_module, "CONFIG_FILE", cfg_file)
+    cfg = config_module.load_config()
+    assert cfg["smb_share"] == want
 
 
 def test_smb_mappings_parse_mount_output(monkeypatch):
