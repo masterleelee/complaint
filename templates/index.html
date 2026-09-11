@@ -596,42 +596,138 @@
   .row-del:hover{color:var(--color-danger);background:var(--color-danger-bg)}
   .row-view-files{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
   .row-view-files:hover{color:var(--color-primary);background:var(--color-primary-50)}
-  /* ── 归档文件面板（方案 A 主路径）：就近放内联样式，避免触碰全局样式表 ── */
-  /* ⚠️ max-width 必须一起写：style.css 的 .modal-content{max-width:600px} 会
-     把只写了 width 的面板锁死在 600px（同特异性、不同属性，内联后写也盖不住），
-     导致「文件名」列只剩 ~200px 而被迫折行。 */
-  .ap-modal{width:min(760px,94vw);max-width:min(760px,94vw);display:flex;flex-direction:column;max-height:82vh}
-  .ap-body{padding:10px 18px 14px;overflow:auto;flex:1;min-height:180px}
-  .ap-tools{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
-  .ap-state{padding:28px 8px;text-align:center;color:var(--color-text-secondary);font-size:13px}
-  .ap-state-err{text-align:left;background:var(--color-danger-bg);border-radius:8px;padding:14px 16px}
-  .ap-err-msg{margin:0;font-size:13.5px;font-weight:600;color:var(--color-danger)}
-  .ap-err-act{margin:8px 0 0;font-size:12.5px;color:var(--color-text)}
-  .ap-detail{margin-top:10px}
-  .ap-detail summary{cursor:pointer;font-size:12px;color:var(--color-text-secondary)}
-  .ap-detail code{display:block;margin-top:6px;font-size:11.5px;word-break:break-all;background:var(--color-surface-50);padding:8px 10px;border-radius:6px;user-select:all}
-  .ap-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
-  .ap-table th{text-align:left;font-weight:600;font-size:12px;color:var(--color-text-secondary);padding:6px 4px;border-bottom:1px solid var(--color-border)}
-  .ap-table td{padding:7px 4px;border-bottom:1px solid var(--color-surface-100);vertical-align:middle}
-  /* ⚠️ 列宽用固定 px 而非百分比：百分比在窄视口（94vw<760px）下会把「修改时间」
-     压到 102px，而「2026-08-22 10:12」实需 ~112px —— nowrap 之下会溢出压到操作列。
+  /* ── 归档文件面板（方案 A 主路径）──────────────────────────────────────────────
+     视觉基准 = demo/archive-panel-redesign-demo.html（用户 2026-09-10：「这个 demo 做得
+     挺好的」「样式应该按照这个 demo 来吧」）。本段是那份 demo 的样式 **1:1 移植**，
+     只做两处必要适配：
+       ① 选择器一律冠 `.ap-modal` 前缀。demo 用的是裸 `.modal/.state/.files/.grid`，
+          直接搬进项目会污染全局（例：demo 的 `button{}` 会改掉全站所有按钮）。
+       ② demo 的调色板变量（--primary/--text-secondary/--border/--surface/--radius…）
+          在 style.css 的 :root 里**同名同值**，故直接沿用，不另起一套包装变量；
+          仅 demo 里硬编码的三个灰阶（#f8fafc/#f1f5f9）收成局部变量，以便深色主题重映射。
+     demo 之外补齐的三处（同一体系内延伸，非新风格）：xls / other 文件类型徽标、
+     技术细节的换行滚动、深色主题补丁（不补则深色下是一块白板）。
+     ⚠️ max-width 必须与 width 一起写：style.css:1670 的 .modal-content{max-width:600px}
+        会把只写 width 的面板锁死在 600px（同特异性、不同属性，内联后写也盖不住），
+        导致「文件名」列只剩 ~200px 而被迫折行。 */
+  .ap-modal{width:min(760px,94vw);max-width:min(760px,94vw);max-height:86vh;overflow:hidden;
+    border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);
+    --ap-chrome:#f8fafc;--ap-hairline:#f1f5f9;--ap-hover:#f8fafc}
+  /* 深色主题补丁：demo 只考虑浅色。--surface/--text/--border/--primary/--danger/…
+     在本项目里都被 :root 别名成了 var(--color-*)，而 html.dark 会重定义 --color-*，
+     故这些 token 在深色下**自动**跟随，无需重复覆盖；真正需要补的只有 demo 里
+     硬编码的那三个灰阶（项目未提供对应的语义 token）。 */
+  html.dark .ap-modal{--ap-chrome:var(--color-surface-50);--ap-hairline:var(--color-border);
+    --ap-hover:rgba(255,255,255,.03)}
+
+  /* 头部：demo 是「标题 + 副标题」两行结构（原实现是单行 + 灰色尾巴） */
+  .ap-modal .m-head{padding:16px 20px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:12px;font-weight:400}
+  .ap-modal .m-head .t{font-size:16px;font-weight:600;color:var(--text)}
+  .ap-modal .m-head .meta{font-size:12.5px;color:var(--text-secondary);margin-top:2px}
+  .ap-modal .sp{flex:1}
+
+  /* 工具栏 */
+  .ap-modal .m-tools{padding:10px 20px;border-bottom:1px solid var(--border);background:var(--ap-chrome);
+    display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+  /* 按钮 = demo 的通用按钮皮肤。刻意不用全局 .btn：那套的 padding/圆角/字号与 demo
+     不同（.btn-sm 是 6px 12px / 12px 字号），混用会出现「同一面板两种按钮」。
+     .ap-modal button 特异性 (0,1,1) > .btn (0,1,0)，稳胜。 */
+  .ap-modal button{font-family:inherit;font-size:13px;cursor:pointer;border:1px solid var(--border);
+    background:var(--surface);color:var(--text);padding:6px 12px;border-radius:8px;transition:.15s;
+    display:inline-flex;align-items:center;gap:6px;line-height:1.3}
+  .ap-modal button svg,.ap-modal .ap-dl svg{flex:none}
+  .ap-modal button:hover:not(:disabled){border-color:var(--primary);color:var(--primary-dark);
+    background:var(--primary-light)}
+  .ap-modal button:disabled{cursor:not-allowed;opacity:.5}
+  /* ⚠️ .ghost 必须写在 .on 之前：两者特异性相同（0,2,1），**后写者胜**。
+     demo 里 .on 在 .ghost 之前，于是选中态被 .ghost 洗成透明底色 + 次级灰前景，
+     两个视图按钮长得一模一样 —— 用户看不出当前在哪个视图。这里靠顺序修正。 */
+  .ap-modal button.ghost{border-color:transparent;background:transparent;color:var(--text-secondary)}
+  .ap-modal button.ghost:hover{background:var(--ap-hover);color:var(--text)}
+  .ap-modal button.on,.ap-modal button.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+  .ap-modal button.on:hover,.ap-modal button.primary:hover{background:var(--primary-dark);
+    border-color:var(--primary-dark);color:#fff}
+  /* 下载是 <a download>（要保留原生下载语义），外观必须与同排按钮一致 */
+  .ap-modal .ap-dl{display:inline-flex;align-items:center;gap:6px;font-size:13px;border:1px solid var(--border);
+    background:var(--surface);color:var(--text);padding:6px 12px;border-radius:8px;transition:.15s;
+    text-decoration:none;line-height:1.3;white-space:nowrap}
+  .ap-modal .ap-dl:hover{border-color:var(--primary);color:var(--primary-dark);background:var(--primary-light)}
+  .ap-modal .ico{display:inline-flex;align-items:center}
+
+  /* 主体 / 底部 */
+  .ap-modal .m-body{overflow:auto;flex:1;min-height:220px}
+  .ap-modal .m-foot{padding:11px 20px;border-top:1px solid var(--border);background:var(--ap-chrome);
+    display:flex;align-items:center;gap:10px;justify-content:flex-start;font-size:12.5px;
+    color:var(--text-secondary)}
+  .ap-modal .muted{color:var(--text-secondary)}
+  .ap-modal .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--text-secondary)}
+  .ap-modal .legend i{display:inline-block;width:9px;height:9px;border-radius:3px;margin-right:5px}
+
+  /* 列表视图。列宽用固定 px 而非百分比 —— 百分比在窄视口（94vw<760px）下会把「修改时间」
+     压到 102px，而「2026-08-22 10:12」实需 ~112px，nowrap 之下会溢出压到操作列。
      实测手段：比对 td.scrollWidth > td.clientWidth（DOM 断言全绿也可能有溢出）。 */
-  .ap-table th.ap-name{width:auto}
-  .ap-table th.ap-num{width:78px;text-align:right}
-  .ap-table th.ap-time{width:132px}
-  .ap-table th.ap-ops{width:152px;text-align:right}
-  .ap-name{word-break:break-all}
-  .ap-name i{margin-right:6px}
-  .ap-num,.ap-time{white-space:nowrap}
-  .ap-num{text-align:right}
-  .ap-ops{white-space:nowrap;text-align:right}
-  .ap-ops .btn{white-space:nowrap}
-  .ap-ops .btn+.btn{margin-left:6px}
-  .ap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-  .ap-grid-item{border:1px solid var(--color-border);border-radius:8px;padding:12px 10px;text-align:center}
-  .ap-grid-icon{font-size:26px;color:var(--color-primary)}
-  .ap-grid-name{font-size:12px;margin:6px 0 2px;word-break:break-all;max-height:34px;overflow:hidden}
-  .ap-grid-ops{display:flex;gap:6px;justify-content:center;margin-top:8px}
+  .ap-modal table.files{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  .ap-modal table.files th{text-align:left;font-weight:600;color:var(--text-secondary);font-size:12px;
+    padding:9px 20px;background:var(--surface);border-bottom:1px solid var(--border);
+    position:sticky;top:0;z-index:1}
+  .ap-modal table.files td{padding:10px 20px;border-bottom:1px solid var(--ap-hairline);vertical-align:middle}
+  .ap-modal table.files tr:last-child td{border-bottom:none}
+  .ap-modal table.files tr:hover td{background:var(--ap-hover)}
+  .ap-modal table.files td.nowrap{white-space:nowrap}
+  .ap-modal table.files th.ap-name{width:auto}
+  .ap-modal table.files th.ap-num{width:84px;text-align:right}
+  .ap-modal table.files th.ap-time{width:136px}
+  .ap-modal table.files th.ap-ops{width:158px;text-align:right}
+  .ap-modal .fname{display:flex;align-items:center;gap:9px}
+  .ap-modal .fname .nm{word-break:break-all}
+  .ap-modal .ftype{width:30px;height:30px;border-radius:8px;display:inline-flex;align-items:center;
+    justify-content:center;flex:none}
+  .ap-modal .ftype.docx{background:var(--primary-light);color:var(--primary-dark)}
+  .ap-modal .ftype.pdf{background:var(--danger-light);color:var(--danger)}
+  .ap-modal .ftype.img{background:var(--warning-light);color:var(--warning)}
+  .ap-modal .ftype.txt,.ap-modal .ftype.xls{background:var(--success-light);color:var(--success)}
+  .ap-modal .ftype.other{background:var(--ap-chrome);color:var(--text-secondary)}
+  .ap-modal .ops{display:flex;gap:6px;justify-content:flex-end;flex-wrap:nowrap}
+  .ap-modal .ops button,.ap-modal .ops .ap-dl{padding:4px 9px;font-size:12px;white-space:nowrap;flex:none}
+
+  /* 图标视图 */
+  .ap-modal .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;
+    padding:16px 20px}
+  .ap-modal .gcard{border:1px solid var(--border);border-radius:var(--radius);padding:14px 12px;
+    text-align:center;background:var(--surface)}
+  .ap-modal .gcard:hover{border-color:var(--primary);box-shadow:var(--shadow-sm)}
+  .ap-modal .gcard .thumb{height:64px;border-radius:8px;display:flex;align-items:center;
+    justify-content:center;margin-bottom:10px}
+  .ap-modal .gcard .gname{font-size:12.5px;word-break:break-all;margin-bottom:4px;line-height:1.45;
+    max-height:36px;overflow:hidden}
+  .ap-modal .gcard .gmeta{font-size:11.5px;color:var(--text-secondary);margin-bottom:10px}
+  .ap-modal .gcard .gops{display:flex;gap:6px;justify-content:center}
+  .ap-modal .gcard .gops button,.ap-modal .gcard .gops .ap-dl{padding:3px 8px;font-size:11.5px}
+
+  /* 居中的空态 / 失败态 —— 原实现是左对齐红底块，与 demo 差距最大的一处 */
+  .ap-modal .state{padding:44px 28px;text-align:center}
+  .ap-modal .state .ic{width:56px;height:56px;border-radius:999px;display:inline-flex;
+    align-items:center;justify-content:center;margin-bottom:14px}
+  .ap-modal .state .ic span{display:inline-flex}
+  .ap-modal .state h3{margin:0 0 8px;font-size:15.5px;font-weight:600;color:var(--text)}
+  .ap-modal .state p{margin:0 auto 4px;max-width:520px;color:var(--text-secondary);font-size:13px}
+  .ap-modal .state .act{margin-top:18px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+  .ap-modal .state .spin{display:inline-block}
+  .ap-modal .who{margin-top:14px;font-size:12.5px;display:inline-flex;align-items:center;
+    gap:6px;padding:5px 11px;border-radius:999px}
+  .ap-modal .who.admin{background:var(--warning-light);color:var(--warning)}
+  .ap-modal .who.self{background:var(--primary-light);color:var(--primary-dark)}
+  .ap-modal .err-detail{margin:16px auto 0;max-width:520px;text-align:left;font-size:12px;
+    color:var(--text-secondary)}
+  .ap-modal .err-detail summary{cursor:pointer;color:var(--text-secondary);font-size:12px}
+  .ap-modal .err-detail pre{margin:8px 0 0;background:#0f172a;color:#e2e8f0;padding:10px 12px;
+    border-radius:8px;overflow:auto;font-size:11.5px;line-height:1.5;white-space:pre-wrap;
+    word-break:break-all;user-select:all}
+  .ap-modal .spinner{width:26px;height:26px;border:3px solid var(--border);border-top-color:var(--primary);
+    border-radius:50%;display:inline-block;animation:apSpin .8s linear infinite}
+  @keyframes apSpin{to{transform:rotate(360deg)}}
   .empty-hint{padding:24px;text-align:center;color:var(--color-text-secondary);font-size:12.5px}
   .cl-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px 16px;border-top:1px solid var(--color-border);background:var(--color-surface-50)}
   .cl-pager .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -2622,77 +2718,123 @@
 
     <!-- ═══ 归档文件面板（方案 A 主路径：网页里摊开该学员的归档文件） ═══ -->
     <!-- 不提供打包：需要哪个文件自己下载（用户 2026-09-10 明确） -->
+    <!-- 视觉基准 = demo/archive-panel-redesign-demo.html（用户 2026-09-10 确认），
+         结构/间距/图标与该 demo 一一对应；样式见内联 .ap-modal 段。 -->
     <div class="modal-overlay" v-cloak v-if="apOpen" @click.self="apOpen=false">
       <div class="modal-content ap-modal">
-        <div class="m-head"><i class="bi bi-folder2-open"></i> 归档文件<span class="hint" style="margin-left:8px;font-weight:400">[[ apLastName ]]</span><button class="m-close" @click="apOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
-        <div class="ap-body">
-          <!-- 工具栏：复制路径 / 刷新 / 列表↔图标（无打包按钮） -->
-          <div class="ap-tools">
-            <button class="btn btn-secondary btn-sm" @click="apCopyPath()" :disabled="!apDir" title="复制该学员归档夹在服务器上的完整路径"><i class="bi bi-clipboard"></i> 复制路径</button>
-            <button class="btn btn-secondary btn-sm" @click="apRefresh()" :disabled="apLoading" title="重新读取文件列表"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
-            <button class="btn btn-secondary btn-sm" @click="apToggleView()" :disabled="!apFiles.length" :title="apIconView ? '切换为列表视图' : '切换为图标视图'"><i class="bi" :class="apIconView ? 'bi-list-ul' : 'bi-grid'"></i> [[ apIconView ? '列表' : '图标' ]]</button>
-            <span style="flex:1"></span>
-            <!-- D2(b)：仅服务器本机显示（远程显示只会 403） -->
-            <button v-if="apIsServerHost" class="btn btn-secondary btn-sm" @click="apOpenLocalDir()" title="在服务器本机的文件管理器中打开该归档夹"><i class="bi bi-folder2-open"></i> 在服务器上打开</button>
+        <div class="m-head">
+          <div>
+            <div class="t">归档文件</div>
+            <div class="meta" v-if="apMeta">[[ apMeta ]]</div>
+          </div>
+          <div class="sp"></div>
+          <button class="ghost" @click="apOpen=false" title="关闭" aria-label="关闭"><span class="ico" v-html="apIcon('close', 14)"></span></button>
+        </div>
+
+        <!-- 工具栏只在「有文件可管」时出现。加载 / 失败 / 空态下可操作按钮收进状态块内
+             —— 与 demo 一致，也避免「一排置灰按钮压在错误信息上方」的观感。 -->
+        <div class="m-tools" v-if="apFiles.length && !apLoading && !apError">
+          <button @click="apCopyPath()" :disabled="!apDir" title="复制该学员归档夹在服务器上的完整路径"><span class="ico" v-html="apIcon('copy', 13)"></span>复制路径</button>
+          <button @click="apRefresh()" :disabled="apLoading" title="重新读取文件列表"><span class="ico" v-html="apIcon('refresh', 13)"></span>刷新</button>
+          <!-- D2(b)：仅服务器本机显示（远程来源后端 403，显示出来只会误导）。
+               放在左侧有框按钮组里，右侧留给纯 ghost 的视图切换 —— 与 demo 的语法一致。 -->
+          <button v-if="apIsServerHost" @click="apOpenLocalDir()" title="在服务器本机的文件管理器中打开该归档夹"><span class="ico" v-html="apIcon('folder', 13)"></span>在服务器上打开</button>
+          <div class="sp"></div>
+          <button class="ghost" :class="{on: !apIconView}" @click="apIconView=false" title="列表视图"><span class="ico" v-html="apIcon('list', 14)"></span></button>
+          <button class="ghost" :class="{on: apIconView}" @click="apIconView=true" title="图标视图"><span class="ico" v-html="apIcon('grid', 14)"></span></button>
+        </div>
+
+        <div class="m-body">
+          <!-- ① 加载中 -->
+          <div v-if="apLoading" class="state">
+            <span class="spinner"></span>
+            <p style="margin-top:16px">正在读取归档目录…</p>
           </div>
 
-          <!-- ① 加载中 -->
-          <div v-if="apLoading" class="ap-state"><i class="bi bi-arrow-repeat"></i> 正在读取归档文件…</div>
-
-          <!-- ② 失败：按后端 code 分级，每类给「该找谁」的不同指引 -->
-          <div v-else-if="apError" class="ap-state-err">
-            <p class="ap-err-msg"><i class="bi bi-exclamation-triangle"></i> [[ apError ]]</p>
-            <p class="ap-err-act">[[ apErrorAction(apErrorCode) ]]</p>
-            <details v-if="apErrorDetail" class="ap-detail">
-              <summary>技术详情（排查用）</summary>
-              <code>[[ apErrorDetail ]]</code>
+          <!-- ② 失败：按后端 code 分级 —— 「还没生成文档」是操作人自己能解决的，
+               「共享盘不可用」只能找管理员。混成一句通用文案，用户不知道该找谁。 -->
+          <div v-else-if="apError" class="state">
+            <div class="ic" :style="apErrStyle"><span v-html="apIcon(apErrIconName, 24)"></span></div>
+            <h3>[[ apErrTitle ]]</h3>
+            <p>[[ apError ]]</p>
+            <div class="who" :class="apErrWho.cls" :title="apErrorAction(apErrorCode)"><span v-html="apIcon(apErrWho.icon, 14)"></span>[[ apErrWho.text ]]</div>
+            <div class="act">
+              <button class="primary" @click="apErrorPrimary()">[[ apErrPrimaryText ]]</button>
+            </div>
+            <!-- 这里不再放「复制路径」：失败响应只带 code/message/detail，**不含 dir**
+                 （见 app.py 的 _err_resolved），按钮必然恒为置灰态。路径仍在下方
+                 技术细节里（pre 带 user-select:all，可整体选中复制）。 -->
+            <details v-if="apErrorDetail" class="err-detail">
+              <summary>查看技术细节（仅供排查，默认不显示）</summary>
+              <pre>[[ apErrorDetail ]]</pre>
             </details>
           </div>
 
-          <!-- ③ 夹子为空 -->
-          <div v-else-if="!apFiles.length" class="ap-state">
-            <i class="bi bi-inbox" style="font-size:26px"></i>
-            <p style="margin:8px 0 0">这个归档夹里还没有文件</p>
-            <p class="hint" style="margin:4px 0 0">回到该工单生成投诉登记表或回复函后，文件会出现在这里。</p>
+          <!-- ③ 归档夹存在但为空 -->
+          <div v-else-if="!apFiles.length" class="state">
+            <div class="ic" style="background:var(--primary-light);color:var(--primary-dark)"><span v-html="apIcon('doc', 24)"></span></div>
+            <h3>这个归档夹里还没有文件</h3>
+            <p>回到该工单生成投诉登记表或回复函，文件落盘后再点「刷新」。</p>
+            <div class="act">
+              <button @click="apRefresh()"><span class="ico" v-html="apIcon('refresh', 13)"></span>刷新</button>
+            </div>
+            <details v-if="apDir" class="err-detail">
+              <summary>归档路径（排查用）</summary>
+              <pre>[[ apDir ]]</pre>
+            </details>
           </div>
 
           <!-- ④ 列表视图 -->
-          <table v-else-if="!apIconView" class="ap-table">
+          <table v-else-if="!apIconView" class="files">
             <thead>
               <tr><th class="ap-name">文件名</th><th class="ap-num">大小</th><th class="ap-time">修改时间</th><th class="ap-ops">操作</th></tr>
             </thead>
             <tbody>
               <tr v-for="f in apFiles" :key="f.name">
-                <td class="ap-name"><i class="bi" :class="apFileIcon(f.name)"></i>[[ f.name ]]</td>
-                <td class="ap-num hint">[[ fmtApSize(f.size) ]]</td>
-                <td class="ap-time hint">[[ f.mtime ]]</td>
-                <td class="ap-ops">
-                  <a class="btn btn-secondary btn-sm" :href="apDownloadUrl(f.name)" :download="f.name" title="下载到本机"><i class="bi bi-download"></i> 下载</a>
-                  <button class="btn btn-secondary btn-sm" :disabled="!apCanPreview(f.name)" :title="apCanPreview(f.name) ? '在新标签页打开预览' : '该类型不支持在线预览，请下载后打开'" @click="apOpenPreview(f.name)"><i class="bi bi-eye"></i> 预览</button>
+                <td>
+                  <div class="fname">
+                    <span :class="apFtypeCls(f.name)" v-html="apFileSvg(f.name)"></span>
+                    <span class="nm">[[ f.name ]]</span>
+                  </div>
+                </td>
+                <td class="muted nowrap">[[ fmtApSize(f.size) ]]</td>
+                <td class="muted nowrap">[[ f.mtime ]]</td>
+                <td>
+                  <div class="ops">
+                    <a class="ap-dl" :href="apDownloadUrl(f.name)" :download="f.name" title="下载到本机"><span class="ico" v-html="apIcon('down', 14)"></span>下载</a>
+                    <button :disabled="!apCanPreview(f.name)" :title="apCanPreview(f.name) ? '在新标签页打开预览' : '该类型不支持在线预览，请下载后打开'" @click="apOpenPreview(f.name)"><span class="ico" v-html="apIcon(apCanPreview(f.name) ? 'eye' : 'lock', 14)"></span>预览</button>
+                  </div>
                 </td>
               </tr>
             </tbody>
           </table>
 
           <!-- ⑤ 图标视图 -->
-          <div v-else class="ap-grid">
-            <div v-for="f in apFiles" :key="f.name" class="ap-grid-item">
-              <i class="bi ap-grid-icon" :class="apFileIcon(f.name)"></i>
-              <div class="ap-grid-name" :title="f.name">[[ f.name ]]</div>
-              <div class="hint" style="font-size:11.5px">[[ fmtApSize(f.size) ]]</div>
-              <div class="ap-grid-ops">
-                <a class="btn btn-secondary btn-sm" :href="apDownloadUrl(f.name)" :download="f.name" title="下载到本机"><i class="bi bi-download"></i></a>
-                <button class="btn btn-secondary btn-sm" :disabled="!apCanPreview(f.name)" :title="apCanPreview(f.name) ? '预览' : '该类型不支持在线预览，请下载后打开'" @click="apOpenPreview(f.name)"><i class="bi bi-eye"></i></button>
+          <div v-else class="grid">
+            <div v-for="f in apFiles" :key="f.name" class="gcard">
+              <div class="thumb" :class="apFtypeCls(f.name)" v-html="apFileSvg(f.name)"></div>
+              <div class="gname" :title="f.name">[[ f.name ]]</div>
+              <div class="gmeta">[[ fmtApSize(f.size) ]] · [[ f.mtime ]]</div>
+              <div class="gops">
+                <a class="ap-dl" :href="apDownloadUrl(f.name)" :download="f.name" title="下载到本机"><span class="ico" v-html="apIcon('down', 14)"></span></a>
+                <button :disabled="!apCanPreview(f.name)" :title="apCanPreview(f.name) ? '预览' : '该类型不支持在线预览，请下载后打开'" @click="apOpenPreview(f.name)"><span class="ico" v-html="apIcon(apCanPreview(f.name) ? 'eye' : 'lock', 14)"></span></button>
               </div>
             </div>
           </div>
         </div>
+
         <div class="m-foot">
-          <span class="hint" style="flex:1">
-            <template v-if="apError">读取失败</template>
-            <template v-else>共 [[ apFiles.length ]] 个文件<template v-if="apFiles.length"> · 合计 [[ fmtApSize(apTotalSize()) ]]</template></template>
+          <span v-if="apLoading">正在读取归档目录…</span>
+          <template v-else-if="apError">读取失败</template>
+          <template v-else-if="!apFiles.length">共 0 个文件</template>
+          <template v-else>共 [[ apFiles.length ]] 个文件 · 合计 [[ fmtApSize(apTotalSize()) ]]</template>
+          <div class="sp"></div>
+          <span class="legend" v-if="apFiles.length && !apLoading && !apError">
+            <span><i style="background:var(--primary)"></i>Word</span>
+            <span><i style="background:var(--danger)"></i>PDF</span>
+            <span><i style="background:var(--warning)"></i>图片</span>
+            <span><i style="background:var(--success)"></i>文本</span>
           </span>
-          <button class="btn btn-secondary" @click="apOpen=false">关闭</button>
         </div>
       </div>
     </div>
@@ -2850,10 +2992,10 @@
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=2",
       "useSettings": "/static/js/composables/useSettings.js?v=22",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=33"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=34"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=46"></script>
+  <script type="module" src="/static/js/app.js?v=47"></script>
 </body>
 </html>

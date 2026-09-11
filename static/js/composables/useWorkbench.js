@@ -555,6 +555,54 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   const apIconView = Vue.ref(false);
   const apLastTicketId = Vue.ref("");
   const apLastName = Vue.ref("");
+  const apLastDate = Vue.ref("");
+
+  // 面板副标题（demo 的 `.m-head .meta` 形态）：任一字段缺失就整段省略，
+  // 不渲染「学员： · 投诉日期：」这种半截文本。
+  const apMeta = Vue.computed(() => {
+    const parts = [];
+    if (apLastName.value) parts.push("学员：" + apLastName.value);
+    if (apLastDate.value) parts.push("投诉日期：" + apLastDate.value);
+    return parts.join(" · ");
+  });
+
+  // ── 视觉层：内联 SVG 图标 + 文件类型徽标 ────────────────────────────────
+  // 字形与 demo/archive-panel-redesign-demo.html 的 icon() 完全一致（同一套 path）。
+  // 为什么不用 Bootstrap Icons（`.bi`）：面板的视觉基准是那份 demo，bi 的字重/轮廓
+  // 与 demo 不同；内联 SVG 还能规避图标字体加载失败时出现方框的退化。
+  const AP_ICONS = {
+    docx: '<path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M7 4.5h5L15.5 8v6.5h-9z"/>',
+    doc: '<path d="M4 1.5h5L12.5 5v9.5h-9z"/><path d="M6 8h4.5v1H6zM6 10.2h3v1H6z" fill="#fff" opacity=".85"/>',
+    pdf: '<path d="M4 1.5h8v13H4z"/><path d="M6 10.5h4v1H6zM6 8h4v1H6z" fill="#fff" opacity=".85"/>',
+    img: '<path d="M2 3h12v10H2z" opacity=".3"/><path d="M2 12l3.4-4 2.4 2.8L10 8l4 4.6z"/><circle cx="5.4" cy="6" r="1.2"/>',
+    txt: '<path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M6 7h4.5v1H6zM6 9.2h4.5v1H6zM6 11.4h3v1H6z"/>',
+    xls: '<path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M5.8 8h4.4v4.4H5.8z" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M5.8 10.2h4.4M8 8v4.4" fill="none" stroke="currentColor" stroke-width="1.1"/>',
+    folder: '<path d="M4 1.5h5L12.5 5v9.5h-9z" opacity=".35"/><path d="M7 4.5h5L15.5 8v6.5h-9z"/>',
+    plug: '<path d="M6 2h1.2v4H6zM9 2h1.2v4H9z"/><path d="M4.6 6h7v2.6A3.6 3.6 0 0 1 8.1 12h-.2a3.6 3.6 0 0 1-3.5-3.6z"/><path d="M7.5 12h1v2.2h-1z"/>',
+    warn: '<path d="M8 1.6 15 14H1z"/><path d="M7.3 6h1.4v4H7.3zM7.3 11h1.4v1.4H7.3z" fill="#fff"/>',
+    down: '<path d="M7.3 2h1.4v6h2.6L8 11.4 4.7 8h2.6z"/><path d="M3 12.6h10V14H3z"/>',
+    eye: '<path d="M8 3.5C5 3.5 2.4 5.6 1.4 8c1 2.4 3.6 4.5 6.6 4.5S13.6 10.4 14.6 8C13.6 5.6 11 3.5 8 3.5zm0 6.8A2.3 2.3 0 1 1 8 5.7a2.3 2.3 0 0 1 0 4.6z"/>',
+    lock: '<path d="M4.4 7V5.4a3.6 3.6 0 0 1 7.2 0V7H13v7H3V7zm1.4 0h4.4V5.4a2.2 2.2 0 0 0-4.4 0z"/>',
+    copy: '<path d="M5 2h6v2H5zM3.5 3.5h9v10h-9z" opacity=".45"/><path d="M5.5 1h5v2.5h-5z"/>',
+    refresh: '<path d="M13 8a5 5 0 1 1-1.5-3.6V3h1v3.5H9v-1h1.6A4 4 0 1 0 12 8z"/>',
+    close: '<path d="M4.3 3.3 8 7l3.7-3.7 1 1L9 8l3.7 3.7-1 1L8 9l-3.7 3.7-1-1L7 8 3.3 4.3z"/>',
+    list: '<path d="M2 3.5h12v1.4H2zM2 7.3h12v1.4H2zM2 11.1h12v1.4H2z"/>',
+    grid: '<path d="M2 2h5.2v5.2H2zM8.8 2H14v5.2H8.8zM2 8.8h5.2V14H2zM8.8 8.8H14V14H8.8z"/>',
+  };
+  function apIcon(kind, size) {
+    const s = size || 16;
+    return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 16 16" fill="currentColor"'
+      + ' aria-hidden="true">' + (AP_ICONS[kind] || AP_ICONS.doc) + "</svg>";
+  }
+
+  // 文件类型 → demo 的 .ftype 配色类名。apFileKind 把 doc/docx 归为 "doc"，
+  // 而 demo 的配色类叫 "docx"，故这里做一次映射（不改动已冻结的 apFileKind）。
+  const AP_FTYPE = { doc: "docx", pdf: "pdf", img: "img", txt: "txt", xls: "xls", other: "other" };
+  function apFtypeCls(name) { return "ftype " + (AP_FTYPE[apFileKind(name)] || "other"); }
+  function apFileSvg(name) {
+    const k = AP_FTYPE[apFileKind(name)] || "other";
+    return apIcon(k === "other" ? "doc" : k, 16);
+  }
 
   // 可内联预览的扩展名 —— 必须与后端 app.py 的 `_ARCHIVE_PREVIEW_MIME` 白名单一致，
   // 否则会出现「按钮亮着但后端 415」。改动其一必须同步另一处。
@@ -658,6 +706,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       // 换工单必须刷新 id，否则会把上一条工单的文件列在当前学员名下
       apLastTicketId.value = String(t.id);
       apLastName.value = String(t.student_name || "");
+      apLastDate.value = String(t.complaint_date || "");
     }
     // 冻结的归档助手弹窗若还开着，让位给面板（避免两层弹窗叠加）
     kjHelperModalOpen.value = false;
@@ -706,6 +755,37 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     }
     return "可先点「刷新」重试；若持续失败，请把下方技术详情发给管理员。";
   }
+
+  // ── 失败态的「视觉三分」：短标题 / 圆形图标 / 「该找谁」徽标，全部按后端 code 分级 ──
+  // 原实现是一律左对齐的红底提示块，「还没生成文档（用户自己能解决）」与「共享盘挂了
+  // （只能找管理员）」在观感上完全一样 —— 这正是要修的问题。
+  const apErrTitle = Vue.computed(() => {
+    if (apErrorCode.value === "dir_missing") return "还没生成归档文件";
+    if (apErrorCode.value === "root_unavailable") return "归档共享盘暂时不可用";
+    return "读取归档目录失败";
+  });
+  const apErrIconName = Vue.computed(() => {
+    if (apErrorCode.value === "dir_missing") return "doc";
+    if (apErrorCode.value === "root_unavailable") return "plug";
+    return "warn";
+  });
+  const apErrStyle = Vue.computed(() => {
+    if (apErrorCode.value === "dir_missing") {
+      return { background: "var(--primary-light)", color: "var(--primary-dark)" };
+    }
+    if (apErrorCode.value === "root_unavailable") {
+      return { background: "var(--warning-light)", color: "var(--warning)" };
+    }
+    return { background: "var(--danger-light)", color: "var(--danger)" };
+  });
+  const apErrWho = Vue.computed(() => (apErrorCode.value === "dir_missing"
+    ? { cls: "self", icon: "doc", text: "你可以自己解决" }
+    : { cls: "admin", icon: "plug", text: "需要联系管理员" }));
+  // 「重试」与「刷新」是同一个动作（重拉一次归档目录）。对 dir_missing 而言重试之前
+  // 得先去生成文档，措辞用「刷新」更贴合实际。
+  const apErrPrimaryText = Vue.computed(
+    () => (apErrorCode.value === "dir_missing" ? "刷新" : "重试"));
+  function apErrorPrimary() { return apRefresh(); }
 
   // 打开归档（全局入口）：直接开面板——不再请求 /open-archive，不再靠 blur 猜测
   async function openArchive(t) {
@@ -1147,10 +1227,13 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     kjHelperModalOpen, kjUncPath, kjServerDir, copyKjUnc,
     // 归档文件面板（方案 A 主路径）
     apOpen, apLoading, apFiles, apDir, apError, apErrorCode, apErrorDetail,
-    apIsServerHost, apIconView, apLastTicketId, apLastName,
+    apIsServerHost, apIconView, apLastTicketId, apLastName, apLastDate, apMeta,
     apLoad, apRefresh, apOpenPanel, apOpenLocalDir, apToggleView, apCopyPath,
     apCanPreview, apFileIcon, apFileKind, apDownloadUrl, apPreviewUrl, apOpenPreview,
     fmtApSize, apTotalSize, apErrorAction,
+    // 面板视觉层（样式对齐 demo/archive-panel-redesign-demo.html）
+    apIcon, apFtypeCls, apFileSvg,
+    apErrTitle, apErrIconName, apErrStyle, apErrWho, apErrPrimaryText, apErrorPrimary,
     batchExportSelected,
     clExpandedIds, clToggleExpand, copyPhone,
     transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,
