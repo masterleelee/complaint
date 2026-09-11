@@ -535,88 +535,182 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     toast("已复制", "已复制网络路径，可粘贴到资源管理器地址栏回车打开", "success");
   }
 
-  // ── 网页内置归档文件面板（零安装兜底）────────────────────────────────
-  // 服务器端直接列出归档夹文件 + 单文件下载，客户端无需装归档助手。
-  // kjLastTicketId/kjLastName 在每次 openArchive 时记录，兜底弹窗里
-  // 「网页查看文件」按钮据此拉取当前工单的归档文件清单。
-  const kjLastTicketId = Vue.ref("");
-  const kjLastName = Vue.ref("");
-  const kjFilesOpen = Vue.ref(false);
-  const kjFilesLoading = Vue.ref(false);
-  const kjFiles = Vue.ref([]);
-  const kjFilesDir = Vue.ref("");
+  // ── 归档文件面板（方案 A 主路径）──────────────────────────────────────
+  // 2026-09-11 起入口语义变了：不再是「尝试在本机弹出资源管理器」，而是
+  // 「在网页里把该学员的归档夹摊开」——列出文件 + 单文件下载 + 单文件预览。
+  // 局域网任意客户端（含未装任何东西的 Windows）零配置可用，**点了必有反应**。
+  //
+  // 不提供打包（用户 2026-09-10 明确：需要哪个文件自己下载）。
+  //
+  // 冻结（spec.md D1）：kjfolder:// 归档助手链路（上方 kj* 系列）保留不删，
+  // 但本面板已不再调用它——清理归 ISS-AP-06，需单独审批。
+  const apOpen = Vue.ref(false);
+  const apLoading = Vue.ref(false);
+  const apFiles = Vue.ref([]);
+  const apDir = Vue.ref("");
+  const apError = Vue.ref("");        // 人话错误信息（直接展示）
+  const apErrorCode = Vue.ref("");    // 后端结构化 code，决定「该找谁」
+  const apErrorDetail = Vue.ref("");  // 技术明细：默认折叠，仅排查用
+  const apIsServerHost = Vue.ref(false);
+  const apIconView = Vue.ref(false);
+  const apLastTicketId = Vue.ref("");
+  const apLastName = Vue.ref("");
 
-  async function openKjFiles() {
-    if (!kjLastTicketId.value) {
-      toast("无法查看", "缺少工单信息，请从列表重新进入", "danger");
-      return;
-    }
-    kjHelperModalOpen.value = false;
-    kjFilesOpen.value = true;
-    kjFilesLoading.value = true;
-    kjFiles.value = [];
+  // 可内联预览的扩展名 —— 必须与后端 app.py 的 `_ARCHIVE_PREVIEW_MIME` 白名单一致，
+  // 否则会出现「按钮亮着但后端 415」。改动其一必须同步另一处。
+  const AP_PREVIEW_EXT = ["pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "txt"];
+
+  function apExt(name) {
+    const s = String(name || "");
+    const i = s.lastIndexOf(".");
+    return i > 0 ? s.slice(i + 1).toLowerCase() : "";
+  }
+
+  function apCanPreview(name) {
+    return AP_PREVIEW_EXT.includes(apExt(name));
+  }
+
+  function apFileKind(name) {
+    const ext = apExt(name);
+    if (ext === "pdf") return "pdf";
+    if (["png", "jpg", "jpeg", "gif", "webp", "bmp"].includes(ext)) return "img";
+    if (["doc", "docx"].includes(ext)) return "doc";
+    if (["xls", "xlsx"].includes(ext)) return "xls";
+    if (ext === "txt") return "txt";
+    return "other";
+  }
+
+  function apFileIcon(name) {
+    return {
+      pdf: "bi-file-earmark-pdf", img: "bi-file-earmark-image",
+      doc: "bi-file-earmark-word", xls: "bi-file-earmark-excel",
+      txt: "bi-file-earmark-text",
+    }[apFileKind(name)] || "bi-file-earmark";
+  }
+
+  function apDownloadUrl(name) {
+    return `/api/tickets/${encodeURIComponent(apLastTicketId.value)}/archive-files/download?name=${encodeURIComponent(name)}`;
+  }
+
+  function apPreviewUrl(name) {
+    return `/api/tickets/${encodeURIComponent(apLastTicketId.value)}/archive-files/preview?name=${encodeURIComponent(name)}`;
+  }
+
+  function apOpenPreview(name) {
+    if (!apCanPreview(name)) return;   // 不可预览的类型：按钮置灰，此处兜底
+    window.open(apPreviewUrl(name), "_blank", "noopener");
+  }
+
+  function apToggleView() { apIconView.value = !apIconView.value; }
+
+  async function apCopyPath() {
+    const text = apDir.value || "";
+    if (!text) return;
     try {
-      const resp = await fetch(`/api/tickets/${encodeURIComponent(kjLastTicketId.value)}/archive-files`);
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e2) { /* ignore */ }
+      document.body.removeChild(ta);
+    }
+    toast("已复制", "已复制归档路径", "success");
+  }
+
+  async function apLoad() {
+    if (!apLastTicketId.value) return;
+    apLoading.value = true;
+    apFiles.value = [];
+    apError.value = ""; apErrorCode.value = ""; apErrorDetail.value = "";
+    // ⚠️ 这两个必须在**每次加载前**重置：若只在成功分支赋值，
+    // 上一条工单读成功后的 apDir/apIsServerHost 会残留到本条工单的失败面板上
+    // （表现为「复制路径」可点但复制的是别的学员的路径、「在服务器上打开」凭空出现）。
+    apDir.value = "";
+    apIsServerHost.value = false;
+    try {
+      const resp = await fetch(`/api/tickets/${encodeURIComponent(apLastTicketId.value)}/archive-files`);
       const data = await resp.json().catch(() => ({}));
       if (resp.ok && data.success) {
         const d = data.data || {};
-        kjFiles.value = d.files || [];
-        kjFilesDir.value = String(d.dir || "");
+        apFiles.value = d.files || [];
+        apDir.value = String(d.dir || "");
+        apIsServerHost.value = !!d.is_server_host;
       } else {
-        const msg = (data.errors && data.errors[0]) || data.error || `读取归档文件失败（HTTP ${resp.status}）`;
-        toast("读取归档文件失败", msg, "danger");
-        kjFilesOpen.value = false;
+        // 失败态**不关面板**：面板本身是错误信息的载体（旧实现关面板+toast，等于没提示）
+        apErrorCode.value = String(data.code || "");
+        apError.value = (data.errors && data.errors[0]) || data.error
+          || `读取归档文件失败（HTTP ${resp.status}）`;
+        apErrorDetail.value = String(data.detail || "");
       }
     } catch (e) {
-      toast("读取归档文件失败", String(e.message || e), "danger");
-      kjFilesOpen.value = false;
+      apErrorCode.value = "";
+      apError.value = "读取归档文件失败：" + String(e.message || e);
     } finally {
-      kjFilesLoading.value = false;
+      apLoading.value = false;
     }
   }
 
-  function kjFileUrl(name) {
-    return `/api/tickets/${encodeURIComponent(kjLastTicketId.value)}/archive-files/download?name=${encodeURIComponent(name)}`;
+  function apRefresh() { return apLoad(); }
+
+  function apOpenPanel(t) {
+    if (t && t.id) {
+      // 换工单必须刷新 id，否则会把上一条工单的文件列在当前学员名下
+      apLastTicketId.value = String(t.id);
+      apLastName.value = String(t.student_name || "");
+    }
+    // 冻结的归档助手弹窗若还开着，让位给面板（避免两层弹窗叠加）
+    kjHelperModalOpen.value = false;
+    apOpen.value = true;
+    return apLoad();
   }
 
-  function fmtKjSize(n) {
+  // 本机（服务器）专用：在服务器屏幕上打开该文件夹（远程来源后端返回 403）
+  async function apOpenLocalDir() {
+    if (!apLastTicketId.value) return false;
+    try {
+      const resp = await fetch(
+        `/api/tickets/${encodeURIComponent(apLastTicketId.value)}/open-archive`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok && data.success) {
+        toast("已在服务器上打开文件夹", String((data.data || {}).dir || ""), "success");
+        return true;
+      }
+      toast("打开失败", (data.errors && data.errors[0]) || data.error
+        || `打开失败（HTTP ${resp.status}）`, "danger");
+      return false;
+    } catch (e) {
+      toast("打开失败", String(e.message || e), "danger");
+      return false;
+    }
+  }
+
+  function fmtApSize(n) {
     if (!Number.isFinite(n)) return "";
     if (n < 1024) return n + " B";
     if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
     return (n / 1024 / 1024).toFixed(2) + " MB";
   }
 
+  function apTotalSize() {
+    return apFiles.value.reduce((s, f) => s + (Number(f.size) || 0), 0);
+  }
+
+  // 「该找谁」指引：与后端 code 一一对应，不要用同一句通用文案糊过去
+  function apErrorAction(code) {
+    if (code === "dir_missing") {
+      return "这个你可以自己解决：回到该工单，先生成投诉登记表或回复函，文件落盘后再回来查看。";
+    }
+    if (code === "root_unavailable") {
+      return "这个你解决不了：归档根目录（共享盘）可能未挂载或当前路径无权限，请联系管理员，或稍后重试。";
+    }
+    return "可先点「刷新」重试；若持续失败，请把下方技术详情发给管理员。";
+  }
+
+  // 打开归档（全局入口）：直接开面板——不再请求 /open-archive，不再靠 blur 猜测
   async function openArchive(t) {
     if (!t || !t.id) return false;
-    kjLastTicketId.value = String(t.id);
-    kjLastName.value = String(t.student_name || "");
-    try {
-      const resp = await fetch(`/api/tickets/${encodeURIComponent(t.id)}/open-archive`, { method: "POST" });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok && data.success) {
-        const d = data.data || {};
-        if (d.mode === "remote") {
-          // 远程客户端：绝不在服务器端打开；用 UNC 路径在客户端自己弹出
-          if (d.unc) {
-            _watchBlurThenResolve(d.unc, String(d.dir || ""));
-            _tryKjProtocol(d.unc);
-          } else {
-            // 归档不在 SMB 共享盘上 → 无法转 UNC，弹窗展示服务器路径并说明
-            kjUncPath.value = ""; kjServerDir.value = String(d.dir || "");
-            kjHelperModalOpen.value = true;
-          }
-        } else {
-          toast("已打开归档文件夹", String(d.dir || ""), "success");
-        }
-        return true;
-      }
-      const msg = (data.errors && data.errors[0]) || data.error || `打开归档失败（HTTP ${resp.status}）`;
-      toast("打开归档失败", msg, "danger");
-      return false;
-    } catch (e) {
-      toast("打开归档失败", String(e.message || e), "danger");
-      return false;
-    }
+    return apOpenPanel(t);
   }
   // 批量条「打开归档」：仅单选生效（多条时按钮已置灰，这里兜底拦截）
   function openArchiveSelected() {
@@ -1051,8 +1145,12 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     actionAt,
     clToggleRow, clToggleGroupSelect, openArchive, openArchiveSelected, clClearSelection, clSetSort, clClearFilters,
     kjHelperModalOpen, kjUncPath, kjServerDir, copyKjUnc,
-    kjLastTicketId, kjLastName, kjFilesOpen, kjFilesLoading, kjFiles, kjFilesDir,
-    openKjFiles, kjFileUrl, fmtKjSize,
+    // 归档文件面板（方案 A 主路径）
+    apOpen, apLoading, apFiles, apDir, apError, apErrorCode, apErrorDetail,
+    apIsServerHost, apIconView, apLastTicketId, apLastName,
+    apLoad, apRefresh, apOpenPanel, apOpenLocalDir, apToggleView, apCopyPath,
+    apCanPreview, apFileIcon, apFileKind, apDownloadUrl, apPreviewUrl, apOpenPreview,
+    fmtApSize, apTotalSize, apErrorAction,
     batchExportSelected,
     clExpandedIds, clToggleExpand, copyPhone,
     transferModalOpen, transferTarget, transferSaving, askBatchTransfer, askTransferRow, confirmBatchTransfer,

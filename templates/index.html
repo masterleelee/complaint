@@ -594,8 +594,44 @@
   .col-chk{width:34px}
   .row-del{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
   .row-del:hover{color:var(--color-danger);background:var(--color-danger-bg)}
-  .row-open{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
-  .row-open:hover{color:var(--color-primary);background:var(--color-primary-50)}
+  .row-view-files{background:none;border:none;color:var(--color-text-secondary);cursor:pointer;font-size:14px;padding:4px 7px;border-radius:6px;line-height:1}
+  .row-view-files:hover{color:var(--color-primary);background:var(--color-primary-50)}
+  /* ── 归档文件面板（方案 A 主路径）：就近放内联样式，避免触碰全局样式表 ── */
+  /* ⚠️ max-width 必须一起写：style.css 的 .modal-content{max-width:600px} 会
+     把只写了 width 的面板锁死在 600px（同特异性、不同属性，内联后写也盖不住），
+     导致「文件名」列只剩 ~200px 而被迫折行。 */
+  .ap-modal{width:min(760px,94vw);max-width:min(760px,94vw);display:flex;flex-direction:column;max-height:82vh}
+  .ap-body{padding:10px 18px 14px;overflow:auto;flex:1;min-height:180px}
+  .ap-tools{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+  .ap-state{padding:28px 8px;text-align:center;color:var(--color-text-secondary);font-size:13px}
+  .ap-state-err{text-align:left;background:var(--color-danger-bg);border-radius:8px;padding:14px 16px}
+  .ap-err-msg{margin:0;font-size:13.5px;font-weight:600;color:var(--color-danger)}
+  .ap-err-act{margin:8px 0 0;font-size:12.5px;color:var(--color-text)}
+  .ap-detail{margin-top:10px}
+  .ap-detail summary{cursor:pointer;font-size:12px;color:var(--color-text-secondary)}
+  .ap-detail code{display:block;margin-top:6px;font-size:11.5px;word-break:break-all;background:var(--color-surface-50);padding:8px 10px;border-radius:6px;user-select:all}
+  .ap-table{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+  .ap-table th{text-align:left;font-weight:600;font-size:12px;color:var(--color-text-secondary);padding:6px 4px;border-bottom:1px solid var(--color-border)}
+  .ap-table td{padding:7px 4px;border-bottom:1px solid var(--color-surface-100);vertical-align:middle}
+  /* ⚠️ 列宽用固定 px 而非百分比：百分比在窄视口（94vw<760px）下会把「修改时间」
+     压到 102px，而「2026-08-22 10:12」实需 ~112px —— nowrap 之下会溢出压到操作列。
+     实测手段：比对 td.scrollWidth > td.clientWidth（DOM 断言全绿也可能有溢出）。 */
+  .ap-table th.ap-name{width:auto}
+  .ap-table th.ap-num{width:78px;text-align:right}
+  .ap-table th.ap-time{width:132px}
+  .ap-table th.ap-ops{width:152px;text-align:right}
+  .ap-name{word-break:break-all}
+  .ap-name i{margin-right:6px}
+  .ap-num,.ap-time{white-space:nowrap}
+  .ap-num{text-align:right}
+  .ap-ops{white-space:nowrap;text-align:right}
+  .ap-ops .btn{white-space:nowrap}
+  .ap-ops .btn+.btn{margin-left:6px}
+  .ap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .ap-grid-item{border:1px solid var(--color-border);border-radius:8px;padding:12px 10px;text-align:center}
+  .ap-grid-icon{font-size:26px;color:var(--color-primary)}
+  .ap-grid-name{font-size:12px;margin:6px 0 2px;word-break:break-all;max-height:34px;overflow:hidden}
+  .ap-grid-ops{display:flex;gap:6px;justify-content:center;margin-top:8px}
   .empty-hint{padding:24px;text-align:center;color:var(--color-text-secondary);font-size:12.5px}
   .cl-pager{display:flex;align-items:center;justify-content:center;gap:12px;padding:10px 16px;border-top:1px solid var(--color-border);background:var(--color-surface-50)}
   .cl-pager .btn:disabled{opacity:.45;cursor:not-allowed}
@@ -986,7 +1022,7 @@
                       <span v-else class="badge badge-muted">已撤诉</span>
                     </td>
                     <td class="col-act" @click.stop>
-                      <button class="row-open" title="打开该学员的归档文件夹" @click="openArchive(t)"><i class="bi bi-folder2-open"></i></button>
+                      <button class="row-view-files" title="查看该学员的归档文件（在网页里下载 / 预览）" @click="openArchive(t)"><i class="bi bi-folder2-open"></i></button>
                       <button class="row-del" title="删除该案件" @click="askDeleteRow(t)"><i class="bi bi-trash"></i></button>
                     </td>
                   </tr>
@@ -1009,7 +1045,7 @@
 
         <div class="batch-bar" :class="{show: clSelectedIds.length>0}">
           <b>已选 [[ clSelectedIds.length ]] 条</b>
-          <button class="btn btn-sm btn-batch" :disabled="clSelectedIds.length!==1" :title="clSelectedIds.length===1 ? '在系统文件管理器中打开该学员的归档文件夹' : '请只勾选 1 条案件后打开归档'" @click="openArchiveSelected()"><i class="bi bi-folder2-open"></i> 打开归档</button>
+          <button class="btn btn-sm btn-batch" :disabled="clSelectedIds.length!==1" :title="clSelectedIds.length===1 ? '查看该学员的归档文件（在网页里下载 / 预览）' : '请只勾选 1 条案件后查看归档文件'" @click="openArchiveSelected()"><i class="bi bi-folder2-open"></i></button>
           <button class="btn btn-sm btn-batch" @click="clClearSelection()">清除</button>
           <span class="vline"></span>
           <button class="btn btn-sm btn-primary" @click="batchExportSelected()"><i class="bi bi-download"></i> 批量导出</button>
@@ -2566,14 +2602,14 @@
               <p class="hint" style="margin:0 0 8px">仅需安装一次（当前用户级，无需管理员、无后台程序），安装后点击「打开归档」即在<b>你自己的电脑</b>弹出资源管理器。</p>
               <a class="btn btn-primary btn-sm" href="/kopen-helper" download><i class="bi bi-download"></i> 下载归档助手</a>
               <a class="btn btn-secondary btn-sm" href="/kopen-diagnose" download title="装了还是不弹？运行这个脚本逐环检查"><i class="bi bi-stethoscope"></i> 一键诊断</a>
-              <button class="btn btn-secondary btn-sm" @click="openKjFiles()" title="无需安装任何东西，直接在网页里列出归档文件并可逐个下载"><i class="bi bi-files"></i> 网页查看文件（免安装）</button>
+              <button class="btn btn-secondary btn-sm" @click="apOpenPanel()" title="无需安装任何东西，直接在网页里列出归档文件并可逐个下载"><i class="bi bi-files"></i> 网页查看文件（免安装）</button>
             </div>
           </template>
           <template v-else>
             <p class="hint" style="margin:0 0 6px">该学员的归档夹存放在<b>服务器本机磁盘</b>上，不在共享盘内，你的电脑无法直接打开。请到服务器上查看，或联系管理员：</p>
             <code style="display:block;font-size:12px;background:var(--color-surface-50);padding:8px 10px;border-radius:6px;user-select:all;word-break:break-all">[[ kjServerDir || '（路径未知）' ]]</code>
             <div style="margin-top:12px">
-              <button class="btn btn-primary btn-sm" @click="openKjFiles()" title="在网页里列出该归档夹的文件并可逐个下载"><i class="bi bi-files"></i> 网页查看文件（免安装）</button>
+              <button class="btn btn-primary btn-sm" @click="apOpenPanel()" title="在网页里列出该归档夹的文件并可逐个下载"><i class="bi bi-files"></i> 网页查看文件（免安装）</button>
             </div>
           </template>
         </div>
@@ -2584,27 +2620,79 @@
       </div>
     </div>
 
-    <!-- ═══ 归档文件面板（零安装兜底：服务器端列目录 + 网页逐个下载） ═══ -->
-    <div class="modal-overlay" v-cloak v-if="kjFilesOpen" @click.self="kjFilesOpen=false">
-      <div class="modal-content" style="width:min(680px,94vw)">
-        <div class="m-head"><i class="bi bi-files"></i> 归档文件<span class="hint" style="margin-left:8px;font-weight:400">[[ kjLastName ]]</span><button class="m-close" @click="kjFilesOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
-        <div class="m-body" style="padding:10px 18px 14px">
-          <p class="hint" style="margin:0 0 8px">以下文件来自服务器上的归档夹，点击文件名即可下载到本地查看：</p>
-          <div v-if="kjFilesLoading" class="hint" style="padding:20px 0;text-align:center"><i class="bi bi-arrow-repeat"></i> 正在读取…</div>
-          <div v-else-if="!kjFiles.length" class="hint" style="padding:20px 0;text-align:center">归档夹里还没有文件</div>
-          <table v-else style="width:100%;border-collapse:collapse;font-size:13px">
+    <!-- ═══ 归档文件面板（方案 A 主路径：网页里摊开该学员的归档文件） ═══ -->
+    <!-- 不提供打包：需要哪个文件自己下载（用户 2026-09-10 明确） -->
+    <div class="modal-overlay" v-cloak v-if="apOpen" @click.self="apOpen=false">
+      <div class="modal-content ap-modal">
+        <div class="m-head"><i class="bi bi-folder2-open"></i> 归档文件<span class="hint" style="margin-left:8px;font-weight:400">[[ apLastName ]]</span><button class="m-close" @click="apOpen=false" aria-label="关闭"><i class="bi bi-x-lg"></i></button></div>
+        <div class="ap-body">
+          <!-- 工具栏：复制路径 / 刷新 / 列表↔图标（无打包按钮） -->
+          <div class="ap-tools">
+            <button class="btn btn-secondary btn-sm" @click="apCopyPath()" :disabled="!apDir" title="复制该学员归档夹在服务器上的完整路径"><i class="bi bi-clipboard"></i> 复制路径</button>
+            <button class="btn btn-secondary btn-sm" @click="apRefresh()" :disabled="apLoading" title="重新读取文件列表"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+            <button class="btn btn-secondary btn-sm" @click="apToggleView()" :disabled="!apFiles.length" :title="apIconView ? '切换为列表视图' : '切换为图标视图'"><i class="bi" :class="apIconView ? 'bi-list-ul' : 'bi-grid'"></i> [[ apIconView ? '列表' : '图标' ]]</button>
+            <span style="flex:1"></span>
+            <!-- D2(b)：仅服务器本机显示（远程显示只会 403） -->
+            <button v-if="apIsServerHost" class="btn btn-secondary btn-sm" @click="apOpenLocalDir()" title="在服务器本机的文件管理器中打开该归档夹"><i class="bi bi-folder2-open"></i> 在服务器上打开</button>
+          </div>
+
+          <!-- ① 加载中 -->
+          <div v-if="apLoading" class="ap-state"><i class="bi bi-arrow-repeat"></i> 正在读取归档文件…</div>
+
+          <!-- ② 失败：按后端 code 分级，每类给「该找谁」的不同指引 -->
+          <div v-else-if="apError" class="ap-state-err">
+            <p class="ap-err-msg"><i class="bi bi-exclamation-triangle"></i> [[ apError ]]</p>
+            <p class="ap-err-act">[[ apErrorAction(apErrorCode) ]]</p>
+            <details v-if="apErrorDetail" class="ap-detail">
+              <summary>技术详情（排查用）</summary>
+              <code>[[ apErrorDetail ]]</code>
+            </details>
+          </div>
+
+          <!-- ③ 夹子为空 -->
+          <div v-else-if="!apFiles.length" class="ap-state">
+            <i class="bi bi-inbox" style="font-size:26px"></i>
+            <p style="margin:8px 0 0">这个归档夹里还没有文件</p>
+            <p class="hint" style="margin:4px 0 0">回到该工单生成投诉登记表或回复函后，文件会出现在这里。</p>
+          </div>
+
+          <!-- ④ 列表视图 -->
+          <table v-else-if="!apIconView" class="ap-table">
+            <thead>
+              <tr><th class="ap-name">文件名</th><th class="ap-num">大小</th><th class="ap-time">修改时间</th><th class="ap-ops">操作</th></tr>
+            </thead>
             <tbody>
-              <tr v-for="f in kjFiles" :key="f.name" style="border-bottom:1px solid var(--color-surface-100)">
-                <td style="padding:7px 4px"><a :href="kjFileUrl(f.name)" style="word-break:break-all"><i class="bi bi-file-earmark-text" style="margin-right:6px"></i>[[ f.name ]]</a></td>
-                <td class="hint" style="padding:7px 4px;white-space:nowrap;text-align:right">[[ fmtKjSize(f.size) ]]</td>
-                <td class="hint" style="padding:7px 4px 7px 12px;white-space:nowrap">[[ f.mtime ]]</td>
+              <tr v-for="f in apFiles" :key="f.name">
+                <td class="ap-name"><i class="bi" :class="apFileIcon(f.name)"></i>[[ f.name ]]</td>
+                <td class="ap-num hint">[[ fmtApSize(f.size) ]]</td>
+                <td class="ap-time hint">[[ f.mtime ]]</td>
+                <td class="ap-ops">
+                  <a class="btn btn-secondary btn-sm" :href="apDownloadUrl(f.name)" :download="f.name" title="下载到本机"><i class="bi bi-download"></i> 下载</a>
+                  <button class="btn btn-secondary btn-sm" :disabled="!apCanPreview(f.name)" :title="apCanPreview(f.name) ? '在新标签页打开预览' : '该类型不支持在线预览，请下载后打开'" @click="apOpenPreview(f.name)"><i class="bi bi-eye"></i> 预览</button>
+                </td>
               </tr>
             </tbody>
           </table>
+
+          <!-- ⑤ 图标视图 -->
+          <div v-else class="ap-grid">
+            <div v-for="f in apFiles" :key="f.name" class="ap-grid-item">
+              <i class="bi ap-grid-icon" :class="apFileIcon(f.name)"></i>
+              <div class="ap-grid-name" :title="f.name">[[ f.name ]]</div>
+              <div class="hint" style="font-size:11.5px">[[ fmtApSize(f.size) ]]</div>
+              <div class="ap-grid-ops">
+                <a class="btn btn-secondary btn-sm" :href="apDownloadUrl(f.name)" :download="f.name" title="下载到本机"><i class="bi bi-download"></i></a>
+                <button class="btn btn-secondary btn-sm" :disabled="!apCanPreview(f.name)" :title="apCanPreview(f.name) ? '预览' : '该类型不支持在线预览，请下载后打开'" @click="apOpenPreview(f.name)"><i class="bi bi-eye"></i></button>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="m-foot">
-          <span class="hint" style="flex:1">共 [[ kjFiles.length ]] 个文件</span>
-          <button class="btn btn-secondary" @click="kjFilesOpen=false">关闭</button>
+          <span class="hint" style="flex:1">
+            <template v-if="apError">读取失败</template>
+            <template v-else>共 [[ apFiles.length ]] 个文件<template v-if="apFiles.length"> · 合计 [[ fmtApSize(apTotalSize()) ]]</template></template>
+          </span>
+          <button class="btn btn-secondary" @click="apOpen=false">关闭</button>
         </div>
       </div>
     </div>
@@ -2762,10 +2850,10 @@
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=2",
       "useSettings": "/static/js/composables/useSettings.js?v=22",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=31"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=33"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=45"></script>
+  <script type="module" src="/static/js/app.js?v=46"></script>
 </body>
 </html>
