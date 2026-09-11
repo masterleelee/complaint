@@ -1,6 +1,13 @@
 # ISS-AP-05 · 前端：入口改造 + `open-archive` 收敛
 
-**Status:** pending（等 ISS-AP-04）
+**Status:** done —— 2026-09-11 主 Agent 实现（提交 `4d32e78` 后端 / `90e44a3` 前端）
+**与原计划的两处偏差（用户 2026-09-11 指示）**：
+1. 入口不用文案「查看归档文件」，**改为纯文件夹图标**（用户原话：太长了）——
+   列表行 `.row-open`→`.row-view-files`，批量条按钮去掉「打开归档」四字，均只留 `bi-folder2-open` + title。
+2. `is_server_host` 只作为 `archive-files` 的**追加键**（spec 允许「追加字段用新增键」），未另开接口。
+**验收证据**：`.row-open` 全项目 0 残留；远程 `/open-archive` 403（`code=local_only`）且不调起打开动作；
+本机 200 + 打桩断言调起 1 次；「在服务器上打开」本机可见/远程隐藏且**读取失败时也不显示**；
+version bump useWorkbench v=33 / app.js v=46。
 **Priority:** P1
 **依赖:** ISS-AP-04
 **并行:** ❌ 串行
@@ -37,13 +44,13 @@
 
 ## 验收标准
 
-- [ ] 列表行按钮文案/图标/title 均已更新，`.row-open` 旧类名全项目 0 残留
-- [ ] 批量条文案更新，单选时行为正确
-- [ ] 远程来源调 `/open-archive` → 403（用 `test_client` 伪造 `remote_addr` 断言）
-- [ ] 本机来源调 `/open-archive` → 200 + 实际打开（用 monkeypatch 打桩 `open_case_dir`，不真弹 Finder）
-- [ ] 面板里「在服务器上打开文件夹」按钮：本机可见、远程不可见（若 D2 选 b）
-- [ ] `pytest tests/test_open_archive_api.py -v` 全绿（用例随语义重写）
-- [ ] 静态版本号 bump + 提醒强刷
+- [x] 列表行按钮文案/图标/title 均已更新，`.row-open` 旧类名全项目 0 残留
+- [x] 批量条文案更新，单选时行为正确
+- [x] 远程来源调 `/open-archive` → 403（用 `test_client` 伪造 `remote_addr` 断言）
+- [x] 本机来源调 `/open-archive` → 200 + 实际打开（用 monkeypatch 打桩 `open_case_dir`，不真弹 Finder）
+- [x] 面板里「在服务器上打开文件夹」按钮：本机可见、远程不可见（若 D2 选 b）
+- [x] `pytest tests/test_open_archive_api.py -v` 全绿（用例随语义重写）
+- [x] 静态版本号 bump + 提醒强刷
 
 ## 风险
 
