@@ -1940,7 +1940,11 @@
               </div>
 
               <!-- ⑤ 归档 -->
-              <div class="card panel"><div class="card-header"><i class="bi bi-archive text-primary"></i> ⑤ 归档</div>
+              <div class="card panel"><div class="card-header"><i class="bi bi-archive text-primary"></i> ⑤ 归档
+                <span class="ch-extra">
+                  <button class="btn btn-secondary btn-sm" :disabled="!selectedTicket || !selectedTicket.id" :title="archiveDirCopyHint" @click="copyArchiveDirPath()"><i class="bi bi-clipboard"></i> 复制路径</button>
+                </span>
+              </div>
                 <div class="card-body">
                   <div class="arch-row">
                     <div class="gate-item" :class="archiveGates.notes ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.notes ? 'bi-check-circle-fill':'bi-x-circle'"></i> 处理情况已填写</div>
@@ -2992,10 +2996,10 @@
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=2",
       "useSettings": "/static/js/composables/useSettings.js?v=22",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=35"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=36"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=48"></script>
+  <script type="module" src="/static/js/app.js?v=49"></script>
 </body>
 </html>

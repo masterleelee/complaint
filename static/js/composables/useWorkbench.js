@@ -680,6 +680,60 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     toast("已复制", "已复制归档路径", "success");
   }
 
+  // ⑤ 归档卡片头部的「复制路径」：学员信息页平时不加载 archive-files（那是面板打开时才做的事），
+  // 所以这里按需请求一次；若归档面板已为**当前工单**加载过（apLastTicketId 命中），直接复用，不打二次请求。
+  // 载荷与面板按钮同源：优先 UNC（\\192.0.2.199\File\...），无 UNC 回退 dir。
+  const archiveDirCopyHint = Vue.computed(() => {
+    const same = apLastTicketId.value === String(selectedTicketId.value || "");
+    const t = same ? (apUncPath.value || apDir.value || "") : "";
+    return t ? "复制共享路径（可直接粘到资源管理器）：" + t : "复制该学员归档夹的共享路径";
+  });
+
+  async function copyArchiveDirPath() {
+    const id = String(selectedTicketId.value || "");
+    if (!id) return;
+    const same = apLastTicketId.value === id;
+    let text = same ? (apUncPath.value || apDir.value || "") : "";
+    if (!text) {
+      try {
+        const resp = await fetch(`/api/tickets/${encodeURIComponent(id)}/archive-files`);
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.success) {
+          const d = data.data || {};
+          text = String(d.unc || d.dir || "");
+          // 面板若恰好为同一工单缓存过，顺手同步，保证 tooltip 与面板口径一致
+          if (same) { apDir.value = String(d.dir || ""); apUncPath.value = String(d.unc || ""); }
+        } else {
+          const code = String(data.code || "");
+          if (code === "dir_missing") {
+            toast("暂无归档文件夹", "该学员的归档文件夹尚未创建（生成登记表/回复函或归档后会出现）", "warning");
+            return;
+          }
+          if (code === "root_unavailable") {
+            toast("共享盘不可用", "归档根目录当前无法访问，请稍后重试或联系管理员", "danger");
+            return;
+          }
+          toast("复制失败", (data.errors && data.errors[0]) || data.error || `读取归档路径失败（HTTP ${resp.status}）`, "danger");
+          return;
+        }
+      } catch (e) {
+        toast("复制失败", String(e.message || e), "danger");
+        return;
+      }
+    }
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (e2) { /* ignore */ }
+      document.body.removeChild(ta);
+    }
+    toast("已复制", "已复制归档路径", "success");
+  }
+
   async function apLoad() {
     if (!apLastTicketId.value) return;
     apLoading.value = true;
@@ -1245,6 +1299,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     apOpen, apLoading, apFiles, apDir, apError, apErrorCode, apErrorDetail,
     apIsServerHost, apIconView, apLastTicketId, apLastName, apLastDate, apMeta,
     apUncPath, apCopyHint,
+    archiveDirCopyHint, copyArchiveDirPath,
     apLoad, apRefresh, apOpenPanel, apOpenLocalDir, apToggleView, apCopyPath,
     apCanPreview, apFileIcon, apFileKind, apDownloadUrl, apPreviewUrl, apOpenPreview,
     fmtApSize, apTotalSize, apErrorAction,
