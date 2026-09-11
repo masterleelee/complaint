@@ -138,9 +138,12 @@
 
 - **重构审计轮（2026-09-10）**：`ISS-R-01` ~ `ISS-R-10`，见 `.scratch/refactor-audit-20260910.md`。
   级别口径不同轴：P0=正确性隐患 / P1=结构性阻塞 / P2=可维护性债务 / P3=低收益。当前状态：**清单已出，待用户圈定范围后进入设计批次**。
-- **「打开归档」方案 A 轮（2026-09-10）**：`ISS-AP-00` / `01` / `03` / `04` / `05` / `06` / `07`（`ISS-AP-02` ZIP 打包**已取消**），见 `.scratch/archive-panel/`（`audit.md` / `spec.md` / `issues/` / `evidence/`）。
+- **「打开归档」方案 A 轮（2026-09-10）**：`ISS-AP-00` / `01` / `03` / `04` / `05` / `06` / `07` / `08`（`ISS-AP-02` ZIP 打包**已取消**），见 `.scratch/archive-panel/`（`audit.md` / `spec.md` / `issues/` / `evidence/`）。
   主线：把「打开归档」从「尝试弹出资源管理器」改为「网页内置归档文件面板」（零安装、必有反应）。
   **范围决定（用户 2026-09-10）**：不做压缩打包，只做「需要哪个文件自己下载」+ 单文件预览。
+  `ISS-AP-08`（2026-09-11 用户上报「做得太丑」）：把面板样式按 `demo/archive-panel-redesign-demo.html`
+  **1:1 移植**（该 demo 的调色板变量与项目 `:root` 同名同值，故浅色逐像素可复现、深色自动跟随）；
+  顺带修掉 demo 自身也有的「视图切换选中态被 `.ghost` 洗掉」与失败态「复制路径」死按钮两个真缺陷。
   ⚠️ **审计实测发现基线是红的**：`pytest tests/ -q` → **7 failed / 603 passed**，其中 **6 例落在归档域**。
   根因（已实验证实）：`app.py:32` 用 `from config import load_config` 直接绑定，测试却 patch `config_module.load_config`
   → 打桩无效 → 归档路由读真实 `data/config.json` 的 `archive_root`（`/Volumes/File/...`，当前未挂载）→ `PermissionError`。
