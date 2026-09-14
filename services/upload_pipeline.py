@@ -141,6 +141,51 @@ def _compute_cache_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# ── 金额口径：合同金额 / 已支付 / 尾款冲抵（用户拍板 2026-09-14） ────────
+
+def _attach_payment_context(
+    deductions_result: dict,
+    total_fee: float,
+    paid_amount: float,
+    tail_due: float,
+) -> dict:
+    """把合同金额、已支付、应付尾款与实退金额一并返回面板。
+
+    口径（用户拍板，2026-09-14，见 `.scratch/contract-vision-failure-20260914.md`）：
+    1. 退费基数 = 已支付金额（不是合同额）；
+    2. 违约金基数 = 合同金额 × 20%（合同原文「全部培训费用的 20%」）；
+    3. 应退金额先冲抵尚未支付的尾款，剩余部分才是实退。
+
+    引擎侧 `refund` 保持「应退核算值」语义不变，新增 `net_refund` 表示冲抵后实退；
+    pending 状态（上游缺失）时 net_refund 为 None，由面板提示人工补录。
+    """
+    dr = dict(deductions_result or {})
+    total = float(total_fee or 0)
+    paid = float(paid_amount or 0)
+    tail = float(tail_due or 0)
+    dr["total_fee"] = round(total, 2)
+    dr["paid_amount"] = round(paid, 2)
+    dr["tail_due"] = round(tail, 2)
+
+    if dr.get("refund_pending"):
+        dr["net_refund"] = None
+        return dr
+
+    refund = float(dr.get("refund") or 0)
+    net = max(0.0, refund - tail)
+    dr["net_refund"] = round(net, 2)
+    if tail > 0:
+        outstanding = max(0.0, tail - refund)
+        note = (
+            f"学员已支付 {paid:.0f} 元，合同尚有未付尾款 {tail:.0f} 元；"
+            f"应退 {refund:.0f} 元冲抵尾款后实退 {net:.0f} 元"
+        )
+        if outstanding > 0:
+            note += f"（不足冲抵的 {outstanding:.0f} 元仍为学员应付）"
+        dr["warnings"] = list(dr.get("warnings") or []) + [note]
+    return dr
+
+
 # ── 文本入口（已知文本，跳过 PDF 提取；测试与契约复用） ───────────────
 
 def analyze_upload_contract_text(
@@ -265,15 +310,33 @@ def _run_pipeline(
             if fees.get("service_breakdown"):
                 manual_amounts["service_breakdown"] = fees["service_breakdown"]
 
+            # ISS-VC-01 P0-4：合同金额优先取工单录入值；未录入时回退合同正文抽取的手写
+            # 总额（手写金额如「培训费用总额合计人民币【手写】3580 元」现已支持抽取）。
+            ticket_total = _as_float(ticket.get("total_fee"))
+            extracted_total = float(fees.get("total_fee") or 0)
+            if ticket_total:
+                total_fee = ticket_total
+            elif extracted_total:
+                total_fee = extracted_total
+            else:
+                # 两边都没有 → 保持 None（不是 0）：None 让引擎把理论培训费/违约金
+                # 标记为 pending 而不是「0 元」，避免假装已算清楚
+                total_fee = None
+            # 退费基数口径（用户拍板 2026-09-14）：以「已支付金额」为基数；未录入则
+            # 回退合同总金额（=培训费+代交费+服务费）。违约金基数恒为合同金额。
+            paid_amount = _as_float(ticket.get("actual_paid")) or 0.0
+            tail_due = max(0.0, float(total_fee or 0) - paid_amount)
+            refund_base = paid_amount if paid_amount > 0 else (fees.get("total_amount") or float(total_fee or 0))
+
             deductions_result = calculate_deductions(
                 tier=TIERS_BY_ID[tier_id],
                 stage=str(ticket.get("exam_stage") or "已受理"),
                 progress=_resolve_progress(ticket),
-                total_fee=_as_float(ticket.get("total_fee")),
+                total_fee=total_fee,
                 manual_amounts=manual_amounts,
                 service_fee=_as_float(ticket.get("service_fee")),
                 training_mode=str(ticket.get("training_mode") or ""),
-                total_amount=fees.get("total_amount"),
+                total_amount=refund_base,
             )
             # 合同错漏校验（合计≠拆分等，如罗炳灿服务费 460≠300+130+130）：
             # 检测到错漏 → 降级为「列扣费项目 + 金额人工填写」，不自动算具体金额。
@@ -289,6 +352,9 @@ def _run_pipeline(
                 deductions_result["warnings"] = (
                     list(deductions_result.get("warnings") or []) + fees["warnings"]
                 )
+            deductions_result = _attach_payment_context(
+                deductions_result, total_fee, paid_amount, tail_due,
+            )
         except Exception as exc:  # pragma: no cover — 防御性兜底
             deductions_result = {
                 "items": [],
