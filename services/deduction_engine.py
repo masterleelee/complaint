@@ -185,7 +185,15 @@ def _theory_fee_items(
     manual_amounts: dict | None,
 ) -> list[dict]:
     """理论培训费（仅培训档）。manual_amounts.theory_fee 优先（高置信 manual），
-    否则用 total_fee（中置信 ocr），再否则 pending。"""
+    否则用 total_fee（中置信 ocr），再否则 pending。
+
+    打包价合同例外（ISS-VC-01 P0-5）：2023 分校/分店第四条（一）1（1）的总额
+    「包含建档费/学员IC卡/各阶段培训费及相关手续费」，没有独立的理论培训费科目。
+    若把总额整额当作理论培训费扣除，会与必扣项、违约金重复计算
+    （实例：必扣 1000 + 总额 3580 + 违约金 716 = 5296 > 合同额，应退恒为 0）。
+    第八条退费表只列「基础服务必扣 + 其他必扣 + 已代收考试费 + 已产生实操培训费 +
+    违约金 20%」，故打包价合同不出理论培训费项。
+    """
     if not _is_training_kind(tier.get("kind", "")):
         return []
 
@@ -207,6 +215,9 @@ def _theory_fee_items(
             basis="培训费总额缺失（待人工补录）",
             pending=True,
         )]
+
+    if tier.get("mandatory_items"):
+        return []
 
     return [_make_item(
         category="依实",
@@ -301,7 +312,13 @@ def calculate_deductions(
     practical, w_practical = _practical_items(tier, training_hours, license_type, total_fee, manual_amounts)
     items.extend(practical)
     warnings.extend(w_practical)
-    items.extend(_theory_fee_items(tier, total_fee, manual_amounts))
+    theory_items = _theory_fee_items(tier, total_fee, manual_amounts)
+    items.extend(theory_items)
+    if not theory_items and tier.get("mandatory_items"):
+        warnings.append(
+            f"{tier['display_name']} 为打包价合同（总额已含建档费/学员IC卡及各阶段培训费），"
+            "理论培训费不单独扣除；如需另扣请人工补录"
+        )
     items.extend(_penalty_item(tier, total_fee))
 
     total_deduction = sum(it["amount"] for it in items if not it["pending"])
