@@ -3188,8 +3188,24 @@ def _run_contract_analysis(data: dict) -> dict:
                 ticket_id=ticket_id,
             )
         else:
-            add_log("contract_analyze", f"分析失败: {result['error']}", success=False, ticket_id=ticket_id)
-            return result
+            # ISS-VC-01 P0-3：单份上传件（如纸质合同合并版 PDF）不再因 legacy
+            # 「关键字段识别不完整」直接早退——该判定只看合并正文里的关键字，纸质合同
+            # 「第八条 退学退费」常单独印在后面某一页，缺页就被误判。上传件本由
+            # upload 管线按档位 + 退费表计算，legacy 的阻断会架空整条管线。
+            if ticket and is_upload_ticket(ticket.get("contract_set")):
+                legacy_incomplete_msg = str(result.pop("error"))
+                # 清掉 legacy 的错误摘要，避免面板把降级前的文案当结果展示
+                result.pop("summary", None)
+                result.pop("summary_lines", None)
+                result["legacy_incomplete_msg"] = legacy_incomplete_msg
+                add_log(
+                    "contract_analyze",
+                    f"上传件 legacy 判定不完整，降级继续走上传管线: {legacy_incomplete_msg}",
+                    ticket_id=ticket_id,
+                )
+            else:
+                add_log("contract_analyze", f"分析失败: {result['error']}", success=False, ticket_id=ticket_id)
+                return result
     else:
         legacy_incomplete_msg = ""
 
@@ -3295,6 +3311,13 @@ def _run_contract_analysis(data: dict) -> dict:
                     }]
                     result["contract_count"] = 1
                     result["contract_kinds"] = [result["contract_analyses"][0]["kind"]]
+                    # ISS-VC-01 P0-4/P0-5：把上传管线的合同金额 / 已支付 / 尾款 / 实退
+                    # 回填到 result，供面板三栏预览与 update_ticket 落库
+                    # （legacy 早退路径下这些字段恒为 0，会导致工单金额为空）
+                    result["total_fee"] = dr.get("total_fee", result.get("total_fee", 0))
+                    result["actual_paid"] = dr.get("paid_amount", result.get("actual_paid", 0))
+                    result["tail_due"] = dr.get("tail_due", 0)
+                    result["net_refund"] = dr.get("net_refund")
                     # 摘要里展示档位（如 "2023·分店 (高)"），便于经办人一眼核对
                     tr = upload_analysis.get("tier_result", {}) or {}
                     tier_disp = tr.get("display_name") or ""

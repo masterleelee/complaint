@@ -197,17 +197,16 @@ def test_multi_legacy_first_file_incomplete_demoted(client, monkeypatch):
     assert any("识别不完整" in w for w in dr.get("warnings", []))
 
 
-def test_single_legacy_error_still_early_return(client, monkeypatch):
-    """单份/下载件行为不变：legacy 报错仍早退（人工补录是设计 UX），不进上传管线。"""
+def test_download_ticket_legacy_error_still_early_return(client, monkeypatch):
+    """下载件（contract_set 无 sha256）行为不变：legacy 报错仍早退，不进上传管线。"""
     c, archive_root = client
     monkeypatch.setattr(app_module, "analyze_contract_from_file", lambda **kw: {
         "error": "合同关键字段识别不完整，请补充清晰合同或人工补录后再确认费用方案。",
     })
     fa = str(archive_root / "single-inc.pdf")
     (archive_root / "single-inc.pdf").write_bytes(b"%PDF-1.4 fake")
-    _stub_extraction(monkeypatch, {fa: TEXT_2019_TRAINING})
     tid = _make_ticket_with_set({"contracts": [
-        {"kind": "", "tier": "", "file": fa, "filename": "single-inc.pdf", "sha256": "ff66", "text": "", "text_source": "", "text_confidence": ""},
+        {"kind": "", "tier": "", "file": fa, "filename": "single-inc.pdf", "text": "", "text_source": "", "text_confidence": ""},
     ]})
     resp = c.post("/api/contract/analyze", json={
         "filepath": fa, "ticket_id": tid, "exam_stage": "已受理",
@@ -217,3 +216,32 @@ def test_single_legacy_error_still_early_return(client, monkeypatch):
     result = resp.get_json()
     assert "识别不完整" in (result.get("error") or "")
     assert "deductions_result" not in result
+
+
+def test_upload_ticket_legacy_error_demoted(client, monkeypatch):
+    """ISS-VC-01 P0-3：单份**上传件** legacy 报错不再早退 —— 纸质合同「退学退费」条款
+    常单独印在后面某一页，缺页即被 legacy 误判为「识别不完整」，早退会架空整条上传
+    管线（档位识别与扣费引擎都不执行）。新口径：降级为警告继续走上传管线。"""
+    c, archive_root = client
+    legacy_err = "合同关键字段识别不完整，请补充清晰合同或人工补录后再确认费用方案。"
+    monkeypatch.setattr(app_module, "analyze_contract_from_file", lambda **kw: {"error": legacy_err})
+    fa = str(archive_root / "up-inc.pdf")
+    (archive_root / "up-inc.pdf").write_bytes(b"%PDF-1.4 fake")
+    _stub_extraction(monkeypatch, {fa: TEXT_2019_TRAINING})
+    tid = _make_ticket_with_set({"contracts": [
+        {"kind": "", "tier": "", "file": fa, "filename": "up-inc.pdf", "sha256": "gg77", "text": "", "text_source": "", "text_confidence": ""},
+    ]})
+    resp = c.post("/api/contract/analyze", json={
+        "filepath": fa, "ticket_id": tid, "exam_stage": "已受理",
+        "training_hours": {}, "total_fee": 3000, "id_card": "110101199003070011",
+    })
+    assert resp.status_code == 200
+    result = resp.get_json()
+    # error 必须摘除（前端 d.error 走错误分支 → 面板不渲染），但原文留痕供审计
+    assert "error" not in result
+    assert result.get("legacy_incomplete_msg") == legacy_err
+    assert result.get("legacy_incomplete_msg")
+    # 上传管线照常产出（这是本单修复的目标）
+    dr = result.get("deductions_result")
+    assert isinstance(dr, dict) and dr.get("items")
+    assert result["contract_count"] == 1
