@@ -273,6 +273,12 @@ export function useContractPreview(getResult, getSourcePath) {
         r?.deductions_result?.refund ?? r?.refund ?? 0
       ) || 0,
       refundPending: Boolean(r?.deductions_result?.refund_pending),
+      // ISS-VC-01：应付尾款（合同额 − 已缴）与冲抵后实退（应退 − 尾款）
+      tailDue: Number(r?.deductions_result?.tail_due ?? r?.tail_due) || 0,
+      netRefund:
+        r?.deductions_result?.net_refund != null
+          ? Number(r.deductions_result.net_refund)
+          : (r?.net_refund != null ? Number(r.net_refund) : null),
     };
   });
 

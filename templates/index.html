@@ -1752,6 +1752,8 @@
                     <div class="cp-sumcell"><div class="k">依实项（[[ cp.groupedDeductions.find(g=>g.key==='actual')?.items.length || 0 ]] 项）</div><div class="v">¥[[ cp.money(cp.summary.actualTotal) ]]</div></div>
                     <div class="cp-sumcell"><div class="k">违约金</div><div class="v">¥[[ cp.money(cp.summary.penaltyTotal) ]]</div></div>
                     <div class="cp-sumcell"><div class="k">应退金额</div><div class="v cp-refund">¥[[ cp.money(cp.summary.refund) ]]</div></div>
+                    <div class="cp-sumcell" v-if="cp.summary.tailDue > 0"><div class="k">应付尾款（冲抵）</div><div class="v" style="color:var(--color-text-secondary)">−¥[[ cp.money(cp.summary.tailDue) ]]</div></div>
+                    <div class="cp-sumcell" v-if="cp.summary.netRefund != null && cp.summary.tailDue > 0"><div class="k">实退（冲抵后）</div><div class="v cp-refund">¥[[ cp.money(cp.summary.netRefund) ]]</div></div>
                     <div class="cp-sumcell" v-if="cp.contractKinds.length"><div class="k">合同份数</div><div class="v cp-sum-n">已识别 [[ cp.contractCount ]] 份</div></div>
                   </div>
 
@@ -2993,13 +2995,13 @@
       "useToast": "/static/js/composables/useToast.js?v=16",
       "useComplaint": "/static/js/composables/useComplaint.js?v=22",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=20",
-      "useContractPreview": "/static/js/composables/useContractPreview.js?v=2",
-      "useSettings": "/static/js/composables/useSettings.js?v=22",
+      "useContractPreview": "/static/js/composables/useContractPreview.js?v=3",
+      "useSettings": "/static/js/composables/useSettings.js?v=23",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
       "useWorkbench": "/static/js/composables/useWorkbench.js?v=36"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=49"></script>
+  <script type="module" src="/static/js/app.js?v=51"></script>
 </body>
 </html>
