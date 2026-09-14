@@ -171,10 +171,16 @@ def _attach_payment_context(
     pending 状态（上游缺失）时 net_refund 为 None，由面板提示人工补录。
     """
     dr = dict(deductions_result or {})
+    if total_fee is None:
+        # 合同额确实未知：显示 None（面板提示「待录入」），不能显示 0 元 —— 0 元
+        # 会让经办人以为「合同免费」，是更危险的误导（ISS-VC-01 实跑暴露）。
+        dr["total_fee"] = None
+    else:
+        total = float(total_fee or 0)
+        dr["total_fee"] = round(total, 2)
     total = float(total_fee or 0)
     paid = float(paid_amount or 0)
     tail = float(tail_due or 0)
-    dr["total_fee"] = round(total, 2)
     dr["paid_amount"] = round(paid, 2)
     dr["tail_due"] = round(tail, 2)
 
@@ -406,6 +412,15 @@ def _run_pipeline(
         conflict_warnings = detect_text_conflicts(contract_text, tier)
         if conflict_warnings:
             deductions_result["warnings"] = list(deductions_result.get("warnings") or []) + conflict_warnings
+
+        # 静默降级是这套流程最危险的失效模式：视觉识别不可用时管线会回退本地 OCR，
+        # 而本地 OCR 的手写数字错识率极高（实测 3580 → 3.0），面板上却看不出差别。
+        # 必须在明细里明示文本来源，逼经办人回看合同原件（ISS-VC-01）。
+        if text_source in LOW_QUALITY_TEXT_SOURCES:
+            deductions_result["warnings"] = list(deductions_result.get("warnings") or []) + [
+                "本次未能使用视觉识别，已回退本地 OCR：文字与金额均可能不准，"
+                "请务必对照合同原件核对后确认费用方案。"
+            ]
 
     # 3) 缓存键：文件指纹 + 档位 + 进度哈希
     cache_key = _compute_cache_key(
