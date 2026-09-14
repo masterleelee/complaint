@@ -33,11 +33,12 @@ class _FakeResponse:
 
 
 def _install_fake_post(monkeypatch, responses):
-    """按顺序返回预设响应；耗尽后重复最后一个。"""
-    calls = {"count": 0}
+    """按顺序返回预设响应；耗尽后重复最后一个。`calls["payloads"]` 记录每次请求体。"""
+    calls = {"count": 0, "payloads": []}
 
     def fake_post(api_url, headers=None, json=None, timeout=None, **kwargs):
         calls["count"] += 1
+        calls["payloads"].append(json)
         idx = min(calls["count"] - 1, len(responses) - 1)
         return responses[idx]
 
@@ -129,6 +130,49 @@ def test_missing_file_short_circuits(monkeypatch, tmp_path):
 
     assert (idx, text) == (1, "")
     assert calls["count"] == 0
+
+
+def test_reasoning_effort_is_sent(monkeypatch, tmp_path):
+    """配置了 reasoning_effort → 随请求下发 reasoning 字段。
+
+    这是 P0 主修复：纯推理模型的 thinking 会吃满 max_tokens 使正文恒为 0 字。
+    """
+    monkeypatch.setattr(cs, "_VISION_MAX_ATTEMPTS", 1, raising=False)
+    calls = _install_fake_post(monkeypatch, [_FakeResponse(200, _ok_payload("ok"))])
+
+    cs._recognize_single_image(
+        (1, _make_tmp_image(tmp_path), "http://x/v1", "k", "m", 8192, "none")
+    )
+
+    assert calls["payloads"][0]["reasoning"] == {"effort": "none"}
+
+
+def test_reasoning_omitted_when_not_configured(monkeypatch, tmp_path):
+    """未配置 reasoning_effort（空串或 6 元组）→ 不下发该字段，兼容非推理 provider。"""
+    monkeypatch.setattr(cs, "_VISION_MAX_ATTEMPTS", 1, raising=False)
+
+    # 显式空串
+    calls = _install_fake_post(monkeypatch, [_FakeResponse(200, _ok_payload("ok"))])
+    cs._recognize_single_image(
+        (1, _make_tmp_image(tmp_path), "http://x/v1", "k", "m", 8192, "")
+    )
+    assert "reasoning" not in calls["payloads"][0]
+
+    # 旧式 6 元组（向后兼容）
+    calls2 = _install_fake_post(monkeypatch, [_FakeResponse(200, _ok_payload("ok"))])
+    cs._recognize_single_image(
+        (1, _make_tmp_image(tmp_path), "http://x/v1", "k", "m", 8192)
+    )
+    assert "reasoning" not in calls2["payloads"][0]
+
+
+def test_vision_section_defaults_reasoning_to_none():
+    """默认配置必须带 reasoning_effort=none，否则新装环境会重蹈正文全空。"""
+    import config
+
+    section = config.DEFAULT_CONFIG["llm_contract_vision"]
+    assert section["reasoning_effort"] == "none"
+    assert section["max_tokens"] >= 4096  # 单页实测量 2000+ 字，2048 不够
 
 
 def test_content_as_parts_list(monkeypatch, tmp_path):

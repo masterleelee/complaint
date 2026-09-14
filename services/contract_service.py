@@ -378,7 +378,8 @@ def _vision_message_text(choice) -> str:
 
 def _recognize_single_image(args):
     """识别单张图片的辅助函数（用于并发；失败自动重试）。"""
-    idx, img_path, api_url, api_key, model, max_tokens = args
+    idx, img_path, api_url, api_key, model, max_tokens = args[:6]
+    reasoning_effort = str(args[6]).strip() if len(args) > 6 else ""
 
     if not os.path.exists(img_path):
         return idx, ""
@@ -414,6 +415,10 @@ def _recognize_single_image(args):
         ],
         "max_tokens": max_tokens
     }
+    # 纯推理模型必须显式关闭/限制推理，否则 thinking 会吃满 max_tokens，
+    # 正文恒为 0 字（见 .scratch/contract-vision-failure-20260914.md「六之二」）。
+    if reasoning_effort:
+        payload["reasoning"] = {"effort": reasoning_effort}
 
     for attempt in range(1, _VISION_MAX_ATTEMPTS + 1):
         try:
@@ -426,10 +431,12 @@ def _recognize_single_image(args):
                 if text:
                     system_logger.info("✅ 第%d页识别完成 (%d 字符)", idx, len(text))
                     return idx, text
+                finish = (choices[0] or {}).get("finish_reason") if isinstance(choices[0], dict) else "?"
                 system_logger.warning(
-                    "⚠️ 第%d页第%d/%d次识别返回空文本 finish_reason=%s",
-                    idx, attempt, _VISION_MAX_ATTEMPTS,
-                    (choices[0] or {}).get("finish_reason") if isinstance(choices[0], dict) else "?",
+                    "⚠️ 第%d页第%d/%d次识别返回空文本 finish_reason=%s%s",
+                    idx, attempt, _VISION_MAX_ATTEMPTS, finish,
+                    "（thinking 吃满 max_tokens：请确认 reasoning_effort 已设为 none）"
+                    if finish == "length" else "",
                 )
         except Exception as e:
             system_logger.warning("⚠️ 第%d页第%d/%d次请求异常: %s", idx, attempt, _VISION_MAX_ATTEMPTS, e)
@@ -451,12 +458,18 @@ def extract_contract_text_vision(image_paths: list) -> str:
     api_key = llm.get("api_key", "")
     model = llm.get("model", "")
     max_tokens = int(llm.get("max_tokens", 2000) or 2000)
+    reasoning_effort = str(llm.get("reasoning_effort") or "").strip()
 
     if not image_paths:
         return ""
     if not api_url or not api_key or not model:
         system_logger.warning("[VISION] 未配置视觉模型，跳过远程识别并回退本地 OCR")
         return ""
+    if not reasoning_effort:
+        system_logger.warning(
+            "[VISION] reasoning_effort 为空：若使用推理型模型，thinking 可能吃满 "
+            "max_tokens 导致正文为空（建议设为 none）"
+        )
 
     # ── 压缩图片以减少 Token 消耗 ──
     try:
@@ -473,7 +486,10 @@ def extract_contract_text_vision(image_paths: list) -> str:
 
     with ThreadPoolExecutor(max_workers=min(len(compressed_paths), 3)) as executor:
         futures = {
-            executor.submit(_recognize_single_image, (i+1, path, api_url, api_key, model, max_tokens)): i
+            executor.submit(
+                _recognize_single_image,
+                (i+1, path, api_url, api_key, model, max_tokens, reasoning_effort),
+            ): i
             for i, path in enumerate(compressed_paths)
         }
 
@@ -643,6 +659,25 @@ def extract_contract_fees(contract_text: str) -> dict:
         r"培训费用(?:总额)?合计(?:人民币)?" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
         r"培训服务费合计" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
     ])
+
+    # ── 手写总额可疑性闸门（ISS-VC-01，2026-09-14 实测补） ──────────────
+    # 实测：免费视觉模型把本合同手写的「3580」读成「¥6800-2500」，并把
+    # 「欠尾款1580」读成「欠4800」，读出来的组内自洽（2000+4800=6800），
+    # 因此首付+欠款的一致性校验抓不住这类幻觉。
+    # 策略：只要「合计人民币 … 元」这一段里出现两组及以上数字，或带减号/斜杠
+    # 等修改痕迹，就拒绝自动采信，交人工录入 —— 宁可让经办人填一次，
+    # 也不能让一个错误金额静默流进退费明细。
+    _seg = re.search(r"培训费用(?:总额)?合计(?:人民币)?(.{0,80}?)元", cleaned, re.S)
+    if _seg:
+        _seg_text = _seg.group(1)
+        _seg_nums = re.findall(r"\d+(?:\.\d+)?", _seg_text)
+        if len(_seg_nums) >= 2 or re.search(r"[－\-—–—/／~～]", _seg_text):
+            warnings.append(
+                "合同「培训费用总额」处手写含修改痕迹或多组数字（识别为 "
+                + " / ".join(_seg_nums)
+                + "），无法确定唯一金额，请人工核对合同并录入培训费总额"
+            )
+            total_fee = 0.0
 
     theory_fee = _first_money(cleaned, [
         r"理论培训费(?:及相关手续费)?(?:人民币)?" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
