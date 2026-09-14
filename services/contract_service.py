@@ -2,6 +2,7 @@
 import os
 import json
 import base64
+import time
 import requests
 from datetime import datetime, timedelta
 import re
@@ -328,55 +329,116 @@ def _format_llm_error(resp: requests.Response) -> str:
     return f"大模型接口请求失败（HTTP {status}）：{message or raw_body[:300]}"
 
 
+# ── 视觉识别：页级重试与异常响应容错 ────────────────────────────────
+# 生产环境（OpenRouter + 免费档）会出现「HTTP 200 但 choices 为 null」或「空/非 JSON body」
+# 的异常页丢失 —— 单页丢失会让「退费条款」等仅印在该页的字段整体消失，进而被
+# `_detect_unclear_fields` 误判为「识别不完整」。故页级失败必须重试并留证据。
+_VISION_MAX_ATTEMPTS = 3          # 首次 + 2 次重试
+_VISION_RETRY_DELAY_SEC = 2.0
+_VISION_TIMEOUT_SEC = 180         # 实测单页 80~150s，原 60s 偏紧
+
+
+def _vision_choices(resp) -> tuple[list, str]:
+    """安全解析视觉接口的 choices；异常时返回空列表 + 可排障的诊断串。"""
+    try:
+        body = resp.json()
+    except ValueError:
+        raw = (getattr(resp, "text", "") or "")[:300]
+        return [], f"HTTP {getattr(resp, 'status_code', '?')} 非 JSON 响应 body={raw!r}"
+    if not isinstance(body, dict):
+        return [], f"HTTP {getattr(resp, 'status_code', '?')} 响应结构异常 type={type(body).__name__}"
+    choices = body.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return [], (
+            f"HTTP {getattr(resp, 'status_code', '?')} choices 为空或非列表 "
+            f"body={json.dumps(body, ensure_ascii=False)[:200]}"
+        )
+    return choices, ""
+
+
+def _vision_message_text(choice) -> str:
+    """兼容 content 为字符串或分片列表两种形态。"""
+    if not isinstance(choice, dict):
+        return ""
+    message = choice.get("message") or {}
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and isinstance(p.get("text"), str)
+        ]
+        return "\n".join(p.strip() for p in parts if p.strip())
+    return ""
+
+
 def _recognize_single_image(args):
-    """识别单张图片的辅助函数（用于并发）"""
+    """识别单张图片的辅助函数（用于并发；失败自动重试）。"""
     idx, img_path, api_url, api_key, model, max_tokens = args
 
     if not os.path.exists(img_path):
         return idx, ""
 
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+
     try:
         with open(img_path, "rb") as f:
             b64_image = base64.b64encode(f.read()).decode('utf-8')
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
-
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"请详细识别这张驾校培训合同的第{idx}页。要求：\n1. 识别所有印刷文字，保持段落和表格结构\n2. **特别注意手写内容**（金额、签名、日期、备注、修改等），逐字识别\n3. 不要遗漏任何文字，包括页眉页脚、表格内文字、印章文字\n4. 手写内容用【手写】标记"
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": max_tokens
-        }
-
-        resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
-        result = resp.json()
-
-        if "choices" in result and len(result["choices"]) > 0:
-            text = result["choices"][0]["message"]["content"]
-            system_logger.info("✅ 第%d页识别完成 (%d 字符)", idx, len(text))
-            return idx, text
-        else:
-            system_logger.warning("⚠️ 第%d页识别失败: %s", idx, result)
-            return idx, ""
     except Exception as e:
-        system_logger.warning("⚠️ 第%d页请求异常: %s", idx, e)
+        system_logger.warning("⚠️ 第%d页读取失败: %s", idx, e)
         return idx, ""
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"请详细识别这张驾校培训合同的第{idx}页。要求：\n1. 识别所有印刷文字，保持段落和表格结构\n2. **特别注意手写内容**（金额、签名、日期、备注、修改等），逐字识别\n3. 不要遗漏任何文字，包括页眉页脚、表格内文字、印章文字\n4. 手写内容用【手写】标记"
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
+                    }
+                ]
+            }
+        ],
+        "max_tokens": max_tokens
+    }
+
+    for attempt in range(1, _VISION_MAX_ATTEMPTS + 1):
+        try:
+            resp = requests.post(api_url, headers=headers, json=payload, timeout=_VISION_TIMEOUT_SEC)
+            choices, diagnostic = _vision_choices(resp)
+            if not choices:
+                system_logger.warning("⚠️ 第%d页第%d/%d次识别无有效内容: %s", idx, attempt, _VISION_MAX_ATTEMPTS, diagnostic)
+            else:
+                text = _vision_message_text(choices[0])
+                if text:
+                    system_logger.info("✅ 第%d页识别完成 (%d 字符)", idx, len(text))
+                    return idx, text
+                system_logger.warning(
+                    "⚠️ 第%d页第%d/%d次识别返回空文本 finish_reason=%s",
+                    idx, attempt, _VISION_MAX_ATTEMPTS,
+                    (choices[0] or {}).get("finish_reason") if isinstance(choices[0], dict) else "?",
+                )
+        except Exception as e:
+            system_logger.warning("⚠️ 第%d页第%d/%d次请求异常: %s", idx, attempt, _VISION_MAX_ATTEMPTS, e)
+
+        if attempt < _VISION_MAX_ATTEMPTS:
+            time.sleep(_VISION_RETRY_DELAY_SEC * attempt)
+
+    system_logger.error("❌ 第%d页连续 %d 次识别失败，该页正文缺失", idx, _VISION_MAX_ATTEMPTS)
+    return idx, ""
 
 
 def extract_contract_text_vision(image_paths: list) -> str:
@@ -572,14 +634,19 @@ def extract_contract_fees(contract_text: str) -> dict:
     cleaned = _clean_ocr_noise(contract_text)
     warnings: list[str] = []
 
+    # 视觉/LLM 会把手写金额标成「【手写】3580」「[手写] 3580」或在全角空格后给出数字，
+    # 旧正则要求「合计人民币」与金额之间只有空白 → 手写金额一律漏抽（ISS-VC-01 P0-4）。
+    # 这里容忍两者之间最多 8 个非数字字符（标记、下划线、全角空格）。
+    _NOISE = r"[^\d]{0,8}?"
+
     total_fee = _first_money(cleaned, [
-        r"培训费用(?:总额)?合计(?:人民币)?\s*(\d+(?:\.\d+)?)\s*元",
-        r"培训服务费合计\s*(\d+(?:\.\d+)?)\s*元",
+        r"培训费用(?:总额)?合计(?:人民币)?" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
+        r"培训服务费合计" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
     ])
 
     theory_fee = _first_money(cleaned, [
-        r"理论培训费(?:及相关手续费)?(?:人民币)?\s*(\d+(?:\.\d+)?)\s*元",
-        r"理论培训费(?:（[^）]*）)?\s*(\d+(?:\.\d+)?)\s*元",
+        r"理论培训费(?:及相关手续费)?(?:人民币)?" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
+        r"理论培训费(?:（[^）]*）)?" + _NOISE + r"(\d+(?:\.\d+)?)\s*元",
     ])
 
     practical_unit_price = _first_money(cleaned, [
