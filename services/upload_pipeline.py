@@ -143,11 +143,22 @@ def _compute_cache_key(
 
 # ── 金额口径：合同金额 / 已支付 / 尾款冲抵（用户拍板 2026-09-14） ────────
 
+# 本地 OCR 对印刷体尚可，但手写数字错识率高（实测把扫描件手写「3580」读成「3.0」）。
+# 这些来源抽出的金额不直接进扣费引擎，改标 pending 由经办人补录。
+LOW_QUALITY_TEXT_SOURCES = frozenset({"local_ocr"})
+
+# 机动车驾驶培训合同不可能低于起步必扣额（2023 分校/分店档服务费600+建档费300+
+# 学员IC卡100=1000）。低于该线的金额必是误识，不是真实合同额。
+_MIN_PLAUSIBLE_TOTAL_FEE = 1000.0
+
+
 def _attach_payment_context(
     deductions_result: dict,
     total_fee: float,
     paid_amount: float,
     tail_due: float,
+    *,
+    low_quality_amount: bool = False,
 ) -> dict:
     """把合同金额、已支付、应付尾款与实退金额一并返回面板。
 
@@ -166,6 +177,14 @@ def _attach_payment_context(
     dr["total_fee"] = round(total, 2)
     dr["paid_amount"] = round(paid, 2)
     dr["tail_due"] = round(tail, 2)
+
+    if total <= 0 and low_quality_amount:
+        dr["total_fee"] = None
+        dr["refund_pending"] = True
+        dr["warnings"] = list(dr.get("warnings") or []) + [
+            "本地 OCR 未能可靠识别合同培训费用总额，请在「合同金额」处人工录入后重试；"
+            "已支付金额与违约金基数需以人工金额为准。"
+        ]
 
     if dr.get("refund_pending"):
         dr["net_refund"] = None
@@ -324,6 +343,16 @@ def _run_pipeline(
                 total_fee = None
             # 退费基数口径（用户拍板 2026-09-14）：以「已支付金额」为基数；未录入则
             # 回退合同总金额（=培训费+代交费+服务费）。违约金基数恒为合同金额。
+            # 本地 OCR 数字错识率高（实测把手写「3580」读成「3.0」），明显不合理的
+            # 金额不得进入扣费引擎，改判 pending 交经办人补录。
+            implausible_amount = (
+                str(text_source) in LOW_QUALITY_TEXT_SOURCES
+                and total_fee is not None
+                and 0 < float(total_fee) < _MIN_PLAUSIBLE_TOTAL_FEE
+            )
+            if implausible_amount:
+                total_fee = None
+
             paid_amount = _as_float(ticket.get("actual_paid")) or 0.0
             tail_due = max(0.0, float(total_fee or 0) - paid_amount)
             refund_base = paid_amount if paid_amount > 0 else (fees.get("total_amount") or float(total_fee or 0))
@@ -354,6 +383,7 @@ def _run_pipeline(
                 )
             deductions_result = _attach_payment_context(
                 deductions_result, total_fee, paid_amount, tail_due,
+                low_quality_amount=implausible_amount,
             )
         except Exception as exc:  # pragma: no cover — 防御性兜底
             deductions_result = {

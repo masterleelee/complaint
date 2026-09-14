@@ -179,3 +179,43 @@ def test_pipeline_without_paid_amount_falls_back():
     assert dr["paid_amount"] == 0
     assert dr["tail_due"] == 3580
     assert dr["refund"] == 3580 - 1716       # 1864
+
+
+# ── 本地 OCR 误识金额护栏 ─────────────────────────────────────────────
+
+TEXT_OCR_MISREAD = TEXT_2023_BRANCH.replace("3580", "3.0")
+
+
+def test_local_ocr_implausible_total_goes_pending():
+    """本地 OCR 把手写 3580 读成 3.0：不得用它算扣费，改判 pending 提示人工补录。"""
+    out = analyze_upload_contract_text(
+        contract_text=TEXT_OCR_MISREAD,
+        ticket=_ticket(actual_paid=2000),
+        text_source="local_ocr",
+    )
+    dr = out["deductions_result"]
+    assert dr["refund_pending"] is True
+    assert dr["total_fee"] is None
+    assert dr["net_refund"] is None
+    assert any("人工录入" in w for w in dr["warnings"])
+
+
+def test_same_misread_from_vision_is_still_checked():
+    """同一金额若来自可靠来源（vision/pdf），仍照常计算，不被护栏误伤。"""
+    out = analyze_upload_contract_text(
+        contract_text=TEXT_OCR_MISREAD,
+        ticket=_ticket(actual_paid=2000),
+        text_source="vision_text",
+    )
+    dr = out["deductions_result"]
+    assert dr["refund_pending"] is False
+    assert dr["total_fee"] == 3.0
+
+
+def test_payment_context_marks_total_none_when_amount_rejected():
+    dr = {"items": [], "total_deduction": 0.0, "refund": 0.0, "refund_pending": False, "warnings": []}
+    out = _attach_payment_context(dr, 0.0, 2000.0, 0.0, low_quality_amount=True)
+    assert out["total_fee"] is None
+    assert out["refund_pending"] is True
+    assert out["net_refund"] is None
+    assert any("本地 OCR" in w for w in out["warnings"])
