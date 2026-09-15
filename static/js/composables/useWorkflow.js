@@ -1265,7 +1265,7 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
       feeConfirmed.value = false;
       if (ar.value) {
         ar.value.fee_plan_status = "draft";
-        ar.value.source = "manual"; // 重开即编辑态：合计字段须可输入（与 restore 兜底一致）
+        markFeeEditable(); // 重开即编辑态：来源丢失时恢复合计可输入（与 restore 兜底一致）
       }
       feeReopenReason.value = "";
       workflowStep.value = 2;
@@ -1387,7 +1387,12 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
         if (parsed && typeof parsed === "object") restoredSource = parsed.source;
       }
     } catch (e) { /* 字典解析失败时走下方兜底 */ }
-    if (!statusConfirmed) restoredSource = restoredSource || "manual";
+    if (statusConfirmed) {
+      // 确认态一律只读守门（须先解锁）：字典内残留的 source 不穿透
+      restoredSource = undefined;
+    } else {
+      restoredSource = restoredSource || "manual";
+    }
     ar.value = deductions.length || ticket.fee_plan_status ? {
       total_fee: Number(ticket.total_fee) || 0,
       actual_paid: Number(ticket.actual_paid) || 0,

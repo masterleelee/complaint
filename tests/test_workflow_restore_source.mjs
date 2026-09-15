@@ -97,5 +97,28 @@ if (typeof wf.markFeeEditable === "function") {
   fail++; console.error("  FAIL: 未导出 markFeeEditable()");
 }
 
+// ── 用例 6：confirmed + 整包字典含 source='manual' → 守门不穿透 ──
+restore({
+  ticket: {
+    id: "t6", fee_plan_status: "confirmed",
+    deduction_detail: JSON.stringify({ source: "manual", total_fee: 3000, deductions: [] }),
+    contract_manifest: {},
+  },
+  deductions: [],
+});
+assert(wf.ar.value && wf.ar.value.source !== "manual",
+  "confirmed+字典 source='manual'：确认态守门不穿透（须先解锁）");
+
+// ── 用例 7：手动填写合同路径（startManualEdit）→ ar.source='manual' ──
+Object.assign(wf.manualContract, {
+  total_fee: 3180, paid_amount: 3180, contract_code: "HT-001",
+  includes_exam: false, includes_makeup: false,
+});
+wf.startManualEdit();
+assert(wf.ar.value && wf.ar.value.source === "manual",
+  "手动填写合同路径：ar.source='manual'（合计可输入）");
+assert(wf.ar.value.total_fee === 3180,
+  "手动填写合同路径：合同总额正确带入");
+
 console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
 process.exit(fail ? 1 : 0);
