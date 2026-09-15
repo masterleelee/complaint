@@ -330,26 +330,30 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     }
     return false;
   }
-  const channelOptions = Vue.computed(() => {
-    const set = new Set();
-    for (const t of allTickets.value) {
-      const c = String(t.source_channel || "").trim();
-      if (c) set.add(c);
-    }
-    return [...set];
-  });
+  // ── 来源渠道值域（唯一权威定义）──
+  // 「投诉列表 · 来源」列与「新增投诉 · 来源渠道」下拉读写的是同一个字段
+  // source_channel，因此两边必须共用同一份值域。受理页下拉在
+  // templates/index.html 中由 SOURCE_CHANNELS 渲染（v-for），不再各自硬编码。
+  //
+  // 这里刻意**不再合并库内存量值**：2026-08-29 的历史资料导入曾把原始台账
+  // 口径（东坑交通局 / 客服热线…，共 15 个非规范值、80 条工单）直接写进该
+  // 字段；合并存量会让脏值顺着「列内下拉 + 筛选下拉 + 看板 TOP5」重新冒出来。
+  // 存量已于 2026-09-15 由 scripts/normalize_source_channel.py 归一。
+  const SOURCE_CHANNELS = ["12345", "交通部门", "电话来访", "信访", "邮件投诉", "驾培协会", "其他途径"];
+
+  // 筛选下拉：只列规范值
+  const channelOptions = Vue.computed(() => [...SOURCE_CHANNELS]);
 
   // ── 列表页行内编辑：投诉类型 / 来源渠道 ──
   // 两字段有下游产物依赖（登记表「投诉渠道」格 + 统计分组），必须走受控保存：
   // 只提交单字段（避免整对象覆盖）、改动留痕由后端完成、已归档先确认、
   // 已生成登记表时后端置 register_form_outdated 并由前端提示重出。
-  const BASE_CHANNELS = ["12345", "交通部门", "电话来访", "信访", "邮件投诉", "驾培协会"];
-
   function clChannelEditOptions(t) {
-    const set = new Set(BASE_CHANNELS);
-    for (const c of channelOptions.value) set.add(c);   // 存量出现过的渠道
+    const set = new Set(SOURCE_CHANNELS);
     const cur = String((t && t.source_channel) || "").trim();
-    if (cur) set.add(cur);                              // 保全自定义值，防止下拉吞掉
+    // 兜底：万一库内仍有非规范值（如新导入的历史数据未经归一），
+    // 也要让当前值出现在选项里，否则 <select> 会退化成空白而非显示原值。
+    if (cur && !set.has(cur)) set.add(cur);
     return [...set];
   }
 
@@ -403,7 +407,18 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     if (clGroup.value === "archived" && t.archive_status !== "已归档") return false;
     if (clGroup.value === "withdrawn" && t.withdraw_status !== "已撤诉") return false;
     if (clType.value && t.complaint_type !== clType.value) return false;
-    if (clChannel.value && (t.source_channel || "") !== clChannel.value) return false;
+    if (clChannel.value) {
+      const v = String(t.source_channel || "").trim();
+      // 「其他途径」是兜底渠道：受理页选它时会把「具体途径」的自由文本直接写进
+      // source_channel（useComplaint.js 的 concreteChannel），因此它必须同时覆盖
+      // 字面值 "其他途径" 与任何非规范值，否则这些工单在筛选里筛不出来。
+      // 空值不算「其他途径」——那是「未填」，不是某个渠道。
+      if (clChannel.value === "其他途径") {
+        if (v !== "其他途径" && !(v && !SOURCE_CHANNELS.includes(v))) return false;
+      } else if (v !== clChannel.value) {
+        return false;
+      }
+    }
     if (clSchool.value && (t.school_short || "") !== clSchool.value) return false;
     if (clHandler.value === "__unassigned" && String(t.handler_name || "").trim()) return false;
     if (clHandler.value && !matchHandler(t, clHandler.value)) return false;
@@ -1342,7 +1357,7 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     OVERDUE_DAYS, TYPE_LABELS, FEE_LABELS,
     clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
     clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
-    handlerOptions, channelOptions, clChannelEditOptions, clSaveType, clSaveChannel,
+    SOURCE_CHANNELS, handlerOptions, channelOptions, clChannelEditOptions, clSaveType, clSaveChannel,
     clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
     clPageSize, pagedGroups, clSetPage, batchBarVisible,
     daysOpen, isOverdue, feeState, maskPhone,
