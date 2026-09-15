@@ -206,7 +206,7 @@ try {
       handleSaveAndConfirm,
       startManualFeeEntry,
       confirmNoFeeBasis,
-      fromHistoryLabel, loadSavedAnalysis, saveAnalysis,
+      fromHistoryLabel, loadSavedAnalysis, saveAnalysis, markFeeEditable,
       loadCommunications, addCommunication, saveCaseOutcome,
     } = useWorkflow(toast, () => qr.value, () => currentTicketId.value, {
       // ISS-UJ-05/06：费用确认成功后同步工作台快照与列表，免去手动刷新
@@ -304,7 +304,7 @@ try {
       deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
       handlerLabel,
       actionAt,
-    } = useWorkbench(toast, restoreComplaint, restoreWorkflow, () => qr.value, loadStats, assignableUsers);
+    } = useWorkbench(toast, restoreComplaint, restoreWorkflow, () => qr.value, loadStats, assignableUsers, markFeeEditable);
 
     // ── 学员信息标签页（左栏三系统查询） ──
     const tab = ref("basic");

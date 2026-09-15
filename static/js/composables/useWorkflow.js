@@ -414,9 +414,10 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
 	      includes_makeup_fee: manualContract.includes_makeup,
 	      exam_fee_table: { subject1: 70, subject2: 130, subject3: 280 },
 	      makeup_fee_table: { subject1: 35, subject2: 65, subject3: 140 },
-	      fee_plan_status: "draft",
-	    };
-    
+      fee_plan_status: "draft",
+      source: "manual",
+    };
+
     // 进入退费分析步骤
     workflowStep.value = 2;
     recalc();
@@ -1262,7 +1263,10 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
       if (!d.success) throw new Error(d.error || "重新打开失败");
       archivedCase.value = false;
       feeConfirmed.value = false;
-      if (ar.value) ar.value.fee_plan_status = "draft";
+      if (ar.value) {
+        ar.value.fee_plan_status = "draft";
+        ar.value.source = "manual"; // 重开即编辑态：合计字段须可输入（与 restore 兜底一致）
+      }
       feeReopenReason.value = "";
       workflowStep.value = 2;
       toast("费用方案已重新打开", "请复核费用并重新确认、沟通和归档", "success");
@@ -1368,6 +1372,22 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
     cSrc.value = cPath.value ? "upload" : "upload";
     dongchengServiceFee.value = Number(ticket.service_fee) || 0;
     dongchengTrainingMode.value = String(ticket.training_mode || "");
+    // 还原 source（bug：工单重开后 合同总额/实缴 只读，无法确认明细）。
+    // 模板以 ar.source==='manual' 决定这两个字段是否为输入框；restore 原先丢字段。
+    // source 的三个丢失点均在此兜底：
+    //   ① save_analysis 整包字典 → 取字典内 source；
+    //   ② fee-confirm 写库只存明细列表（无字典）→ draft/needs_review（编辑态）兜底 'manual'；
+    //   ③ 零口径确认→解锁（detail='[]'、draft）→ 同上兜底。
+    // confirmed 维持只读守门（须先解锁），AI 提取来源在确认前不放开合计编辑。
+    const statusConfirmed = (ticket.fee_plan_status || "") === "confirmed";
+    let restoredSource;
+    try {
+      if (typeof ticket.deduction_detail === "string" && ticket.deduction_detail.trim().startsWith("{")) {
+        const parsed = JSON.parse(ticket.deduction_detail);
+        if (parsed && typeof parsed === "object") restoredSource = parsed.source;
+      }
+    } catch (e) { /* 字典解析失败时走下方兜底 */ }
+    if (!statusConfirmed) restoredSource = restoredSource || "manual";
     ar.value = deductions.length || ticket.fee_plan_status ? {
       total_fee: Number(ticket.total_fee) || 0,
       actual_paid: Number(ticket.actual_paid) || 0,
@@ -1376,6 +1396,7 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
       deductions: penaltyLast(deductions),
       contract_code: ticket.contract_code || "",
       fee_plan_status: ticket.fee_plan_status || "draft",
+      source: restoredSource,
     } : null;
     feeConfirmed.value = ticket.fee_plan_status === "confirmed";
     feePlanVersion.value = Number(ticket.fee_plan_version) || 0;
@@ -1404,6 +1425,12 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
     } else {
       workflowStep.value = 1;
     }
+  }
+
+  // 解锁费用后由 useWorkbench 调用：把「来源丢失（undefined）」的存量明细置为人工可编辑，
+  // 使 合同总额/实缴 输入框出现；不动 AI 提取（有 source 的）记录的只读守门。
+  function markFeeEditable() {
+    if (ar.value && !ar.value.source) ar.value.source = "manual";
   }
 
   return {
@@ -1462,6 +1489,7 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
 	    archivedCase, feeReopenReason, feeReopening, feePlanVersion,
 	    formLoading, formResult,
 	    loadSavedAnalysis, saveAnalysis,
+    markFeeEditable,
 	    loadCommunications, addCommunication, saveCaseOutcome, reopenFeePlan,
     genRegistrationForm,
     reset,

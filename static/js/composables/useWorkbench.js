@@ -6,7 +6,7 @@
 import { getJ, postJ, putJ, delJ } from "api";
 import { todayStr } from "helpers";
 
-export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, onStatsRefresh = null, sharedAssignableUsers = null) {
+export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, onStatsRefresh = null, sharedAssignableUsers = null, markFeeEditable = null) {
   // 统计联动：撤诉/归档/解锁费用改变统计口径后，由 app.js 注入的 loadStats 刷新看板
   function _refreshStats() {
     if (typeof onStatsRefresh === "function") onStatsRefresh();
@@ -1144,6 +1144,8 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
       if (!d.success) throw new Error(d.error || "解锁失败");
       feeUnlocked.value = true;
       if (selectedTicket.value) selectedTicket.value.fee_plan_status = "draft";
+      // 解锁后同会话直接补录：还原丢失的 source，使 合同总额/实缴 可输入
+      if (typeof markFeeEditable === "function") markFeeEditable();
       _refreshStats();
       toast("已解锁费用明细", "可重新编辑并确认", "info");
     } catch (e) {
