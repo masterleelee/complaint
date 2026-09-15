@@ -338,6 +338,57 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     }
     return [...set];
   });
+
+  // ── 列表页行内编辑：投诉类型 / 来源渠道 ──
+  // 两字段有下游产物依赖（登记表「投诉渠道」格 + 统计分组），必须走受控保存：
+  // 只提交单字段（避免整对象覆盖）、改动留痕由后端完成、已归档先确认、
+  // 已生成登记表时后端置 register_form_outdated 并由前端提示重出。
+  const BASE_CHANNELS = ["12345", "交通部门", "电话来访", "信访", "邮件投诉", "驾培协会"];
+
+  function clChannelEditOptions(t) {
+    const set = new Set(BASE_CHANNELS);
+    for (const c of channelOptions.value) set.add(c);   // 存量出现过的渠道
+    const cur = String((t && t.source_channel) || "").trim();
+    if (cur) set.add(cur);                              // 保全自定义值，防止下拉吞掉
+    return [...set];
+  }
+
+  async function clSaveField(t, field, ev) {
+    if (!t || !ev || !ev.target) return;
+    const el = ev.target;
+    const oldValue = String(t[field] || "").trim();
+    const newValue = String(el.value || "").trim();
+    if (oldValue === newValue) return;
+
+    const label = field === "complaint_type" ? "投诉类型" : "来源渠道";
+    // 已归档允许改（业务决策），但必须明确告知登记表不会自动跟着变
+    if (t.archive_status === "已归档") {
+      const ok = window.confirm(
+        `该工单已归档。\n\n修改「${label}」后，已生成的投诉登记表不会自动更新，需要重新生成登记表。\n\n确定修改吗？`
+      );
+      if (!ok) { el.value = oldValue; return; }
+    }
+
+    try {
+      const d = await putJ(`/api/tickets/${t.id}`, { [field]: newValue });
+      if (!d || d.success === false) throw new Error((d && d.error) || "保存失败");
+      t[field] = newValue;                              // 立即反映，筛选下拉随之重算
+      const outdated = !!(d.data && d.data.register_form_outdated);
+      if (outdated) t.register_form_outdated = true;
+      _refreshStats();                                  // 类型/来源参与统计分组 → 刷新看板
+      if (outdated) {
+        toast(`已修改${label}`, "登记表「投诉渠道」等已与库内不一致，请重新生成登记表", "warning");
+      } else {
+        toast(`已修改${label}`, newValue, "success");
+      }
+    } catch (e) {
+      el.value = oldValue;
+      toast("修改失败", e.message || "请稍后重试", "danger");
+    }
+  }
+
+  function clSaveType(t, ev) { return clSaveField(t, "complaint_type", ev); }
+  function clSaveChannel(t, ev) { return clSaveField(t, "source_channel", ev); }
   const clSchoolOptions = Vue.computed(() => {
     const set = new Set();
     for (const t of allTickets.value) {
@@ -1291,7 +1342,8 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
     OVERDUE_DAYS, TYPE_LABELS, FEE_LABELS,
     clKw, clType, clChannel, clSchool, clHandler, clFee, clDays, clDateFrom, clDateTo,
     clOnlyOverdue, clOnlyManual, clGroup, clSort, clCollapsed, clSelectedIds,
-    handlerOptions, channelOptions, clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
+    handlerOptions, channelOptions, clChannelEditOptions, clSaveType, clSaveChannel,
+    clSchoolOptions, listGroups, clResultCount, clOverdueTotal, clSerialMap,
     clPageSize, pagedGroups, clSetPage, batchBarVisible,
     daysOpen, isOverdue, feeState, maskPhone,
     actionAt,

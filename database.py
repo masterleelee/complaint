@@ -194,6 +194,23 @@ def init_db():
                 created_at TEXT DEFAULT ''
             );
 
+            -- 字段级变更留痕：谁在何时把哪个字段从什么改成了什么。
+            -- 业务用途：投诉类型/来源渠道决定了登记表「投诉渠道」格与统计口径，
+            -- 改动必须可追溯，否则历史统计报表无法解释。archive_status 记录改动当时的归档态。
+            CREATE TABLE IF NOT EXISTS ticket_field_changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id TEXT NOT NULL DEFAULT '',
+                field_name TEXT NOT NULL,
+                old_value TEXT DEFAULT '',
+                new_value TEXT DEFAULT '',
+                changed_by INTEGER NOT NULL DEFAULT 0,
+                changed_by_name TEXT DEFAULT '',
+                archive_status TEXT DEFAULT '',
+                created_at TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_field_changes_ticket ON ticket_field_changes(ticket_id);
+            CREATE INDEX IF NOT EXISTS idx_field_changes_created ON ticket_field_changes(created_at);
+
             -- 数据迁移标记表（避免一次性迁移重复执行）
             CREATE TABLE IF NOT EXISTS migration_flags (
                 key TEXT PRIMARY KEY,
@@ -313,6 +330,9 @@ def init_db():
             ("contract_kind", "TEXT DEFAULT ''"),
             ("contract_tier_display", "TEXT DEFAULT ''"),
             ("contract_tier_confidence", "TEXT DEFAULT ''"),
+            # 登记表过期标记：改了「投诉类型/来源渠道」且登记表已生成时置 1，
+            # 提示需重新生成（与 reply_outdated 同构，登记表「投诉渠道」格直接渲染 source_channel）
+            ("register_form_outdated", "INTEGER DEFAULT 0"),
         ]
         cursor = conn.execute("PRAGMA table_info(complaint_tickets)")
         existing_columns = [row[1] for row in cursor.fetchall()]
@@ -468,7 +488,7 @@ def save_ticket(data: dict, force_new: bool = False) -> str:
         "contract_path", "contract_code", "total_fee", "actual_paid",
         "deduction_fee", "refund_fee", "deduction_detail", "contract_set", "contract_manifest", "contract_text",
         "handle_status", "handle_steps", "attachments",
-        "reply_path", "reply_outdated",
+        "reply_path", "reply_outdated", "register_form_outdated",
         "license_type", "school_name", "school_short",
         "organization_unit_id", "organization_unit_type",
         "organization_unit_name", "organization_unit_code",
@@ -836,6 +856,7 @@ def _row_to_dict_ticket(row: sqlite3.Row) -> dict:
             except json.JSONDecodeError:
                 pass
     d["reply_outdated"] = bool(d.get("reply_outdated", 0))
+    d["register_form_outdated"] = bool(d.get("register_form_outdated", 0))
     return d
 
 
@@ -1400,6 +1421,57 @@ def add_log(operation: str, detail: str = "", ticket_id: str = "", success: bool
             "INSERT INTO operation_logs (ticket_id, operation, detail, success, created_at) VALUES (?,?,?,?,?)",
             (ticket_id, operation, detail, 1 if success else 0, now),
         )
+
+
+def record_field_changes(ticket_id: str, before: dict, after: dict,
+                         fields, user: dict | None = None) -> int:
+    """记录字段级变更留痕（只记录值真正发生变化的字段）。
+
+    before 为改动前的工单快照，after 为本次提交的数据；fields 指定要留痕的字段名。
+    archive_status 记录**改动当时**的归档态 —— 已归档案件改值同样留痕，便于审计。
+    返回写入的变更条数（0 表示无实际变化）。
+    """
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    uid = 0
+    uname = ""
+    if user:
+        try:
+            uid = int(user.get("id") or 0)
+        except (TypeError, ValueError):
+            uid = 0
+        uname = str(user.get("real_name") or user.get("username") or "")
+    archive_status = str((before or {}).get("archive_status") or "")
+    rows = []
+    for f in fields:
+        if f not in after:
+            continue
+        old_v = str((before or {}).get(f) or "").strip()
+        new_v = str(after.get(f) or "").strip()
+        if old_v == new_v:
+            continue
+        rows.append((ticket_id, f, old_v, new_v, uid, uname, archive_status, now))
+    if not rows:
+        return 0
+    with get_db() as conn:
+        conn.executemany(
+            "INSERT INTO ticket_field_changes (ticket_id, field_name, old_value, new_value,"
+            " changed_by, changed_by_name, archive_status, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            rows,
+        )
+    return len(rows)
+
+
+def list_field_changes(ticket_id: str, limit: int = 50) -> list[dict]:
+    """查询某工单的字段变更历史，按变更顺序倒序（最新的在前）。"""
+    limit = max(1, min(int(limit or 50), 200))
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id, ticket_id, field_name, old_value, new_value, changed_by,"
+            " changed_by_name, archive_status, created_at FROM ticket_field_changes"
+            " WHERE ticket_id=? ORDER BY id DESC LIMIT ?",
+            (ticket_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def get_recent_logs(limit: int = 20) -> list[dict]:

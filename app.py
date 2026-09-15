@@ -37,6 +37,7 @@ from database import (
     save_complaint, get_complaint_by_idcard,
     list_complaints, get_statistics,
     add_log, find_same_day_ticket, find_open_ticket_by_idcard,
+    record_field_changes, list_field_changes,
     save_template, list_templates, get_default_template, delete_template,
     get_distinct_school_short,
     migrate_communications_to_notes,
@@ -1829,6 +1830,36 @@ def api_tickets_update(ticket_id):
         if data.get("handle_status") is not None and data["handle_status"] not in {"待处理", "处理中", "已完结"}:
             return _err("处理状态非法", 400)
 
+        # ── 投诉类型 / 来源渠道：受控校验 ──
+        # 这两个字段不是普通备注：source_channel 直接渲染进登记表「投诉渠道」格，
+        # complaint_type 驱动登记表三段兜底话术并决定统计口径 → 必须校验 + 留痕。
+        _COMPLAINT_TYPES = {"A", "B", "C", "D", "E"}
+        changed_fields = []
+        if "complaint_type" in data:
+            tv = str(data.get("complaint_type") or "").strip().upper()
+            if tv not in _COMPLAINT_TYPES:
+                return _err(f"投诉类型非法：{data.get('complaint_type') or '（空）'}，可选 A/B/C/D/E", 400)
+            data["complaint_type"] = tv
+            if tv != str(ticket.get("complaint_type") or "").strip():
+                changed_fields.append("complaint_type")
+        if "source_channel" in data:
+            # 不设枚举：存量数据含大量自定义渠道（各镇街交通局、客服热线等），
+            # 限定白名单会直接破坏历史数据。只做非空与长度约束。
+            sv = str(data.get("source_channel") or "").strip()
+            if not sv:
+                return _err("来源渠道不能为空", 400)
+            if len(sv) > 50:
+                return _err("来源渠道过长（上限 50 字）", 400)
+            data["source_channel"] = sv
+            if sv != str(ticket.get("source_channel") or "").strip():
+                changed_fields.append("source_channel")
+
+        # 登记表过期联动：已生成登记表时，类型/来源一变，纸面内容即与库内不一致
+        need_regen_register_form = False
+        if changed_fields and str(ticket.get("registration_form_path") or "").strip():
+            data["register_form_outdated"] = 1
+            need_regen_register_form = True
+
         if ticket.get("archive_status") == "已归档":
             if data.get("handle_status") is not None:
                 return _err("已归档案件请先通过费用解锁（fee-unlock）恢复处理", 400)
@@ -1851,8 +1882,50 @@ def api_tickets_update(ticket_id):
             data["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         update_ticket(ticket_id, data)
-        add_log("ticket_update", f"更新工单: {ticket_id}", ticket_id=ticket_id)
-        return _ok({"id": ticket_id})
+
+        if changed_fields:
+            try:
+                from flask import g as _g
+                _cu = getattr(_g, "current_user", None)
+            except RuntimeError:
+                _cu = None
+            record_field_changes(ticket_id, ticket, data, tuple(changed_fields), _cu)
+            _labels = {"complaint_type": "投诉类型", "source_channel": "来源渠道"}
+            add_log(
+                "ticket_field_change",
+                "；".join(
+                    f"{_labels.get(f, f)}: {str(ticket.get(f) or '（空）')} → {data.get(f)}"
+                    for f in changed_fields
+                ),
+                ticket_id=ticket_id,
+            )
+        else:
+            add_log("ticket_update", f"更新工单: {ticket_id}", ticket_id=ticket_id)
+        return _ok({
+            "id": ticket_id,
+            "changed_fields": changed_fields,
+            "register_form_outdated": need_regen_register_form,
+        })
+    except Exception as e:
+        return _err(str(e), 500)
+
+
+@app.route("/api/tickets/<ticket_id>/field-changes", methods=["GET"])
+@login_required
+def api_tickets_field_changes(ticket_id):
+    """字段变更留痕：投诉类型 / 来源渠道的改动历史（谁、何时、旧值 → 新值、当时归档态）。
+
+    统计口径与登记表「投诉渠道」格都依赖这两个字段，改动后需要可追溯。
+    """
+    try:
+        ticket = get_ticket(ticket_id)
+        if not ticket:
+            return _err("工单不存在", 404)
+        try:
+            limit = int(request.args.get("limit", 50))
+        except ValueError:
+            limit = 50
+        return _ok({"items": list_field_changes(ticket_id, limit)})
     except Exception as e:
         return _err(str(e), 500)
 
@@ -4308,7 +4381,11 @@ def api_tickets_register_form(ticket_id):
         )
 
         if result.get("success"):
-            update_ticket(ticket_id, {"registration_form_path": result["filepath"]})
+            # 重新生成即与库内最新类型/来源对齐 → 清除过期标记（闭环）
+            update_ticket(ticket_id, {
+                "registration_form_path": result["filepath"],
+                "register_form_outdated": 0,
+            })
             add_log("form_generate", f"生成登记表: {result['filename']}", ticket_id=ticket_id)
             return _ok(result)
         else:

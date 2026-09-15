@@ -6,7 +6,7 @@
   <title>投诉处理系统 · v2 工作台</title>
   <script>try{if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark')}catch(e){}</script>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-  <link rel="stylesheet" href="/static/css/style.css?v=17">
+  <link rel="stylesheet" href="/static/css/style.css?v=18">
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.4/dist/echarts.min.js"></script>
   <script>window.__CURRENT_USER__ = {{ current_user | tojson }};</script>
   <style>
@@ -588,6 +588,9 @@
   .tpill{display:inline-block;font-size:11px;font-weight:600;border-radius:6px;padding:1px 8px}
   .tp-A{color:var(--color-danger-strong);background:var(--color-danger-bg)}.tp-B{color:var(--color-primary-dark);background:var(--color-primary-50)}
   .tp-C{color:#15803D;background:var(--color-success-50)}.tp-D{color:#B45309;background:var(--color-warning-50)}.tp-E{color:var(--color-text-secondary);background:var(--color-surface-50)}
+  .cl-inline-sel{border:1px solid var(--color-border-tertiary);border-radius:6px;background:var(--color-background-primary);color:var(--color-text-primary);font-size:11.5px;padding:2px 4px;max-width:110px;cursor:pointer}
+  .cl-inline-sel:hover{border-color:var(--color-primary)}
+  .cl-regen{display:inline-block;margin-left:4px;font-size:10px;color:#854F0B;background:var(--color-warning-50);border-radius:4px;padding:1px 4px;white-space:nowrap}
   .outcome-txt{font-size:11.5px;color:var(--color-text-secondary)}
   .go{float:right;color:var(--color-text-secondary)}
   .chk{width:15px;height:15px;cursor:pointer;accent-color:var(--color-primary)}
@@ -1098,8 +1101,20 @@
                     <td class="mono sm hide-md">[[ maskId(t.id_card) ]]</td>
                     <td class="mono sm hide-md">[[ maskPhone(t.phone) ]]</td>
                     <td>[[ t.school_short || '—' ]]</td>
-                    <td><span class="tpill" :class="'tp-'+(t.complaint_type||'E')">[[ t.complaint_type || 'E' ]] [[ TYPE_LABELS[t.complaint_type] || '其他' ]]</span></td>
-                    <td class="hide-md">[[ t.source_channel || '—' ]]</td>
+                    <td @click.stop>
+                      <select class="cl-inline-sel" :value="t.complaint_type || 'E'" @change="clSaveType(t, $event)"
+                              :title="'点击修改投诉类型（当前：'+(TYPE_LABELS[t.complaint_type]||'其他')+'）'">
+                        <option value="A">A 退费纠纷</option><option value="B">B 教学服务</option>
+                        <option value="C">C 考试安排</option><option value="D">D 合同争议</option><option value="E">E 其他</option>
+                      </select>
+                      <span v-if="t.register_form_outdated" class="cl-regen" title="已改过类型/来源，登记表需重新生成">表需重出</span>
+                    </td>
+                    <td class="hide-md" @click.stop>
+                      <select class="cl-inline-sel" :value="t.source_channel || ''" @change="clSaveChannel(t, $event)" title="点击修改来源渠道">
+                        <option value="">—</option>
+                        <option v-for="c in clChannelEditOptions(t)" :key="c" :value="c">[[ c ]]</option>
+                      </select>
+                    </td>
                     <td class="mono sm">[[ t.complaint_date ]]</td>
                     <td>
                       <template v-if="g.key==='open'">
@@ -2998,10 +3013,10 @@
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=3",
       "useSettings": "/static/js/composables/useSettings.js?v=23",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=37"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=38"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=52"></script>
+  <script type="module" src="/static/js/app.js?v=53"></script>
 </body>
 </html>
