@@ -31,7 +31,11 @@ SECTION_HEIGHTS_CM = {
 _SEC_TEXT_W_CM = 16.8   # 分区单元格可用文本宽度（A4 17.2cm − 单元格左右内边距 0.38cm）
 _SEC_INDENT_CM = 0.74   # 正文首行缩进 2 字符（21pt，level-0 默认字号 10.5pt 下）
 _SEC_MARGIN_CM = 0.50   # 单元格上下内边距 + 段尾余量 + 版式估算安全余量
-_EMPTY_LINE_CM = 0.42   # 空段占位高度（10.5pt 宋体单行 ≈ 12pt）
+# 字体行高系数：Word/WPS 实际行高 = 字号 × 行距 × 字体度量系数（宋体 ≈1.30），
+# 不是 字号 × 行距。漏掉该系数会把内容高度低估 ~25%，导致空段占位多塞、行被撑破翻页
+# （赵鹏超工单：处理行 12 个空段实占 ~5.8cm，备注被顶到第二页）。
+_FONT_LINE_FACTOR = 1.30
+_EMPTY_LINE_CM = 0.50   # 空段占位高度（10.5pt 宋体单行 ≈ 10.5×1.0×1.30 = 13.65pt = 0.48cm，取 0.50 保守）
 _PT_TO_CM = 0.0352778   # 1pt → cm
 
 # ── 单页 A4 自适应预算（内容超量时按压缩链逐级收紧，保证 1 页）──────────────
@@ -416,9 +420,13 @@ def _rendered_lines(text: str, font_pt: float = 10.5, indent_cm: float = 0.0,
 def _para_height_cm(text: str, font_pt: float = 10.5, line_spacing: float = 1.25,
                     indent_cm: float = 0.0, space_after_pt: float = 0.0,
                     text_w_cm: float = None) -> float:
-    """段落渲染高度（cm）：行数 × 字号 × 行距 + 段后距。"""
+    """段落渲染高度（cm）：行数 × 字号 × 行距 × 字体行高系数 + 段后距。
+
+    必须乘 _FONT_LINE_FACTOR（宋体 ≈1.30）：Word/WPS 的「多倍行距」作用于字体
+    度量行高而非字面字号，漏乘会系统性低估 ~25%（赵鹏超工单翻页根因之一）。
+    """
     lines = _rendered_lines(text, font_pt, indent_cm=indent_cm, text_w_cm=text_w_cm)
-    return (lines * font_pt * line_spacing + space_after_pt) * _PT_TO_CM
+    return (lines * font_pt * line_spacing * _FONT_LINE_FACTOR + space_after_pt) * _PT_TO_CM
 
 
 def _spacer_count(row_h_cm: float, used_cm: float) -> int:
@@ -466,10 +474,13 @@ def _section_need_cm(label: str, value: str, sign_line: str, step: dict) -> floa
 
 
 def _non_table_cm(step: dict) -> float:
-    """表格外固定占位（cm）：标题 + 编号行 + 底部备注，随标题字号变化。"""
-    title = step["title"] * 1.15 + 4
-    no = 10.5 * 1.15 + 3
-    note = 6 + 9 * 1.15
+    """表格外固定占位（cm）：标题 + 编号行 + 底部备注，随标题字号变化。
+
+    行高同样乘字体行高系数（与 _para_height_cm 口径一致）。
+    """
+    title = step["title"] * 1.15 * _FONT_LINE_FACTOR + 4
+    no = 10.5 * 1.15 * _FONT_LINE_FACTOR + 3
+    note = 6 + 9 * 1.15 * _FONT_LINE_FACTOR
     return (title + no + note) * _PT_TO_CM
 
 
@@ -548,6 +559,8 @@ def _section_cell(cell, header, body_lines, sign_line="", row_h_cm=0.0,
         sp = cell.add_paragraph()
         sp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
         sp.paragraph_format.line_spacing = ls_body
+        # 显式清零段后距：默认样式带 w:after=200（10pt），不清理会成预算外高度
+        sp.paragraph_format.space_after = Pt(0)
         sp.paragraph_format.first_line_indent = Pt(0)    # 签名行右下对齐，不随正文缩进
         _style_run(sp.add_run(sign_line), size=font_pt)
 
@@ -608,6 +621,12 @@ def generate_registration_form(
         section.bottom_margin = Cm(fit_step["m_bot"])
         section.left_margin = Cm(fit_step["mlr"])
         section.right_margin = Cm(fit_step["mlr"])
+        # 移除模板自带的 docGrid（linePitch=360，18pt 网格）：WPS 会把每个段落行
+        # 吸附到 18pt 整数倍，空段占位实占远超估算 → 行被撑破、备注掉页。
+        # 删除后按自然行高排版，与上方预算口径一致。
+        _sect_pr = section._sectPr
+        for _grid in _sect_pr.findall(qn("w:docGrid")):
+            _sect_pr.remove(_grid)
 
         # 标题（加字距）
         title = doc.add_paragraph()

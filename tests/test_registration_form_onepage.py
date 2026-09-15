@@ -8,6 +8,8 @@
 import os
 import sqlite3
 
+from docx import Document
+
 from services.visit_service import (
     generate_registration_form,
     _fit_section_heights,
@@ -78,7 +80,9 @@ def test_overlong_content_triggers_shrink(tmp_path):
     # 触发了压缩（level >= 1）；且生成函数返回了合法档位
     assert pf["level"] >= 1, f"超长内容未触发压缩: {pf}"
     assert isinstance(pf["level"], int)
-    assert pf["used_cm"] <= pf["budget_cm"] + 0.5, f"压缩后仍严重溢出: {pf}"
+    # 极端超长（~4400 字）物理上无法单页容纳，末档按 need 兜底后会略超预算；
+    # 校准后的估算（含字体行高系数）如实反映该溢出，只断言溢出有界（≤1.5cm）
+    assert pf["used_cm"] <= pf["budget_cm"] + 1.5, f"压缩后仍严重溢出: {pf}"
 
 
 def test_fit_budget_extreme_input_finite():
@@ -107,3 +111,59 @@ def test_section_heights_constant_is_ideal_upperbound():
     assert SECTION_HEIGHTS_CM["投诉内容"] == 6.2
     assert SECTION_HEIGHTS_CM["投诉处理"] == 7.2
     assert PAGE_H_CM == 29.7
+
+
+def test_generated_docx_has_no_docgrid(tmp_path):
+    """生成的 docx 不得携带 docGrid：WPS 按 18pt 网格吸附行高会把空段占位放大，
+    撑破定高导致备注掉页（赵鹏超工单根因）。"""
+    from docx.oxml.ns import qn
+    t = dict(BASE_TICKET_LIKE, handling_notes="已沟通协商一致")
+    r = generate_registration_form(t, handling_notes="已沟通协商一致",
+                                   output_dir=str(tmp_path / "grid"))
+    assert r["success"]
+    doc = Document(r["filepath"])
+    grids = doc.sections[0]._sectPr.findall(qn("w:docGrid"))
+    assert not grids, f"sectPr 仍含 docGrid: {grids}"
+
+
+def test_spacers_never_overfill_fixed_row(tmp_path):
+    """空段占位 + 真实内容不得超过定高（防撑破）：按渲染口径复核处理行。"""
+    from services.visit_service import (
+        _EMPTY_LINE_CM, _SEC_MARGIN_CM, _para_height_cm,
+    )
+    t = dict(BASE_TICKET_LIKE,
+             handling_notes="当天已将情况通知长安分校负责人，要求分校负责人联系学员说明扣费明细。已沟通协商一致")
+    r = generate_registration_form(t, handling_notes=t["handling_notes"],
+                                   output_dir=str(tmp_path / "spacer"))
+    assert r["success"]
+    doc = Document(r["filepath"])
+    row = doc.tables[0].rows[7]           # 投诉处理
+    row_h = row.height.cm
+    cell = row.cells[0]
+    used = 0.0
+    for p in cell.paragraphs:
+        sz = 10.5
+        for run in p.runs:
+            if run.font.size:
+                sz = run.font.size.pt
+        if not p.text.strip():
+            used += _EMPTY_LINE_CM
+            continue
+        ls = p.paragraph_format.line_spacing or 1.0
+        used += _para_height_cm(p.text, font_pt=sz, line_spacing=ls,
+                                space_after_pt=p.paragraph_format.space_after.pt
+                                if p.paragraph_format.space_after else 0.0)
+    assert used + _SEC_MARGIN_CM <= row_h + 0.05, (
+        f"处理行内容 {used + _SEC_MARGIN_CM:.2f}cm 超定高 {row_h:.2f}cm，会被撑破")
+
+
+BASE_TICKET_LIKE = {
+    "id": "ac402f123456",
+    "student_name": "赵鹏超",
+    "complaint_date": "2026-09-09",
+    "complaint_content": "学员致电过来，因工作调动，要退学。告知要扣除2000+，联系学员详细解释扣费明细。",
+    "source_channel": "电话来访",
+    "phone": "13800000000",
+    "license_type": "C1",
+    "handler_name": "谢绍祺",
+}
