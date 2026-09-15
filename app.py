@@ -1905,7 +1905,8 @@ def api_ticket_fee_confirm(ticket_id):
         data = data or {}
         no_fee_basis = bool(data.get("no_fee_basis"))
         if no_fee_basis:
-            # 三系统查无记录案件的闸门豁免：零口径确认，留痕于 fee_confirm_note
+            # 零口径确认豁免：留痕口径按三系统查询结果自动判定（明确查无→查无记录；
+            # 有记录/无法判定→非费用类投诉），confirm_note 显式传入时优先
             deductions = []
             total_fee = actual_paid = total_deduction = refund = 0
         else:
@@ -1954,7 +1955,18 @@ def api_ticket_fee_confirm(ticket_id):
                 special_warnings = []
         special_warnings = _merge_graduation_warning(special_warnings, ticket.get("student_status"))
 
-        default_note = "三系统查无记录，无费用明细" if no_fee_basis else ""
+        default_note = ""
+        if no_fee_basis and not str(data.get("confirm_note") or "").strip():
+            _qr = ticket.get("query_result") if isinstance(ticket.get("query_result"), dict) else {}
+            _src = _qr.get("sources") if isinstance(_qr.get("sources"), dict) else {}
+            # 明确查无 = 所有已查系统状态均为 not_found/no_contract（与 _DEFINITE_NO_MATCH 同口径）；
+            # 不复用 classify_match_result：其把「success 但无候选」也归为 no_match，留痕口径需更严格
+            _definite_no = bool(_src) and all(v in ("not_found", "no_contract") for v in _src.values())
+            if ticket.get("intake_type") == MANUAL_INTAKE_TYPE or _definite_no:
+                default_note = "三系统查无记录，无费用明细"
+            else:
+                default_note = "非费用类投诉，无费用争议"
+        zero_note = str(data.get("confirm_note") or default_note).strip()
         update_ticket(ticket_id, {
             "total_fee": total_fee,
             "actual_paid": actual_paid,
@@ -1965,12 +1977,12 @@ def api_ticket_fee_confirm(ticket_id):
             "fee_confirmed_by": (str(ticket.get("fee_confirmed_by") or "")
                                  if not data.get("confirmed_by") else str(data.get("confirmed_by")).strip()),
             "fee_confirmed_at": now,
-            "fee_confirm_note": str(data.get("confirm_note") or default_note).strip(),
+            "fee_confirm_note": zero_note,
             "special_warnings": special_warnings,
             **case_fields,
         })
         if no_fee_basis:
-            add_log("fee_confirm", "查无记录确认：无费用明细（0元口径）", ticket_id=ticket_id)
+            add_log("fee_confirm", f"无费用明细确认（0元口径）：{zero_note}", ticket_id=ticket_id)
         else:
             add_log("fee_confirm", f"确认费用明细: 扣费{total_deduction}元，应退{refund}元", ticket_id=ticket_id)
         return _ok({

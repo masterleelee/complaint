@@ -750,7 +750,7 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
 
 	  // ── 扣费明细编辑 ──
 
-  // 查无记录·无费用明细：三系统未命中案件的费用闸门豁免（零口径确认，留痕 fee_confirm_note）
+  // 无费用明细：费用闸门零口径豁免（单次点击；留痕口径由后端按三系统查询结果自动判定）
   async function confirmNoFeeBasis(ticketId) {
     if (!ticketId) {
       toast("缺少案件ID", "请先完成工单登记和学员查询", "warning");
@@ -759,14 +759,13 @@ export function useWorkflow(toast, getQr, getTicketId, hooks = {}) {
     feeConfirming.value = true;
     try {
       const d = await postJ(`/api/tickets/${ticketId}/fee-confirm`, {
-        no_fee_basis: true,
-        confirm_note: "三系统查无记录，无费用明细",
+        no_fee_basis: true,  // 留痕口径由后端自动判定（查无记录 / 非费用类投诉）
       });
       if (!d.success) throw new Error(d.error || "确认失败");
       const confirmed = d.data || {};
       feeConfirmed.value = (confirmed.fee_plan_status || "confirmed") === "confirmed";
       feeConfirmedAt.value = new Date().toLocaleString();
-      toast("已按查无记录确认", "无费用明细（0元口径），可继续归档", "success");
+      toast("已按无费用明细确认", "0元口径，费用闸门已通过，可继续归档", "success");
       if (hooks.afterFeeConfirm) await hooks.afterFeeConfirm(confirmed, ticketId);
     } catch (e) {
       toast("确认失败", e.message, "danger");

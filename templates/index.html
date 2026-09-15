@@ -1653,7 +1653,7 @@
                   <button v-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" @click="contractFileInput && contractFileInput.click()" :disabled="cLoading || aLoading"><i class="bi bi-upload"></i> 上传合同分析</button>
                   <input v-if="!selectedTicket.intake_type" ref="contractFileInput" type="file" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none" @change="ulContractAnalyze($event)">
                   <button class="btn btn-secondary btn-sm" @click="startManualFeeEntry()" :disabled="cLoading || aLoading"><i class="bi bi-pencil-square"></i> 手动录入费用</button>
-                  <button class="btn btn-secondary btn-sm" @click="confirmNoFeeBasis(selectedTicketId)" v-if="selectedTicket.fee_plan_status!=='confirmed'" :disabled="feeConfirming" title="三系统查无记录、无合同依据时使用：按零口径确认费用闸门，留痕后可归档"><i class="bi bi-signstop"></i> 查无记录·无费用明细</button>
+                  <button class="btn btn-secondary btn-sm" @click="confirmNoFeeBasis(selectedTicketId)" v-if="selectedTicket.fee_plan_status!=='confirmed'" :disabled="feeConfirming" title="无合同/无费用数据时使用：按零口径确认费用闸门，留痕口径自动判定，确认后可归档"><i class="bi bi-signstop"></i> 无费用明细</button>
                 </template>
                 <button v-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" @click="openContract()"><i class="bi bi-eye"></i> 预览合同</button>
                 <button class="btn btn-secondary btn-sm" @click="exportDeductions()" v-if="ar"><i class="bi bi-download"></i> 导出Excel</button>
@@ -1664,13 +1664,13 @@
                 <div class="card-body">
                   <template v-if="!ar">
                     <div v-if="selectedTicket.intake_type" class="hint">
-                      <b>三系统无信息学员</b>：无电子合同可分析。若学员确有缴费，请点「手动录入费用」填写实缴金额与扣费明细后确认；若无任何缴费记录，直接点「查无记录·无费用明细」零口径确认。
+                      <b>三系统无信息学员</b>：无电子合同可分析。若学员确有缴费，请点「手动录入费用」填写实缴金额与扣费明细后确认；若无任何费用数据，直接点「无费用明细」零口径确认。
                     </div>
                     <div v-else class="hint">
                       <template v-if="noEContractReason(qr)"><b>[[ noEContractReason(qr) ]]。</b>请用「上传合同分析」导入纸质合同，或点「手动录入费用」直接建表录入。</template>
                       <template v-else>点击「下载合同并分析」：自动从东莞驾培获取电子合同 → AI 提取扣费明细与实缴金额，一步完成。纸质合同请用「上传合同分析」。<b>AI 分析失败或无合同时，可点「手动录入费用」直接建表录入，流程不受阻。</b></template>
                     </div>
-                    <div v-if="selectedTicket.fee_plan_status==='confirmed'" class="hint" style="margin-top:4px;color:var(--color-success)"><i class="bi bi-check-circle-fill"></i> 已按「[[ selectedTicket.fee_confirm_note || '查无记录·无费用明细' ]]」确认（0元口径）；如后续获取到合同，仍可正常分析并重新确认。</div>
+                    <div v-if="selectedTicket.fee_plan_status==='confirmed'" class="hint" style="margin-top:4px;color:var(--color-success)"><i class="bi bi-check-circle-fill"></i> 已按「[[ selectedTicket.fee_confirm_note || '无费用明细' ]]」确认（0元口径）；如后续获取到合同，仍可正常分析并重新确认。</div>
                     <div v-if="aLoading" class="hint" style="margin-top:4px"><span class="spinner-custom spinner-custom-sm me-1"></span>AI 分析中… 已用时 [[ analysisElapsed ]] 秒（OCR 识别 + 大模型提取合同字段，约需几十秒）</div>
                     <div v-if="aErr" class="alert alert-danger mt-2">[[ aErr ]]</div>
                   </template>
@@ -2994,7 +2994,7 @@
       "helpers": "/static/js/utils/helpers.js?v=16",
       "useToast": "/static/js/composables/useToast.js?v=16",
       "useComplaint": "/static/js/composables/useComplaint.js?v=22",
-      "useWorkflow": "/static/js/composables/useWorkflow.js?v=21",
+      "useWorkflow": "/static/js/composables/useWorkflow.js?v=22",
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=3",
       "useSettings": "/static/js/composables/useSettings.js?v=23",
       "useHistory": "/static/js/composables/useHistory.js?v=22",

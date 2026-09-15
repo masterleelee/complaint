@@ -209,10 +209,16 @@ def test_archive_gate_three_conditions(fresh_db):
 
 
 def test_fee_confirm_no_fee_basis_unblocks_archive(client, fresh_db):
-    """三系统查无记录案件：零口径确认豁免费用闸门，归档三闸门可通过。"""
+    """三系统明确查无案件：零口径确认豁免费用闸门，自动留痕「查无记录」口径。"""
     from services.archive_service import archive_gate_errors
 
     ticket_id = _make_ticket(id_card="110101199003070011")
+    database.update_ticket(ticket_id, {
+        "query_result": {
+            "sources": {"internal": "not_found", "driving": "not_found", "third": "not_found"},
+            "candidates": [],
+        },
+    })
 
     resp = client.post(
         f"/api/tickets/{ticket_id}/fee-confirm",
@@ -235,3 +241,24 @@ def test_fee_confirm_no_fee_basis_unblocks_archive(client, fresh_db):
     })
     ticket = database.get_ticket(ticket_id)
     assert archive_gate_errors(ticket) == []
+
+
+def test_fee_confirm_no_fee_basis_auto_note_non_fee(client, fresh_db):
+    """三系统有记录但操作员选择无费用明细：自动留痕「非费用类投诉」口径。"""
+    ticket_id = _make_ticket(id_card="110101199003070011")
+    database.update_ticket(ticket_id, {
+        "query_result": {
+            "sources": {"internal": "success", "driving": "success", "third": "success"},
+            "candidates": [],
+        },
+    })
+
+    resp = client.post(
+        f"/api/tickets/{ticket_id}/fee-confirm",
+        json={"no_fee_basis": True, "confirmed_by": "tester"},
+    )
+    assert resp.status_code == 200
+
+    ticket = database.get_ticket(ticket_id)
+    assert ticket["fee_plan_status"] == "confirmed"
+    assert ticket["fee_confirm_note"] == "非费用类投诉，无费用争议"
