@@ -1653,12 +1653,12 @@
                   <button v-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" @click="contractFileInput && contractFileInput.click()" :disabled="cLoading || aLoading"><i class="bi bi-upload"></i> 上传合同分析</button>
                   <input v-if="!selectedTicket.intake_type" ref="contractFileInput" type="file" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none" @change="ulContractAnalyze($event)">
                   <button class="btn btn-secondary btn-sm" @click="startManualFeeEntry()" :disabled="cLoading || aLoading"><i class="bi bi-pencil-square"></i> 手动录入费用</button>
-                  <button class="btn btn-secondary btn-sm" @click="confirmNoFeeBasis(selectedTicketId)" v-if="selectedTicket.fee_plan_status!=='confirmed'" :disabled="feeConfirming" title="无合同/无费用数据时使用：按零口径确认费用闸门，留痕口径自动判定，确认后可归档"><i class="bi bi-signstop"></i> 无费用明细</button>
                 </template>
                 <button v-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" @click="openContract()"><i class="bi bi-eye"></i> 预览合同</button>
                 <button class="btn btn-secondary btn-sm" @click="exportDeductions()" v-if="ar"><i class="bi bi-download"></i> 导出Excel</button>
                 <button class="btn btn-secondary btn-sm" @click="addDeduction()" v-if="ar"><i class="bi bi-plus-lg"></i> 添加行</button>
                 <button class="btn btn-secondary btn-sm" @click="unlockFee()" v-if="selectedTicket.fee_plan_status==='confirmed' && !feeUnlocked"><i class="bi bi-unlock"></i> 解锁修改</button>
+                  <button class="btn btn-secondary btn-sm" @click="confirmNoFeeBasis(selectedTicketId)" v-if="selectedTicket.fee_plan_status!=='confirmed'" :disabled="feeConfirming" title="无合同/无费用数据时使用：按零口径确认费用闸门，留痕口径自动判定，确认后可归档"><i class="bi bi-signstop"></i> 无费用明细</button>
                 <button class="btn btn-primary btn-sm" @click="handleSaveAndConfirm(selectedTicketId)" v-if="ar && selectedTicket.fee_plan_status!=='confirmed'" :disabled="feeConfirming">[[ feeConfirming ? '确认中...' : '✔ 确认明细' ]]</button>
               </div>
                 <div class="card-body">
