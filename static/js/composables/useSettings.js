@@ -424,3 +424,76 @@ export function useUsers({ toast, currentUser }) {
     loadAliases,
   };
 }
+
+
+// ═══════════════════════════════════════════════════════════════
+//  SMB 共享盘状态子 composable（ISS-SMB-01）
+//  背景：/Volumes/File 这个 macOS SMB 挂载点会不定时自行消失，导致 11 处归档功能
+//  同时失效。归档链路已内置前置自愈；此 composable 供系统设置页展示状态 +
+//  提供「一键重挂」入口，让管理员无需登服务器即可自助修复。
+// ═══════════════════════════════════════════════════════════════
+const SMB_REASON_TEXT = {
+  ok: "正常",
+  not_mounted: "未挂载（共享盘已掉线）",
+  probe_missing: "归档路径不可达",
+  timeout: "探测超时（挂载点无响应）",
+  disabled: "自动重挂已禁用",
+};
+
+export function useSmbShare(toast) {
+  const smbStatus = Vue.ref(null);
+  const smbLoading = Vue.ref(false);
+  const smbRemounting = Vue.ref(false);
+  const smbErr = Vue.ref("");
+
+  async function loadSmbStatus() {
+    smbLoading.value = true;
+    smbErr.value = "";
+    try {
+      const d = await getJ("/api/smb/status");
+      if (d.error) throw new Error(d.error);
+      smbStatus.value = d.data || null;
+    } catch (e) {
+      smbErr.value = e.message;
+      smbStatus.value = null;
+    } finally {
+      smbLoading.value = false;
+    }
+  }
+
+  async function remountSmb() {
+    if (smbRemounting.value) return false;
+    smbRemounting.value = true;
+    try {
+      const d = await postJ("/api/smb/remount", {});
+      if (d.success) {
+        toast("共享盘已恢复", (d.data && d.data.action === "remounted") ? "挂载点已重新连接" : "共享盘当前可用", "success");
+        await loadSmbStatus();
+        return true;
+      }
+      toast("重挂失败", (d.errors && d.errors[0]) || d.error || "请检查共享盘与网络", "danger");
+      await loadSmbStatus();
+      return false;
+    } catch (e) {
+      toast("重挂失败", e.message, "danger");
+      return false;
+    } finally {
+      smbRemounting.value = false;
+    }
+  }
+
+  const smbHealthy = Vue.computed(() =>
+    !!(smbStatus.value && smbStatus.value.health && smbStatus.value.health.healthy));
+  const smbMounted = Vue.computed(() =>
+    !!(smbStatus.value && smbStatus.value.health && smbStatus.value.health.mounted));
+  const smbReasonText = Vue.computed(() => {
+    const r = smbStatus.value && smbStatus.value.health && smbStatus.value.health.reason;
+    return SMB_REASON_TEXT[r] || r || "未知";
+  });
+
+  return {
+    smbStatus, smbLoading, smbErr, smbRemounting,
+    loadSmbStatus, remountSmb,
+    smbHealthy, smbMounted, smbReasonText,
+  };
+}

@@ -81,6 +81,7 @@ from services.archive_service import (
 )
 from services.intake_service import parse_complaint_file, parse_complaint_text, ensure_upload_dir, ai_summarize_complaint
 from services.org_unit_service import ORGANIZATION_UNITS, resolve_org_unit
+from services import smb_mount_service
 from services import user_service
 from services.file_service import is_path_within, create_derived_copy, unique_path
 from services.file_parser import warmup_ocr
@@ -548,6 +549,24 @@ def _start_background_services():
     thread = Thread(target=_maintain_sessions, name="session-maintenance", daemon=True)
     thread.start()
     atexit.register(INTERNAL_SESSION_MAINTENANCE_STOP.set)
+
+    # 启动即自愈一次共享盘挂载（ISS-SMB-01）：机器重启后挂载点可能尚未就绪，
+    # 主动重挂一次可避免首批归档请求失败。放在独立 daemon 线程里，失败仅告警不崩溃、
+    # 也不阻塞服务对外提供（ensure_mount 自带 timeout 上限）。
+    try:
+        Thread(target=_startup_smb_heal, name="smb-mount-startup", daemon=True).start()
+    except Exception as e:
+        system_logger.warning("[启动] SMB 挂载自愈线程启动失败: %s", e)
+
+
+def _startup_smb_heal():
+    """启动期一次性 SMB 自愈，失败仅告警。"""
+    try:
+        result = smb_mount_service.ensure_mount(timeout=20.0, source="startup")
+        if result.get("action") in ("remounted", "failed"):
+            system_logger.info("[启动] SMB 挂载自愈: %s", result)
+    except Exception as e:
+        system_logger.warning("[启动] SMB 挂载自愈异常: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -4956,6 +4975,45 @@ def api_save_analysis():
         "fee_plan_status": "draft",
     })
     return jsonify({"success": True})
+
+
+# ═══════════════════════════════════════════════════════════════
+#  API: SMB 共享盘挂载状态与一键重挂（ISS-SMB-01）
+# ═══════════════════════════════════════════════════════════════
+# 背景：/Volumes/File 这个 macOS SMB 挂载点会不定时自行消失，系统此前没有任何
+# 自动重挂机制，导致 11 处归档功能同时失效。归档链路已内置前置自愈；本组接口
+# 供「系统设置」页展示共享盘状态、并支持一键手工重挂。
+# viewer 只读限制已由 login_required 全局拦截非 GET 请求，无需在此重复校验角色。
+
+@app.route("/api/smb/status", methods=["GET"])
+@login_required
+def api_smb_status():
+    """共享盘挂载健康状态 + 当前映射 + 最近掉载/重挂记录。"""
+    health = smb_mount_service.check_mount_health()
+    cfg = load_config()
+    return _ok({
+        "enabled": smb_mount_service.is_enabled(),
+        "health": health,
+        "smb_share": smb_mount_service.get_mount_config() or {},
+        "archive_root": cfg.get("archive_root") or "",
+        "events": smb_mount_service.get_recent_events(20),
+    })
+
+
+@app.route("/api/smb/remount", methods=["POST"])
+@login_required
+def api_smb_remount():
+    """手工触发共享盘重挂（force：即使当前健康也重新挂载一次）。"""
+    result = smb_mount_service.ensure_mount(timeout=25.0, source="api_remount", force=True)
+    if result.get("ok"):
+        msg = "共享盘已重新挂载" if result.get("action") == "remounted" else "共享盘当前可用"
+        return _ok(result, msg)
+    return jsonify({
+        "success": False,
+        "errors": [result.get("error") or "共享盘重挂失败"],
+        "message": "共享盘重挂失败，请联系管理员",
+        "result": result,
+    }), 503
 
 
 # ═══════════════════════════════════════════════════════════════

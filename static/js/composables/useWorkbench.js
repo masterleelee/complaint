@@ -921,7 +921,20 @@ export function useWorkbench(toast, restoreComplaint, restoreWorkflow, getQr, on
   // 得先去生成文档，措辞用「刷新」更贴合实际。
   const apErrPrimaryText = Vue.computed(
     () => (apErrorCode.value === "dir_missing" ? "刷新" : "重试"));
-  function apErrorPrimary() { return apRefresh(); }
+  // root_unavailable = 共享盘掉载：点「重试」时先联动一次后端重挂（POST /api/smb/remount），
+  // 再刷新列表 —— 让用户点一次即可自助修复掉载，而不必等管理员上服务器。其余情况原样刷新。
+  async function apErrorPrimary() {
+    if (apErrorCode.value === "root_unavailable") {
+      try {
+        const resp = await fetch("/api/smb/remount", { method: "POST" });
+        const d = await resp.json().catch(() => ({}));
+        if (d && d.success) {
+          toast("共享盘已恢复", "挂载点已重新连接，正在刷新…", "success");
+        }
+      } catch (e) { /* 重挂失败也继续刷新，由后端再次给出 code */ }
+    }
+    return apRefresh();
+  }
 
   // 打开归档（全局入口）：直接开面板——不再请求 /open-archive，不再靠 blur 猜测
   async function openArchive(t) {

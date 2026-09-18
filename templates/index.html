@@ -2342,6 +2342,54 @@
                   <label class="form-label">真实姓名</label>
                   <input class="form-control" :value="currentUser?.real_name || ''" disabled>
                 </div>
+          <!-- 共享盘（归档存储）状态 + 一键重挂（ISS-SMB-01） -->
+          <div class="card panel" style="margin-top:20px">
+            <div class="card-header" style="display:flex;align-items:center">
+              <span><i class="bi bi-hdd-network text-primary"></i> 共享盘（归档存储）</span>
+              <span style="margin-left:auto"></span>
+              <button class="btn btn-secondary btn-sm" :disabled="smb.smbLoading.value" @click="smb.loadSmbStatus()">
+                <i class="bi bi-arrow-clockwise"></i> [[ smb.smbLoading.value ? '检测中…' : '刷新状态' ]]
+              </button>
+            </div>
+            <div class="card-body">
+              <div v-if="smb.smbErr.value" class="hint" style="color:var(--color-danger);margin-bottom:10px">
+                <i class="bi bi-exclamation-triangle"></i> 读取共享盘状态失败：[[ smb.smbErr.value ]]
+              </div>
+              <div v-if="smb.smbStatus.value" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span class="status-dot" :class="smb.smbHealthy.value ? 'on' : 'off'"></span>
+                <b>[[ smb.smbHealthy.value ? '共享盘正常' : '共享盘不可用' ]]</b>
+                <span class="hint">状态：[[ smb.smbReasonText.value ]]</span>
+                <span v-if="smb.smbStatus.value.smb_share && smb.smbStatus.value.smb_share.server" class="hint">
+                  · 映射 [[ smb.smbStatus.value.smb_share.server ]]/[[ smb.smbStatus.value.smb_share.share ]]
+                  → [[ smb.smbStatus.value.smb_share.mount_point ]]
+                </span>
+              </div>
+              <div class="hint" style="margin-top:8px;font-size:11.5px">
+                归档根目录：[[ (smb.smbStatus.value && smb.smbStatus.value.archive_root) || '—' ]]
+              </div>
+              <div v-if="smb.smbStatus.value && smb.smbStatus.value.events && smb.smbStatus.value.events.length"
+                   style="margin-top:10px">
+                <div class="hint" style="font-size:11.5px;margin-bottom:4px">
+                  <i class="bi bi-clock-history"></i> 最近掉载/重挂记录（新→旧）
+                </div>
+                <ul style="margin:0;padding-left:18px;font-size:11.5px;line-height:1.7;color:var(--color-text-secondary)">
+                  <li v-for="(ev, ei) in smb.smbStatus.value.events.slice(0, 6)" :key="ei">
+                    [[ ev.ts ]] · [[ ev.kind ]] · [[ ev.detail ]]（来源：[[ ev.source ]]）
+                  </li>
+                </ul>
+              </div>
+              <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+                <button v-if="currentUser?.role !== 'viewer'" class="btn btn-primary btn-sm"
+                        :disabled="smb.smbRemounting.value" @click="smb.remountSmb()">
+                  <i class="bi bi-plug"></i> [[ smb.smbRemounting.value ? '重挂中…' : '一键重挂' ]]
+                </button>
+                <span class="hint" style="font-size:11.5px">
+                  共享盘掉载会导致归档失效；点「一键重挂」可立即尝试恢复挂载（归档失败弹窗的「重试」也会自动重挂）
+                </span>
+              </div>
+            </div>
+          </div>
+
                 <div>
                   <label class="form-label">角色</label>
                   <input class="form-control" :value="currentUser?.role_label || ''" disabled>
@@ -3010,12 +3058,12 @@
       "useComplaint": "/static/js/composables/useComplaint.js?v=22",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=22",
       "useContractPreview": "/static/js/composables/useContractPreview.js?v=3",
-      "useSettings": "/static/js/composables/useSettings.js?v=23",
+      "useSettings": "/static/js/composables/useSettings.js?v=24",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
-      "useWorkbench": "/static/js/composables/useWorkbench.js?v=39"
+      "useWorkbench": "/static/js/composables/useWorkbench.js?v=40"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=54"></script>
+  <script type="module" src="/static/js/app.js?v=55"></script>
 </body>
 </html>

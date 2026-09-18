@@ -22,6 +22,7 @@ import sys
 import warnings
 
 from config import BASE_DIR, load_config
+from services import smb_mount_service
 
 
 REGISTER_FILENAME = "投诉登记表.docx"
@@ -154,14 +155,36 @@ def _case_segment(complaint_date: str, name: str, id_card: str, code: str) -> st
     return "_".join(parts)
 
 
-def build_archive_dir(ticket: dict, root: str | None = None) -> tuple[str, str, str]:
+def _ensure_smb_mount(source: str) -> None:
+    """归档链路前置自愈：共享盘掉载时尝试重挂（SMB 未配置或自愈被禁用时为空操作）。
+
+    仅做「尽力而为」的修复尝试；任何异常都**不得**改变既有失败语义——
+    重挂失败时，_normalize_archive_root 仍会因挂载点消失而抛 ValueError，
+    上层照旧返回 root_unavailable（找管理员），前端契约不变。
+    """
+    try:
+        smb_mount_service.ensure_mount(source=source)
+    except Exception as exc:  # noqa: BLE001 —— 自愈不得拖垮归档链路
+        warnings.warn(f"SMB 自愈检查失败({source}): {exc}")
+
+
+def build_archive_dir(ticket: dict, root: str | None = None,
+                      heal: bool = True) -> tuple[str, str, str]:
     """按统一规则构建归档目录与两件套目标路径（只拼路径，不建目录）。
+
+    Args:
+        ticket: 工单数据。
+        root:   归档根覆盖值；None 时读 config.archive_root。
+        heal:   是否前置执行 SMB 挂载自愈（默认 True）。resolve_case_dir 已先行自愈，
+                再调本函数时传 heal=False，避免同一次请求重复探测。
 
     Returns:
         (case_dir, register_target, reply_target) — 全部为绝对路径。
     Raises:
         ValueError: root 不可用或计算结果越界。
     """
+    if heal:
+        _ensure_smb_mount("build_archive_dir")
     if root is None:
         root = load_config().get("archive_root") or DEFAULT_ARCHIVE_ROOT
     normalized_root = _normalize_archive_root(root)
@@ -245,8 +268,11 @@ def resolve_case_dir(ticket: dict, root: str | None = None) -> dict:
     `errors` 恒为**单元素**（既有多处断言 `len(errors) == 1`）；技术细节放 `detail`，
     避免把 "Permission denied" 这类程序员语言直接甩给用户看。
     """
+    # 前置 SMB 自愈：挂载点掉载时先尝试重挂；失败则维持下方 root_unavailable 语义。
+    # build_archive_dir 传 heal=False，避免同一次调用重复探测（见该函数 heal 参数）。
+    _ensure_smb_mount("resolve_case_dir")
     try:
-        case_dir, _, _ = build_archive_dir(ticket, root=root)
+        case_dir, _, _ = build_archive_dir(ticket, root=root, heal=False)
     except ValueError as exc:
         return {"success": False, "code": "root_unavailable",
                 "message": MSG_ROOT_UNAVAILABLE,
@@ -298,6 +324,23 @@ def open_case_dir(ticket: dict, root: str | None = None) -> dict:
 # （\\\\server\\share\\...）才能在自己的资源管理器里打开。
 _SMB_CACHE: dict = {"at": 0.0, "maps": []}
 
+# `mount` 输出里的 smbfs 行，形如：
+#   //all@192.0.2.199/File on /Volumes/File (smbfs, nodev, nosuid, mounted by all)
+# 抽成模块级正则 + 解析函数，供本模块与 services.smb_mount_service 共用，
+# 避免「挂载判据」在两处各写一份、口径漂移（ISS：挂载自愈）。
+_SMBFS_MOUNT_RE = re.compile(r"//(?:[^@/\s]+@)?([^/\s]+)/([^\s]+)\s+on\s+(\S+)\s+\(smbfs")
+
+
+def parse_smbfs_mount_output(out: str) -> list[dict]:
+    """解析 `mount` 命令文本里的 smbfs 行 → [{"server","share","mount_point"}]。
+
+    纯函数、不抛异常；无匹配返回空列表。
+    """
+    maps: list[dict] = []
+    for m in _SMBFS_MOUNT_RE.finditer(out or ""):
+        maps.append({"server": m.group(1), "share": m.group(2), "mount_point": m.group(3)})
+    return maps
+
 
 def get_smb_mappings() -> list[dict]:
     """当前可用的 SMB 挂载映射 [{"server","share","mount_point"}]。
@@ -323,8 +366,7 @@ def get_smb_mappings() -> list[dict]:
     maps: list[dict] = []
     try:
         out = subprocess.run(["mount"], capture_output=True, text=True, timeout=5).stdout
-        for m in re.finditer(r"//(?:[^@/\s]+@)?([^/\s]+)/([^\s]+)\s+on\s+(\S+)\s+\(smbfs", out):
-            maps.append({"server": m.group(1), "share": m.group(2), "mount_point": m.group(3)})
+        maps = parse_smbfs_mount_output(out)
     except Exception:
         maps = []
     maps.sort(key=lambda x: -len(x["mount_point"]))  # 最长前缀优先

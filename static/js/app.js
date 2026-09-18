@@ -3,7 +3,7 @@ import { useToast } from "useToast";
 import { useComplaint } from "useComplaint";
 import { useWorkflow } from "useWorkflow";
 import { useContractPreview } from "useContractPreview";
-import { useSettings, useUsers, USER_ROLES, roleLabel } from "useSettings";
+import { useSettings, useUsers, USER_ROLES, roleLabel, useSmbShare } from "useSettings";
 import { useHistory } from "useHistory";
 import { useWorkbench } from "useWorkbench";
 import { stBadge, getTrainingTime, getEventType, getDrivingFeeBreakdown, todayStr } from "helpers";
@@ -234,11 +234,16 @@ try {
 
     // ── 账号管理（admin 增删改查；所有人改自己资料/密码）──
     const users = useUsers({ toast, currentUser });
-    // 切到系统设置时拉一次账号列表
+    // ── SMB 共享盘状态（系统设置页：状态展示 + 一键重挂）──
+    const smb = useSmbShare(toast);
+    // 切到系统设置时拉一次账号列表 + 共享盘状态
     watch(view, (v) => {
-      if (v === 'settings' && users.isAdmin.value) {
-        users.loadList();
-        users.loadAliases();
+      if (v === 'settings') {
+        if (users.isAdmin.value) {
+          users.loadList();
+          users.loadAliases();
+        }
+        smb.loadSmbStatus();
       }
       // 切到投诉列表时刷新（确保别名映射后的回写能立即看到）
       if (v === 'list' && typeof loadTickets === 'function') {
@@ -922,6 +927,8 @@ try {
       users, USER_ROLES, roleLabel,
       // 历史 / 看板
       hList, hTotal, hSearch, hLimit, hPage, hTotalPages, hLoading,
+      // 共享盘状态
+      smb,
       statusFilter, schoolOptions, stats, chartDateStart, chartDateEnd, setChartPeriod, periodStat,
       durationStats, loadDurationStats, groupedHistory, toggleGroup,
       chartPeriod, masked, maskId, repeatOnly, rankMode, compare, topChannels, hPageButtons,

@@ -47,6 +47,28 @@ def _isolate_archive_root(tmp_path, monkeypatch):
     yield
 
 
+# ── SMB 挂载自愈：测试期一律禁用真实重挂并隔离日志（ISS-SMB-01）──────────
+# 归档链路现在会前置调用 smb_mount_service.ensure_mount()。若不加以约束，测试里
+# 生成的工单走归档路径时可能触发**真实**的 osascript/mount_smbfs 去挂生产共享盘。
+# 这里默认禁用自愈：ensure_mount() 直接返回 action="disabled"、不执行任何子进程。
+#
+# 另外把 LOG_PATH 与事件环形缓冲一并隔离：record_event 默认写
+# /tmp/complaint_smbmount.log，测试会灌入大量假的 detected_down/remounted 记录，
+# 运维看日志会误判共享盘频繁抖动（QA 回测发现）。
+#
+# 需要验证自愈逻辑的用例（tests/test_smb_mount_service.py）自行 set_enabled(True)
+# 并用 monkeypatch 打桩子进程；本 fixture 负责在每例结束后复位，避免状态泄漏。
+@pytest.fixture(autouse=True)
+def _disable_smb_automount(tmp_path, monkeypatch):
+    import services.smb_mount_service as smb
+    smb.set_enabled(False)
+    monkeypatch.setattr(smb, "LOG_PATH", str(tmp_path / "smb_mount_test.log"))
+    smb._RECENT_EVENTS.clear()
+    yield
+    smb.reset_enabled()
+
+
+
 # 阶段 2 起所有 /api/* 都需 session，否则 401。
 # 共用的"自动 admin 登录"片段，注入到既有测试文件的 client() fixture 里。
 # 新写的 test_auth_account.py 自己测登录（不引用此 helper）。
