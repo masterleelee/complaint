@@ -225,7 +225,11 @@ try {
 
     // ── 合同三栏预览（上传合同分析完成后渲染：原文 / 原件 / 扣费明细） ──
     // cp.* 暴露给模板（cp.tierDisplayName / cp.locate / cp.toggleFolded 等）
-    const cp = useContractPreview(() => ar.value, () => cPath.value);
+    // ⚠️ 必须 Vue.reactive 包裹：Vue 模板只解包「顶层 setup 属性」和「reactive 对象
+    // 内嵌」的 ref/computed；普通对象里的 ComputedRef 不解包，模板拿到的是 ref 本体
+    // —— cp.groupedDeductions.find(...) 直接 TypeError，根渲染函数崩溃 → 整页白屏
+    // （2026-09-20 尹金辉工单实锤复现，console 仅一条被吞的 CERR）。
+    const cp = Vue.reactive(useContractPreview(() => ar.value, () => cPath.value));
 
     // ── 设置 ──
     const { cfg, cfgSaving, cfgMsg, cfgOk, loadCfg, saveCfg,
