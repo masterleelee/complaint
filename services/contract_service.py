@@ -519,8 +519,8 @@ def _extract_payment_plan(text: str, total_fee: float = 0.0) -> dict:
         r"首(?:次)?付(?:款)?(?:人民币)?" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)",
     ])
     balance_ocr = _first_money(cleaned, [
-        r"(?:尾款|欠款|余款)" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)\s*元",
-        r"(?:尾款|欠款|余款)" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)",
+        r"(?:尾款?|欠款|余款)" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)\s*元",
+        r"(?:尾款?|欠款|余款)" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)",
     ])
 
     warnings: list[str] = []
@@ -1604,6 +1604,25 @@ def analyze_contract_from_file(
             result.get("raw_analysis", ""),
             filepath,
         )
+    else:
+        # BUG-02：LLM 失败（典型 OpenRouter 免费池 429）时本地 OCR 已提取的费用
+        # 不应被整体丢弃——用 contract_text 本地兜底回填费用字段，失败不影响原 error 返回。
+        try:
+            fees = extract_contract_fees(contract_text)
+            if not result.get("total_fee"):
+                result["total_fee"] = fees.get("total_fee")
+            payment_plan = extraction.get("payment_plan") or {}
+            if "down_payment" not in result and payment_plan.get("down_payment") is not None:
+                result["down_payment"] = payment_plan["down_payment"]
+            if "balance" not in result and payment_plan.get("balance") is not None:
+                result["balance"] = payment_plan["balance"]
+            if "balance_source" not in result and payment_plan.get("balance_source"):
+                result["balance_source"] = payment_plan["balance_source"]
+            result.setdefault("warnings", []).append(
+                "大模型分析失败，费用字段为本地兜底提取值，请人工核对后确认"
+            )
+        except Exception as exc:
+            system_logger.warning("[FALLBACK-FEE] 本地兜底回填费用失败：%s", exc)
 
     # Build multi-line summary
     summary_lines = []

@@ -198,3 +198,56 @@ def test_baidu_rescue_merged_fill_empty_only():
     assert merged["theory_fee"] == 100.0        # 已有 → 不覆盖
     assert merged["total_amount"] == 3790.0     # 派生值 → 覆盖
     assert any("手写 OCR" in w for w in merged["warnings"])
+
+
+# ── BUG-01：尾款正则漏「尾580」 ─────────────────────────────────────
+
+def test_bug01_tail_ocr_split_tail580(monkeypatch, tmp_path):
+    """真实 OCR 把「尾款1580」拆成「尾580」，应经正则命中 balance_ocr=580，
+    配合 total=3580/down=2000 触发不一致 warning、balance 仍取推算值 1580。"""
+    text = LONG + "培训费用总额合计人民币3580元。首付2000元。尾580元。"
+    pp = cs._extract_payment_plan(text, total_fee=3580.0)
+    assert pp["balance"] == 1580.0
+    assert pp["balance_source"] == "derived"
+    assert any("尾款" in w for w in pp["warnings"])
+
+
+# ── BUG-02：LLM 失败（429）用本地兜底回填费用 ────────────────────────
+
+def _fake_extraction_with_plan(total_fee=3580.0, down=2000.0):
+    text = f"{LONG}培训费用总额合计人民币{int(total_fee)}元。首付{int(down)}元。"
+    return {
+        "text": text,
+        "source": "baidu_ocr",
+        "can_confirm_fee_plan": True,
+        "payment_plan": cs._extract_payment_plan(text, total_fee=float(total_fee)),
+    }
+
+
+def test_bug02_fallback_fills_fees_on_429(monkeypatch, tmp_path):
+    monkeypatch.setattr(cs, "extract_contract_text_from_file",
+                        lambda *a, **kw: _fake_extraction_with_plan(3580, 2000))
+    monkeypatch.setattr(cs, "analyze_contract",
+                        lambda **kw: {"error": "大模型接口请求失败（HTTP 429）..."})
+    result = cs.analyze_contract_from_file(_contract_file(tmp_path))
+    assert "429" in result["error"]                  # error 保留
+    assert result["total_fee"] == 3580.0
+    assert result["down_payment"] == 2000.0
+    assert result["balance"] == 1580.0
+    assert result["balance_source"] == "derived"
+    assert any("大模型分析失败" in w for w in result["warnings"])
+
+
+def test_bug02_fallback_failure_keeps_error(monkeypatch, tmp_path):
+    """本地兜底回填自身抛异常时，不影响原 error 返回、不抛新异常。"""
+    monkeypatch.setattr(cs, "extract_contract_text_from_file",
+                        lambda *a, **kw: _fake_extraction_with_plan(3580, 2000))
+    monkeypatch.setattr(cs, "analyze_contract",
+                        lambda **kw: {"error": "大模型接口请求失败（HTTP 429）..."})
+    monkeypatch.setattr(cs, "extract_contract_fees",
+                        lambda text: (_ for _ in ()).throw(RuntimeError("boom")))
+    result = cs.analyze_contract_from_file(_contract_file(tmp_path))
+    assert "429" in result["error"]
+    # 回填失败：不应伪造费用、也不应抛异常
+    assert result.get("total_fee") in (None, 0, "")
+
