@@ -1541,7 +1541,7 @@
           </div>
         </div></div>
 
-        <div v-else>
+        <div v-else-if="selectedTicket">
           <div class="case-head">
             <div class="ch-main">
               <div class="who-block">
@@ -2321,7 +2321,7 @@
                 <button class="btn btn-secondary btn-sm" :disabled="testing" @click="testLlm()">
                   <i class="bi bi-lightning-charge"></i> [[ testing ? '测试中…' : '测试连接' ]]
                 </button>
-                <span class="hint" style="flex:1;font-size:11.5px">未单独配置的子功能（受理提取、合同视觉/文本识别）自动使用上述主模型</span>
+                <span class="hint" style="flex:1;font-size:11.5px">未单独配置的子功能（受理提取、合同文本识别）自动使用上述主模型</span>
                 <button class="btn btn-primary" :disabled="cfgSaving" @click="saveCfg()">
                   <i class="bi bi-check2"></i> [[ cfgSaving ? '保存中…' : '保存配置' ]]
                 </button>
