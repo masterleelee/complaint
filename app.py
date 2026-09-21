@@ -5048,12 +5048,16 @@ def api_config_put():
             if pwd and ("•" in pwd or "..." in pwd):
                 new_config[section]["password"] = current.get(section, {}).get("password", "")
 
-        for section in ("llm", "llm_intake", "llm_contract_vision", "llm_contract_text"):
+        for section in ("llm", "llm_intake", "llm_contract_text"):
             llm_cfg = new_config.get(section, {})
             if not isinstance(llm_cfg, dict):
                 continue
             llm_cfg["api_url"] = normalize_llm_api_url(llm_cfg.get("api_url", ""))
             new_config[section] = llm_cfg
+
+        # baidu_ocr 密钥主要走环境变量；旧前端标签页/局部保存缺段时保留现值，防止整段被清
+        if "baidu_ocr" not in new_config and isinstance(current.get("baidu_ocr"), dict):
+            new_config["baidu_ocr"] = current["baidu_ocr"]
 
         save_config(new_config)
 

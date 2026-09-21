@@ -62,7 +62,6 @@ function createDefaultConfig() {
     driving_system: { base_url: "", username: "", password: "" },
     llm: llm(),
     llm_intake: llm(),
-    llm_contract_vision: llm(),
     llm_contract_text: llm(),
     paths: { reply_dir: "", contract_dir: "", upload_dir: "" },
   };
