@@ -1,8 +1,11 @@
-"""多格式文件文本提取器 - 支持 PDF/图片/DOCX/XLSX/TXT"""
+"""多格式文件文本提取器 - 支持 PDF/图片/DOCX/XLSX/TXT
+
+图片 OCR = macOS 原生 Vision（系统自带，离线、亚秒级）。
+EasyOCR/PaddleOCR 已按 spec（.scratch/contract-ocr-baidu/spec.md v3 §6.2）删除：
+实测生产从未触发（Vision 先成功 / Paddle 未安装），删除省 ~500M 依赖并加快启动。
+"""
 import os
 from utils.logger import system_logger
-
-_EASYOCR_READER = None
 
 
 def extract_text(filepath: str) -> str:
@@ -78,11 +81,8 @@ def _extract_pdf_ocr(filepath: str) -> str:
 
 
 def _extract_image(filepath: str) -> str:
-    """从图片提取文本：macOS Vision 优先（系统原生，亚秒级），失败回退 EasyOCR"""
-    text = _extract_image_vision(filepath)
-    if text.strip():
-        return text
-    return _extract_image_easyocr(filepath)
+    """从图片提取文本：macOS Vision（系统原生，亚秒级；离线兜底）。"""
+    return _extract_image_vision(filepath)
 
 
 def _extract_image_vision(filepath: str) -> str:
@@ -103,64 +103,19 @@ def _extract_image_vision(filepath: str) -> str:
         lines = [r.topCandidates_(1)[0].string() for r in request.results()]
         return "\n".join(line for line in lines if line)
     except ImportError:
-        system_logger.info("[OCR] pyobjc-framework-Vision 未安装，改用 EasyOCR")
+        system_logger.info("[OCR] pyobjc-framework-Vision 未安装，无法本地识别")
         return ""
     except Exception as e:
-        system_logger.warning("Vision OCR Error: %s，回退 EasyOCR", e)
+        system_logger.warning("Vision OCR Error: %s", e)
         return ""
 
 
 def warmup_ocr():
-    """预热 OCR 引擎，消除服务重启后首个图片请求的冷启动延迟。"""
+    """预热 OCR 引擎（预加载 macOS Vision 框架），消除首个图片请求的冷启动延迟。"""
     try:
         import Vision  # noqa: F401 预加载 macOS Vision 框架
     except Exception:
         pass
-    _get_easyocr_reader()
-
-
-def _get_easyocr_reader():
-    """获取全局唯一的 EasyOCR 实例（延迟初始化）"""
-    global _EASYOCR_READER
-    if _EASYOCR_READER is None:
-        # 修复 macOS Python 3.14 的 SSL 证书问题（easyocr 首次下载模型）
-        import ssl, urllib.request
-        ssl_ctx = ssl.create_default_context(cafile=__import__("certifi").where())
-        urllib.request.install_opener(
-            urllib.request.build_opener(urllib.request.HTTPSHandler(context=ssl_ctx))
-        )
-        import easyocr
-        _EASYOCR_READER = easyocr.Reader(['ch_sim', 'en'], gpu=False, verbose=False)
-    return _EASYOCR_READER
-
-
-def _extract_image_easyocr(filepath: str) -> str:
-    """从图片 OCR 提取文本（EasyOCR 兜底 + 图像预处理）"""
-    try:
-        # 图像预处理：提升 OCR 识别率
-        from PIL import Image, ImageEnhance, ImageFilter
-        img = Image.open(filepath)
-        # 转为灰度图并增强对比度
-        img = img.convert('L')
-        img = ImageEnhance.Contrast(img).enhance(2.0)
-        img = img.filter(ImageFilter.SHARPEN)
-        
-        # 临时保存处理后图片
-        temp_path = filepath + "_temp_processed.png"
-        img.save(temp_path)
-        
-        reader = _get_easyocr_reader()
-        result = reader.readtext(temp_path)
-        
-        # 清理临时文件
-        if os.path.exists(temp_path): os.remove(temp_path)
-        
-        # 过滤低置信度结果并拼接
-        lines = [item[1] for item in result if item[2] > 0.2]
-        return "\n".join(lines)
-    except Exception as e:
-        system_logger.warning("OCR Error: %s", e)
-        return ""
 
 
 def _extract_docx(filepath: str) -> str:
@@ -208,74 +163,3 @@ def _extract_txt(filepath: str) -> str:
                 return f.read()
         except Exception:
             return ""
-
-
-def _flatten_paddleocr_result(result) -> list[str]:
-    """兼容 PaddleOCR 不同版本的返回结构，抽取识别文本。"""
-    texts = []
-
-    def walk(node):
-        if not node:
-            return
-        if isinstance(node, str):
-            return
-        if isinstance(node, dict):
-            for key in ("rec_texts", "texts"):
-                value = node.get(key)
-                if isinstance(value, list):
-                    texts.extend(str(item) for item in value if item)
-                    return
-            value = node.get("text")
-            if isinstance(value, str):
-                texts.append(value)
-                return
-            for value in node.values():
-                walk(value)
-            return
-        if hasattr(node, "json"):
-            walk(getattr(node, "json"))
-            return
-        if isinstance(node, tuple) and len(node) >= 1 and isinstance(node[0], str):
-            texts.append(node[0])
-            return
-        if isinstance(node, list):
-            if len(node) >= 2 and isinstance(node[1], tuple) and node[1] and isinstance(node[1][0], str):
-                texts.append(node[1][0])
-                return
-            for item in node:
-                walk(item)
-
-    walk(result)
-    return texts
-
-
-def _create_paddle_ocr(PaddleOCR):
-    """优先适配 PaddleOCR 3.x，必要时回退旧版参数。"""
-    init_attempts = [
-        {
-            "lang": "ch",
-            "use_textline_orientation": True,
-            "text_det_limit_side_len": 1600,
-        },
-        {"use_angle_cls": True, "lang": "ch"},
-    ]
-    last_error = None
-    for kwargs in init_attempts:
-        try:
-            return PaddleOCR(**kwargs)
-        except Exception as e:
-            last_error = e
-    raise last_error
-
-
-def _run_paddle_ocr(ocr, path: str):
-    """兼容 PaddleOCR 2.x/3.x 的识别入口。"""
-    if hasattr(ocr, "predict"):
-        try:
-            return ocr.predict(path)
-        except TypeError:
-            pass
-    try:
-        return ocr.ocr(path)
-    except TypeError:
-        return ocr.ocr(path, cls=True)

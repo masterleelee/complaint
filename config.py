@@ -29,7 +29,7 @@ def normalize_llm_api_url(api_url: str) -> str:
 
 
 def _normalize_runtime_config(config: dict) -> dict:
-    for section in ("llm", "llm_intake", "llm_contract_vision", "llm_contract_text"):
+    for section in ("llm", "llm_intake", "llm_contract_text"):
         llm = config.get(section)
         if isinstance(llm, dict):
             llm["api_url"] = normalize_llm_api_url(llm.get("api_url", ""))
@@ -64,23 +64,21 @@ DEFAULT_CONFIG = {
         "model": os.getenv("LLM_INTAKE_MODEL", ""),
         "max_tokens": int(os.getenv("LLM_INTAKE_MAX_TOKENS", "1024")),
     },
-    "llm_contract_vision": {
-        "api_url": os.getenv("LLM_CONTRACT_VISION_API_URL", ""),
-        "api_key": os.getenv("LLM_CONTRACT_VISION_API_KEY", ""),
-        "model": os.getenv("LLM_CONTRACT_VISION_MODEL", ""),
-        "max_tokens": int(os.getenv("LLM_CONTRACT_VISION_MAX_TOKENS", "8192")),
-        # 推理强度。默认 "none" 是必需的，不是优化：免费档多是纯推理模型，
-        # thinking 会先吃满 max_tokens，导致 content 恒为 0 字（正文全空）；
-        # 给大 max_tokens 又会因耗时超网关 ~300s 被掐断返回空 body。
-        # 实测 nex-n2.5-pro / ling-3.0-flash-vl 在 effort=none 下 13~49s 正常出正文。
-        # 置空字符串 = 不下发该参数（兼容不认识 reasoning 字段的 provider）。
-        "reasoning_effort": os.getenv("LLM_CONTRACT_VISION_REASONING_EFFORT", "none"),
-    },
     "llm_contract_text": {
         "api_url": os.getenv("LLM_CONTRACT_TEXT_API_URL", ""),
         "api_key": os.getenv("LLM_CONTRACT_TEXT_API_KEY", ""),
         "model": os.getenv("LLM_CONTRACT_TEXT_MODEL", ""),
         "max_tokens": int(os.getenv("LLM_CONTRACT_TEXT_MAX_TOKENS", "2048")),
+    },
+    # 百度云 OCR（合同图片 OCR 主路，spec: .scratch/contract-ocr-baidu/spec.md v3）。
+    # 密钥优先读环境变量 BAIDU_OCR_API_KEY / BAIDU_OCR_SECRET_KEY（不入库、不落代码）；
+    # empty_env_fallback=True 且环境变量为空时，回落读本段 api_key/secret_key。
+    "baidu_ocr": {
+        "enabled": os.getenv("BAIDU_OCR_ENABLED", "1") not in ("0", "false", "no"),
+        "api_key": "",
+        "secret_key": "",
+        "timeout": 15,
+        "empty_env_fallback": True,
     },
     "paths": {
         "reply_dir": os.getenv("REPLY_DIR", str(BASE_DIR / "回复函")),

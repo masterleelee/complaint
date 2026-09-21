@@ -1,21 +1,16 @@
 """合同分析服务：文本提取、合同结构化、退费草案计算。"""
 import os
 import json
-import base64
-import time
 import requests
 from datetime import datetime, timedelta
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from config import load_config, normalize_llm_api_url
 from services.image_compressor import compress_for_vision_api
 from services.file_parser import (
     extract_text as _file_parser_extract_text,
-    _flatten_paddleocr_result,
-    _create_paddle_ocr,
-    _run_paddle_ocr,
 )
+from services.contract_template_service import get_template_service
 from utils.logger import system_logger
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff")
@@ -72,7 +67,8 @@ def _extract_pdf_text(filepath: str) -> str:
     return _compact_spaced_digits("\n".join(pages_text))
 
 
-def _extract_contract_text_easyocr(image_paths: list[str]) -> str:
+def _extract_contract_text_local(image_paths: list[str]) -> str:
+    """本地兜底 OCR（macOS 原生 Vision，file_parser 链）：压缩后逐页识别再拼接。"""
     ocr_paths = compress_for_vision_api(
         image_paths,
         max_size=(1600, 2200),
@@ -88,41 +84,58 @@ def _extract_contract_text_easyocr(image_paths: list[str]) -> str:
     return "\n\n".join(texts)
 
 
-def extract_contract_text_ocr(image_paths: list[str]) -> str:
-    """使用本地 PaddleOCR 识别合同图片文本。"""
-    if not image_paths:
-        return ""
-    try:
-        import paddle  # noqa: F401
-    except Exception as e:
-        system_logger.warning("[OCR] paddlepaddle 不可用，直接改用 EasyOCR: %s", e)
-        return _extract_contract_text_easyocr(image_paths)
+def _baidu_ocr_enabled() -> bool:
+    cfg = load_config().get("baidu_ocr") or {}
+    return bool(cfg.get("enabled", False))
 
-    try:
-        from paddleocr import PaddleOCR
-    except Exception as e:
-        system_logger.warning("[OCR] PaddleOCR 不可用，改用 EasyOCR: %s", e)
-        return _extract_contract_text_easyocr(image_paths)
 
-    try:
-        ocr = _create_paddle_ocr(PaddleOCR)
-    except Exception as e:
-        system_logger.warning("[OCR] PaddleOCR 初始化失败，改用 EasyOCR: %s", e)
-        return _extract_contract_text_easyocr(image_paths)
+def extract_contract_text_baidu(image_paths: list[str]) -> str:
+    """百度云 OCR 主路文本：accurate_basic 各页拼接（spec: contract-ocr-baidu v3）。"""
+    from services.baidu_ocr import extract_pages_via_baidu
+    pages = extract_pages_via_baidu(image_paths)
+    return pages.get("printed") or ""
 
-    all_texts = []
-    for idx, path in enumerate(image_paths, 1):
-        if not path or not os.path.exists(path):
-            continue
+
+def _extract_text_via_ocr_chain(ocr_inputs: list[str]) -> tuple[str, str, dict]:
+    """合同图片 OCR 降级链（spec v3 §4/§6）：百度主路 → macOS Vision 本地兜底。
+
+    返回 `(text, source, extras)`：
+    - source：`baidu_ocr`（高置信）或 `local_ocr`（本地 Vision，沿用低置信口径）；
+    - extras：`{"baidu_rescue": {"fees": ...}}` —— 省调用策略下，仅当 accurate_basic
+      的 total_fee 缺失/被闸门拦下时才追加 handwriting 二次提取（只跑 handwriting，
+      不重跑 accurate_basic），金额字段由 upload_pipeline 只填空位合并。
+    """
+    extras: dict = {}
+    if _baidu_ocr_enabled():
         try:
-            result = _run_paddle_ocr(ocr, path)
-            page_text = "\n".join(_flatten_paddleocr_result(result))
-            if page_text.strip():
-                all_texts.append(f"--- 第{idx}页 ---\n{page_text}")
-        except Exception as e:
-            system_logger.warning("[OCR] 第%d页识别失败: %s", idx, e)
+            from services.baidu_ocr import extract_pages_via_baidu
+            system_logger.info("[OCR] 百度云 OCR 识别 %d 个合同图片...", len(ocr_inputs))
+            pages = extract_pages_via_baidu(ocr_inputs)
+            text = pages.get("printed") or ""
+            if len(text.strip()) >= 20:
+                fees = extract_contract_fees(text)
+                if not fees.get("total_fee"):
+                    system_logger.info(
+                        "[OCR] accurate_basic 缺 total_fee（疑似手写件），追加 handwriting 二次尝试")
+                    try:
+                        hw_pages = extract_pages_via_baidu(ocr_inputs, need_handwriting=True)
+                        hw_text = hw_pages.get("handwriting") or ""
+                        if hw_text.strip():
+                            hw_fees = extract_contract_fees(hw_text)
+                            if any(hw_fees.get(k) for k in ("total_fee", "theory_fee")):
+                                extras["baidu_rescue"] = {"fees": hw_fees}
+                    except Exception as exc:
+                        system_logger.warning("[OCR] handwriting 补提失败（保持 pending 人工）：%s", exc)
+                return text, "baidu_ocr", extras
+            system_logger.warning("[OCR] 百度云 OCR 无有效文本，降级本地 Vision")
+        except Exception as exc:
+            system_logger.warning("[OCR] 百度云 OCR 失败，降级本地 Vision: %s", exc)
 
-    return "\n\n".join(all_texts)
+    system_logger.info("[OCR] 本地 macOS Vision 识别 %d 个合同图片...", len(ocr_inputs))
+    text = _extract_contract_text_local(ocr_inputs)
+    if len(text.strip()) >= 20:
+        return text, "local_ocr", extras
+    return "", "", extras
 
 
 def _pdf_to_images(filepath: str) -> list[str]:
@@ -195,6 +208,7 @@ def extract_contract_text_from_file(filepath: str, image_paths: list[str] = None
 
     contract_text = ""
     source = ""
+    ocr_extras: dict = {}  # OCR 链产物（baidu_rescue）；非图片路径（docx/pdf 文本层）保持空
     lower_path = filepath.lower()
 
     if lower_path.endswith(".pdf"):
@@ -222,6 +236,7 @@ def extract_contract_text_from_file(filepath: str, image_paths: list[str] = None
             system_logger.warning("[DOCX] 提取失败: %s", e)
             contract_text = ""
 
+    ocr_inputs: list[str] = []
     if not contract_text:
         ocr_inputs = [
             p for p in image_paths
@@ -235,24 +250,59 @@ def extract_contract_text_from_file(filepath: str, image_paths: list[str] = None
             except Exception as e:
                 system_logger.warning("[PDF→IMG] 转换失败: %s", e)
         if ocr_inputs:
-            system_logger.info("[VISION] 尝试识别 %d 个合同图片...", len(ocr_inputs))
-            try:
-                contract_text = extract_contract_text_vision(ocr_inputs)
-            except Exception as e:
-                system_logger.warning("[VISION] 识别异常，回退本地 OCR: %s", e)
-                contract_text = ""
-
-            if contract_text and len(contract_text.strip()) >= 20:
-                source = "vision_text"
+            contract_text, source, ocr_extras = _extract_text_via_ocr_chain(ocr_inputs)
+            if contract_text:
+                system_logger.info("[OCR] 识别成功（source=%s）：%d 字符", source, len(contract_text))
             else:
-                system_logger.warning("[OCR] 多模态识别无有效文本，回退本地 OCR 识别 %d 个合同图片...", len(ocr_inputs))
-                contract_text = extract_contract_text_ocr(ocr_inputs)
-                source = "local_ocr"
+                system_logger.error("[OCR/VISION] 所有识别方式均失败")
 
     if not contract_text or len(contract_text.strip()) < 20:
         return {"error": "无法从合同文件中提取可分析文本"}
 
-    return _build_extraction_result(contract_text, source or "unknown")
+    # 尝试模板匹配（仅对 OCR 提取的文本；baidu_ocr 置信高，与 vision_text 同级放行）
+    template_match = None
+    extracted_fields = {}
+    if source in ("baidu_ocr", "vision_text", "local_ocr"):
+        try:
+            template_service = get_template_service()
+            matches = template_service.match_template(contract_text)
+            if matches and matches[0].is_confident:
+                template_match = matches[0]
+                extracted_fields = template_service.extract_fields(
+                    template_match.template_id, 
+                    contract_text
+                )
+                system_logger.info(f"[模板匹配] 成功匹配 {template_match.template_name}, 提取 {len(extracted_fields)} 个字段")
+        except Exception as e:
+            system_logger.warning("[模板匹配] 匹配失败：%s", e)
+    
+    result = _build_extraction_result(contract_text, source or "unknown")
+
+    # 注入模板匹配结果
+    if template_match:
+        result["template_match"] = {
+            "template_id": template_match.template_id,
+            "template_name": template_match.template_name,
+            "provider": template_match.provider,
+            "confidence": template_match.confidence,
+        }
+        result["extracted_fields"] = {k: {"value": v.value, "confidence": v.confidence} for k, v in extracted_fields.items()}
+
+    # 百度 handwriting 二次补提的金额字段（省调用策略触发时才有），
+    # 由 upload_pipeline._merge_rescued_fees 只填空位合并（spec v3 §4）
+    if ocr_extras.get("baidu_rescue"):
+        result["baidu_rescue"] = ocr_extras["baidu_rescue"]
+
+    # 付款计划字段（spec v3 §4 欠款口径）：首付取文本，欠款 = 总额 − 首付 本地推算
+    try:
+        fees_probe = extract_contract_fees(contract_text)
+        result["payment_plan"] = _extract_payment_plan(
+            contract_text, total_fee=float(fees_probe.get("total_fee") or 0),
+        )
+    except Exception as exc:
+        system_logger.warning("[PAYMENT-PLAN] 付款计划推算失败：%s", exc)
+
+    return result
 
 
 def build_contract_clauses(filepath: str) -> dict:
@@ -327,181 +377,6 @@ def _format_llm_error(resp: requests.Response) -> str:
         return f"大模型接口鉴权或权限失败（HTTP {status}）：{message or '请检查 API Key、工作空间地址和模型权限'}"
 
     return f"大模型接口请求失败（HTTP {status}）：{message or raw_body[:300]}"
-
-
-# ── 视觉识别：页级重试与异常响应容错 ────────────────────────────────
-# 生产环境（OpenRouter + 免费档）会出现「HTTP 200 但 choices 为 null」或「空/非 JSON body」
-# 的异常页丢失 —— 单页丢失会让「退费条款」等仅印在该页的字段整体消失，进而被
-# `_detect_unclear_fields` 误判为「识别不完整」。故页级失败必须重试并留证据。
-_VISION_MAX_ATTEMPTS = 3          # 首次 + 2 次重试
-_VISION_RETRY_DELAY_SEC = 2.0
-_VISION_TIMEOUT_SEC = 180         # 实测单页 80~150s，原 60s 偏紧
-
-
-def _vision_choices(resp) -> tuple[list, str]:
-    """安全解析视觉接口的 choices；异常时返回空列表 + 可排障的诊断串。"""
-    try:
-        body = resp.json()
-    except ValueError:
-        raw = (getattr(resp, "text", "") or "")[:300]
-        return [], f"HTTP {getattr(resp, 'status_code', '?')} 非 JSON 响应 body={raw!r}"
-    if not isinstance(body, dict):
-        return [], f"HTTP {getattr(resp, 'status_code', '?')} 响应结构异常 type={type(body).__name__}"
-    choices = body.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return [], (
-            f"HTTP {getattr(resp, 'status_code', '?')} choices 为空或非列表 "
-            f"body={json.dumps(body, ensure_ascii=False)[:200]}"
-        )
-    return choices, ""
-
-
-def _vision_message_text(choice) -> str:
-    """兼容 content 为字符串或分片列表两种形态。"""
-    if not isinstance(choice, dict):
-        return ""
-    message = choice.get("message") or {}
-    if not isinstance(message, dict):
-        return ""
-    content = message.get("content")
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts = [
-            p.get("text", "")
-            for p in content
-            if isinstance(p, dict) and isinstance(p.get("text"), str)
-        ]
-        return "\n".join(p.strip() for p in parts if p.strip())
-    return ""
-
-
-def _recognize_single_image(args):
-    """识别单张图片的辅助函数（用于并发；失败自动重试）。"""
-    idx, img_path, api_url, api_key, model, max_tokens = args[:6]
-    reasoning_effort = str(args[6]).strip() if len(args) > 6 else ""
-
-    if not os.path.exists(img_path):
-        return idx, ""
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    try:
-        with open(img_path, "rb") as f:
-            b64_image = base64.b64encode(f.read()).decode('utf-8')
-    except Exception as e:
-        system_logger.warning("⚠️ 第%d页读取失败: %s", idx, e)
-        return idx, ""
-
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"请详细识别这张驾校培训合同的第{idx}页。要求：\n1. 识别所有印刷文字，保持段落和表格结构\n2. **特别注意手写内容**（金额、签名、日期、备注、修改等），逐字识别\n3. 不要遗漏任何文字，包括页眉页脚、表格内文字、印章文字\n4. 手写内容用【手写】标记"
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}
-                    }
-                ]
-            }
-        ],
-        "max_tokens": max_tokens
-    }
-    # 纯推理模型必须显式关闭/限制推理，否则 thinking 会吃满 max_tokens，
-    # 正文恒为 0 字（见 .scratch/contract-vision-failure-20260914.md「六之二」）。
-    if reasoning_effort:
-        payload["reasoning"] = {"effort": reasoning_effort}
-
-    for attempt in range(1, _VISION_MAX_ATTEMPTS + 1):
-        try:
-            resp = requests.post(api_url, headers=headers, json=payload, timeout=_VISION_TIMEOUT_SEC)
-            choices, diagnostic = _vision_choices(resp)
-            if not choices:
-                system_logger.warning("⚠️ 第%d页第%d/%d次识别无有效内容: %s", idx, attempt, _VISION_MAX_ATTEMPTS, diagnostic)
-            else:
-                text = _vision_message_text(choices[0])
-                if text:
-                    system_logger.info("✅ 第%d页识别完成 (%d 字符)", idx, len(text))
-                    return idx, text
-                finish = (choices[0] or {}).get("finish_reason") if isinstance(choices[0], dict) else "?"
-                system_logger.warning(
-                    "⚠️ 第%d页第%d/%d次识别返回空文本 finish_reason=%s%s",
-                    idx, attempt, _VISION_MAX_ATTEMPTS, finish,
-                    "（thinking 吃满 max_tokens：请确认 reasoning_effort 已设为 none）"
-                    if finish == "length" else "",
-                )
-        except Exception as e:
-            system_logger.warning("⚠️ 第%d页第%d/%d次请求异常: %s", idx, attempt, _VISION_MAX_ATTEMPTS, e)
-
-        if attempt < _VISION_MAX_ATTEMPTS:
-            time.sleep(_VISION_RETRY_DELAY_SEC * attempt)
-
-    system_logger.error("❌ 第%d页连续 %d 次识别失败，该页正文缺失", idx, _VISION_MAX_ATTEMPTS)
-    return idx, ""
-
-
-def extract_contract_text_vision(image_paths: list) -> str:
-    """
-    使用 Qwen-VL Vision API 并发识别多张合同图片
-    返回拼接后的完整合同文本
-    """
-    llm = _llm_config("llm_contract_vision")
-    api_url = llm.get("api_url", "")
-    api_key = llm.get("api_key", "")
-    model = llm.get("model", "")
-    max_tokens = int(llm.get("max_tokens", 2000) or 2000)
-    reasoning_effort = str(llm.get("reasoning_effort") or "").strip()
-
-    if not image_paths:
-        return ""
-    if not api_url or not api_key or not model:
-        system_logger.warning("[VISION] 未配置视觉模型，跳过远程识别并回退本地 OCR")
-        return ""
-    if not reasoning_effort:
-        system_logger.warning(
-            "[VISION] reasoning_effort 为空：若使用推理型模型，thinking 可能吃满 "
-            "max_tokens 导致正文为空（建议设为 none）"
-        )
-
-    # ── 压缩图片以减少 Token 消耗 ──
-    try:
-        from services.image_compressor import compress_for_vision_api
-        compressed_paths = compress_for_vision_api(image_paths)
-    except Exception as e:
-        system_logger.warning("[COMPRESS WARNING] 压缩失败，使用原图: %s", e)
-        compressed_paths = image_paths
-
-    system_logger.info("[VISION] 并发识别 %d 张图片...", len(compressed_paths))
-
-    # ── 并发识别所有图片 ──
-    all_texts = [""] * len(compressed_paths)
-
-    with ThreadPoolExecutor(max_workers=min(len(compressed_paths), 3)) as executor:
-        futures = {
-            executor.submit(
-                _recognize_single_image,
-                (i+1, path, api_url, api_key, model, max_tokens, reasoning_effort),
-            ): i
-            for i, path in enumerate(compressed_paths)
-        }
-
-        for future in as_completed(futures):
-            idx, text = future.result()
-            if text:
-                all_texts[idx-1] = text
-
-    all_texts = [t for t in all_texts if t]
-    system_logger.info("[VISION] 识别完成: %d/%d 页成功", len(all_texts), len(compressed_paths))
-
-    return "\n\n--- 下一页 ---\n\n".join(all_texts)
 
 
 def _extract_penalty_rate(text: str) -> float:
@@ -627,6 +502,59 @@ def _clean_ocr_noise(text: str) -> str:
     return t
 
 
+# 付款计划金额与标签间允许的噪声（手写标记/下划线/全角空格，与闸门 _NOISE 同口径）
+_PLAN_NOISE = r"[^\d元]{0,8}?"
+
+
+def _extract_payment_plan(text: str, total_fee: float = 0.0) -> dict:
+    """付款计划字段（spec: contract-ocr-baidu v3 §4 欠款口径）。
+
+    实缴 = 付款计划「首付」；欠款（尾款）= total_fee − 首付 **本地推算**（0 额外 OCR 调用）。
+    accurate_basic 常把小字「尾款1580」拆错成「尾580」→ 尾款 OCR 值一律不直接采信：
+    与推算值不一致时以推算值为准并写 warning 提示人工核对（省调用下 handwriting 不触发）。
+    """
+    cleaned = _clean_ocr_noise(text or "")
+    down = _first_money(cleaned, [
+        r"首(?:次)?付(?:款)?(?:人民币)?" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)\s*元",
+        r"首(?:次)?付(?:款)?(?:人民币)?" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)",
+    ])
+    balance_ocr = _first_money(cleaned, [
+        r"(?:尾款|欠款|余款)" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)\s*元",
+        r"(?:尾款|欠款|余款)" + _PLAN_NOISE + r"(\d+(?:\.\d+)?)",
+    ])
+
+    warnings: list[str] = []
+    balance = 0.0
+    balance_source = ""
+    if down > 0 and total_fee > 0:
+        balance = round(total_fee - down, 2)
+        balance_source = "derived"
+        if balance < 0:
+            warnings.append(
+                f"合同付款计划首付 {down:g} 元大于培训费总额 {total_fee:g} 元，"
+                "无法推算欠款，请人工核对"
+            )
+            balance = 0.0
+            balance_source = ""
+        elif balance_ocr > 0 and abs(balance_ocr - balance) > 0.01:
+            warnings.append(
+                f"合同付款计划「尾款」OCR 识别为 {balance_ocr:g} 元，与推算值"
+                f"（总额 {total_fee:g} − 首付 {down:g} = {balance:g}）不一致，"
+                "已按推算值处理，请人工核对"
+            )
+    elif balance_ocr > 0:
+        # 无法推算（总额/首付缺失）时回退 OCR 值
+        balance = balance_ocr
+        balance_source = "ocr"
+
+    return {
+        "down_payment": down if down > 0 else None,
+        "balance": balance if balance > 0 else None,
+        "balance_source": balance_source,
+        "warnings": warnings,
+    }
+
+
 def extract_contract_fees(contract_text: str) -> dict:
     """从上传合同文本提取费用结构 + 一致性校验告警（旧模板兼容 + OCR 噪声容错）。
 
@@ -749,9 +677,10 @@ def extract_contract_fees(contract_text: str) -> dict:
 
 # ── 合同集合分条结构（工单 03-contract-set-storage，ADR-0002） ─────────
 
-# 提取来源 → 正文置信度：文本层直读无损失；多模态次之；本地 OCR 最弱。
+# 提取来源 → 正文置信度：文本层直读无损失；百度 OCR 次之；本地 OCR 最弱。
 TEXT_SOURCE_CONFIDENCE = {
     "pdf_text": "high",
+    "baidu_ocr": "high",
     "vision_text": "medium",
     "local_ocr": "low",
 }
