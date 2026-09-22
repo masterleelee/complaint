@@ -2,13 +2,16 @@
 import { useToast } from "useToast";
 import { useComplaint } from "useComplaint";
 import { useWorkflow } from "useWorkflow";
-import { useContractPreview } from "useContractPreview";
-import { useSettings, useUsers, USER_ROLES, roleLabel, useSmbShare } from "useSettings";
+import { useContractCompare } from "useContractCompare";
+import { useSettings, useUsers, USER_ROLES, roleLabel, useSmbShare, useCloudOcr, useSettingsLayout } from "useSettings";
 import { useHistory } from "useHistory";
 import { useWorkbench } from "useWorkbench";
 import { stBadge, getTrainingTime, getEventType, getDrivingFeeBreakdown, todayStr } from "helpers";
-import { getJ } from "api";
 import { postJ } from "api";
+// 注：getJ/putJ 原为「合同对照 / AI 识别面板」专用（loadComparison/saveAIFields），
+// 2026-09-21 该面板按评审替换为 useContractCompare 形态（数据全部来自 ar，无需额外
+// GET/PUT），app.js 不再使用这两个助手，故移除 import（护栏 test_frontend_api_imports
+// 会拦截「导入未使用」与「漏导入」两个方向）。
 import { startAuthWatch } from "auth";
 
 // 从 reason 中提取违约金计算公式（如 "3180×20%=636"）
@@ -184,7 +187,7 @@ try {
     // ── 工作流程（合同 → 退费分析 → 沟通 → 归档） ──
     const {
       workflowStep, workflowStatusText,
-      cSrc, cPath, cName, cLoading, uploadedFiles,
+      cSrc, cPath, cName, cLoading, uploadedFiles, contractManifest,
       aLoading, analysisProgress, analysisElapsed, deductionSum, deductionMismatch,
       ar, aErr, manualContract, canProceedToAnalysis, threeSystemReady,
       rpLoading, rpResult, rpErr,
@@ -223,31 +226,74 @@ try {
       },
     });
 
-    // ── 合同三栏预览（上传合同分析完成后渲染：原文 / 原件 / 扣费明细） ──
-    // cp.* 暴露给模板（cp.tierDisplayName / cp.locate / cp.toggleFolded 等）
-    // ⚠️ 必须 Vue.reactive 包裹：Vue 模板只解包「顶层 setup 属性」和「reactive 对象
-    // 内嵌」的 ref/computed；普通对象里的 ComputedRef 不解包，模板拿到的是 ref 本体
-    // —— cp.groupedDeductions.find(...) 直接 TypeError，根渲染函数崩溃 → 整页白屏
-    // （2026-09-20 尹金辉工单实锤复现，console 仅一条被吞的 CERR）。
-    const cp = Vue.reactive(useContractPreview(() => ar.value, () => cPath.value));
+    // ── 合同原文对照弹窗（左原文/原图 · 右扣费明细，悬停定位） ──
+    // cmp.* 暴露给模板；⚠️ 必须 Vue.reactive 包裹：普通对象内嵌 computed 模板不解包
+    // → 根渲染崩溃整页白屏（2026-09-20 三栏预览实锤，护栏 test_contract_compare_reactive.py）
+    const cmp = Vue.reactive(useContractCompare(() => ar.value, () => cPath.value, () => contractManifest.value));
 
     // ── 设置 ──
     const { cfg, cfgSaving, cfgMsg, cfgOk, loadCfg, saveCfg,
             LLM_PROVIDERS, providerSel, applyProvider, presetModels, modelSel, modelCustom,
-            testing, testResult, testLlm } = useSettings(toast);
+            orModels, orLoading, orErr, orQuery, loadOpenRouterModels,
+            testing, testResult, testLlm, keyVisible,
+            dirtyKeys, mark, retrySave, saveText, saveCls, saveIcon, saveRetryable } = useSettings(toast);
+    // ── 设置页布局：卡片折叠状态（localStorage 持久化，纯展示层）──
+    const layout = useSettingsLayout();
 
     // ── 账号管理（admin 增删改查；所有人改自己资料/密码）──
     const users = useUsers({ toast, currentUser });
     // ── SMB 共享盘状态（系统设置页：状态展示 + 一键重挂）──
     const smb = useSmbShare(toast);
-    // 切到系统设置时拉一次账号列表 + 共享盘状态
-    watch(view, (v) => {
+    // ── 云 OCR 多云配置（系统设置页：密钥、兜底顺序、用量、连通性自测）──
+    const cloudOcr = useCloudOcr({ toast, getConfig: () => cfg.value.cloud_ocr });
+    // 左导航状态徽章：把「未保存」放最高优先级，其余取该卡当前真实状态。
+    // 逻辑集中在组合根这里，useSettingsLayout 保持纯展示层，不反向依赖业务 composable。
+    function setNavBadge(key) {
+      if (dirtyKeys.value[key]) return { text: "未保存", cls: "dirty" };
+      switch (key) {
+        case "llm":
+          return cfg.value.llm.model
+            ? { text: cfg.value.llm.model, cls: "ok" }
+            : { text: "未配置", cls: "warn" };
+        case "ocr": {
+          const total = cloudOcr.providers.value.length;
+          const ready = cloudOcr.readyKeys.value.length;
+          if (!total) return { text: "读取中", cls: "" };
+          return { text: `${ready}/${total} 可用`, cls: ready ? "ok" : "warn" };
+        }
+        case "smb":
+          return smb.smbStatus.value
+            ? { text: smb.smbHealthy.value ? "正常" : "不可用", cls: smb.smbHealthy.value ? "ok" : "warn" }
+            : { text: "未知", cls: "" };
+        case "profile":
+          return { text: currentUser.value?.role_label || "—", cls: "" };
+        case "users":
+          return { text: `${users.list.value.length} 个`, cls: "" };
+        case "alias": {
+          const n = users.unmapped.value.length;
+          return n ? { text: `${n} 待绑`, cls: "warn" } : { text: "已关联", cls: "ok" };
+        }
+        default:
+          return { text: "", cls: "" };
+      }
+    }
+
+    // 切到系统设置时拉一次账号列表 + 共享盘状态 + 云 OCR 用量
+    watch(view, (v, old) => {
       if (v === 'settings') {
         if (users.isAdmin.value) {
           users.loadList();
           users.loadAliases();
         }
         smb.loadSmbStatus();
+        cloudOcr.loadUsage();
+        // 等 DOM 真正切到设置页再启动滚动联动，否则量到的是上一个视图的布局
+        Vue.nextTick(() => layout.bindSpy());
+      } else if (old === 'settings') {
+        // 离开设置页：先把未到期的自动保存落盘（loadCfg 会在下次进入时覆盖 cfg，
+        // 若此处不 flush，防抖窗口内切走就等于静默丢弃改动）
+        if (Object.keys(dirtyKeys.value).length) saveCfg();
+        layout.unbindSpy();
       }
       // 切到投诉列表时刷新（确保别名映射后的回写能立即看到）
       if (v === 'list' && typeof loadTickets === 'function') {
@@ -480,10 +526,22 @@ try {
     const replyHtml = Vue.ref("");
     const replyCollapsed = Vue.ref(false);
 
+    // HTML 清理函数 - 防止 XSS 攻击
+    function sanitizeHtml(html) {
+      if (!html) return "";
+      const div = document.createElement("div");
+      div.textContent = html;
+      return div.innerHTML;
+    }
+
     function fmt(cmd, val) {
       document.execCommand(cmd, false, val || null);
       const el = document.getElementById("re-letter");
-      if (el) { replyHtml.value = el.innerHTML; replyEdited.value = true; el.focus(); }
+      if (el) { 
+        replyHtml.value = sanitizeHtml(el.innerHTML); 
+        replyEdited.value = true; 
+        el.focus(); 
+      }
     }
     function buildLetter(polished) {
       const t = selectedTicket.value || {};
@@ -589,209 +647,11 @@ try {
       }
     }
 
-    // ── 合同预览（左合同原文 / 右扣费项对照；无文本层时回退原件预览，无合同时明确提示，不展示任何模板内容） ──
+    // ── 合同原文对照弹窗（v2 简化形态：左原文/原图 · 右扣费明细，悬停定位） ──
+    // 数据与定位逻辑在 useContractCompare.js（cmp.*），这里只管开关与原件入口。
+    // 旧「平台费用对照 / AI 模板填充面板」已按 2026-09-21 评审结论移除。
     const contractPreviewUrl = ref("");
     const contractIsImage = ref(false);
-    const cmpData = ref(null);
-    const cmpLoading = ref(false);
-    const cmpRefreshing = ref(false);
-    async function loadComparison() {
-      const id = selectedTicketId.value;
-      if (!id) return;
-      cmpLoading.value = true;
-      cmpData.value = null;
-      try {
-        const d = await getJ("/api/contract/comparison/" + id);
-        if (!d.success) throw new Error(d.error || "加载失败");
-        cmpData.value = d.data;
-      } catch (e) {
-        cmpData.value = null;
-      }
-      cmpLoading.value = false;
-    }
-    async function refreshPlatform() {
-      const id = selectedTicketId.value;
-      if (!id) return;
-      cmpRefreshing.value = true;
-      try {
-        const d = await postJ("/api/contract/comparison/" + id + "/refresh");
-        if (!d.success) throw new Error(d.error || "刷新失败");
-        cmpData.value = d.data;
-        toast("平台数据已刷新", "", "success");
-      } catch (e) {
-        toast("刷新失败", e.message, "danger");
-      }
-      cmpRefreshing.value = false;
-    }
-    const FEE_CLAUSE_KEYWORDS = [
-      ["科目二", ["第二部分", "基础和场地驾驶培训"]],
-      ["科目三", ["第三部分", "道路驾驶培训"]],
-      ["综合服务费", ["综合服务费"]],
-      ["理论培训", ["理论培训费"]],
-      ["理论费", ["理论培训费"]],
-      ["违约金", ["违约金"]],
-      ["合同总额", ["培训费用合计", "培训服务费合计"]],
-    ];
-    // 标签 → 合同原文短语：直接在条款正文里检索费用原文（如"科目二实际操作培训费人民币 1200 元"），
-    // 不再假设费用一定写在"第二部分/第三部分"条款里。自上而下首个命中的标签类别生效。
-    const LABEL_TEXT_PHRASES = [
-      // 电子合同（东莞驾培平台）用「第二部分/第三部分」表述费用定义句，放最前优先命中；
-      // 旧纸质/旧电子合同无此短语，自动落回后面的原文短语，行为不变。
-      ["科目二实操培训费", ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费"]],
-      ["科目二学时单价", ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费"]],
-      ["科目二实操费", ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费"]],
-      ["科目三实操培训费", ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费"]],
-      ["科目三学时单价", ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费"]],
-      ["科目三实操费", ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费"]],
-      ["科目二补训", ["科目二补训费", "科目二补训"]],
-      ["科目三补训", ["科目三补训费", "科目三补训"]],
-      ["平台备案", ["补训", "接送服务"]],
-      ["接送", ["接送服务费用", "接送服务费", "接送"]],
-    ];
-    // 条款全文（标题+正文），去空白后比对，规避 PDF 提取时插入的空格
-    function clauseFullText(c) {
-      return String((c.title || "") + "\n" + (c.body || "")).replace(/\s+/g, "");
-    }
-    function clauseNosForLabel(label) {
-      const clauses = (cmpData.value && cmpData.value.clauses) || [];
-      if (!clauses.length) return [];
-      const text = String(label || "");
-      // ① 优先按标签对应的合同原文短语在条款正文中直接检索（最可靠）。
-      // 短语按优先级排序，首个命中任何条款的短语生效（避免低优短语把退费条款等误带进来）
-      for (const [k, phrases] of LABEL_TEXT_PHRASES) {
-        if (!text.includes(k)) continue;
-        for (const p of phrases) {
-          const np = p.replace(/\s+/g, "");
-          const nos = clauses
-            .filter(c => clauseFullText(c).includes(np))
-            .map(c => c.no)
-            .filter(Boolean);
-          if (nos.length) return nos;
-        }
-        break; // 该类标签所有短语均未命中原文时，再走条款标题关键词兜底
-      }
-      // ② 兜底：按条款标题/正文关键词（如"第二部分""基础和场地驾驶培训"）定位
-      const kws = [];
-      for (const [k, ws] of FEE_CLAUSE_KEYWORDS) if (text.includes(k)) kws.push(...ws);
-      if (!kws.length) return [];
-      return clauses
-        .filter(c => kws.some(w => (c.title || "").includes(w) || (c.body || "").includes(w)))
-        .map(c => c.no)
-        .filter(Boolean);
-    }
-    const GENERAL_CLAUSE_KEYWORDS = ["付款方式", "付款", "接送", "适应性训练", "补充培训", "违约", "退学", "退费", "争议"];
-    function reflowBody(body) {
-      const MARK = /^\s*(?:[（(][一二三四五六七八九十百零\d]{1,4}[）)]|[一二三四五六七八九十]{1,3}[、..．]|[0-9]{1,3}[、..．]|第[一二三四五六七八九十百零\d]+条|第[一二三四五]部分|附[则件表]|甲方[:：]|乙方[:：])/;
-      const lines = [];
-      for (const raw of String(body || "").split("\n")) {
-        const t = raw.trim();
-        if (!t) continue;
-        if (!lines.length || MARK.test(t)) lines.push(t);
-        else lines[lines.length - 1] += t;
-      }
-      return lines.join("\n");
-    }
-    const relevantClauses = Vue.computed(() => {
-      const data = cmpData.value;
-      const clauses = (data && data.clauses) || [];
-      if (!clauses.length) return [];
-      const tagMap = new Map();
-      const addTag = (no, label) => {
-        if (!no || !label) return;
-        if (!tagMap.has(no)) tagMap.set(no, []);
-        if (!tagMap.get(no).includes(label)) tagMap.get(no).push(label);
-      };
-      const link = (label, reason) => {
-        const ms = [...String(reason || "").matchAll(/第([一二三四五六七八九十百零\d]+)条/g)];
-        if (ms.length) { ms.forEach(m => addTag(m[1], label)); return; }
-        const fromReason = clauseNosForLabel(reason);
-        if (fromReason.length) { fromReason.forEach(no => addTag(no, label)); return; }
-        clauseNosForLabel(label).forEach(no => addTag(no, label));
-      };
-      (data.deductions || []).forEach(d => link(d.item, d.reason));
-      (data.items || []).forEach(it => link(it.label, ""));
-      (data.platform_extra || []).forEach(pe => link(pe.label, ""));
-      const generalNos = new Set(
-        clauses
-          .filter(c => c.no && GENERAL_CLAUSE_KEYWORDS.some(k => (c.title || "").includes(k) || (c.body || "").includes(k)))
-          .map(c => c.no)
-      );
-      const out = [];
-      clauses.forEach(c => {
-        if (!c.no) return;
-        const labels = tagMap.get(c.no);
-        if (labels && labels.length) { out.push({ ...c, body: reflowBody(c.body), labels }); return; }
-        if (generalNos.has(c.no)) out.push({ ...c, body: reflowBody(c.body), labels: [] });
-      });
-      if (out.length) return out;
-      return clauses.filter(c => c.no).map(c => ({ ...c, body: reflowBody(c.body), labels: [] }));
-    });
-    const cmpActive = ref({ nos: [], kws: [], locked: false });
-    function feeKeywordsOf(label) {
-      const t = String(label || "");
-      // 优先用合同原文短语做高亮（如"科目二实际操作培训费…学时单价…"整句命中；
-      // 电子合同的费用定义句是"第二部分基础和场地驾驶培训费…学时单价…"，两套命名并存覆盖）
-      if (t.includes("科目二实操培训费") || t.includes("科目二学时单价")) return ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费", "科目二"];
-      if (t.includes("科目二实操费")) return ["第二部分基础和场地驾驶培训费", "科目二实际操作培训费", "科目二实操培训费", "科目二实操费"];
-      if (t.includes("科目三实操培训费") || t.includes("科目三学时单价")) return ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费", "科目三"];
-      if (t.includes("科目三实操费")) return ["第三部分道路驾驶培训费", "科目三实际操作培训费", "科目三实操培训费", "科目三实操费"];
-      if (t.includes("科目二补训")) return ["科目二补训"];
-      if (t.includes("科目三补训")) return ["科目三补训"];
-      if (t.includes("平台备案")) return ["补训", "接送"];
-      if (t.includes("接送")) return ["接送"];
-      if (t.includes("科目二")) return ["第二部分", "科目二"];
-      if (t.includes("科目三")) return ["第三部分", "科目三"];
-      if (t.includes("综合服务费")) return ["综合服务费"];
-      if (t.includes("理论")) return ["理论培训费", "理论费"];
-      if (t.includes("违约金")) return ["违约金为"];
-      if (t.includes("合同总额")) return ["培训费用合计", "培训服务费合计", "培训服务费总额", "总金额"];
-      return [];
-    }
-    function clauseNosForItem(label, reason) {
-      let nos = [...String(reason || "").matchAll(/第([一二三四五六七八九十百零\d]+)条/g)].map(m => m[1]);
-      if (!nos.length) nos = clauseNosForLabel(reason);
-      if (!nos.length) nos = clauseNosForLabel(label);
-      return nos;
-    }
-    function escHtml(s) {
-      return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    }
-    function clauseHtml(cl) {
-      const body = String(cl.body || "");
-      const kws = cmpActive.value.nos.includes(cl.no) ? cmpActive.value.kws : [];
-      if (!kws.length) return escHtml(body);
-      // 按完整句（。；）切分后逐句比对（比对时去空白，PDF 跨行句可整句命中）；
-      // 不按 \n 切——PDF 换行会把"…折算⏎学时单价150.00元/学时"拦腰截断导致半句高亮
-      const parts = body.split(/(。|；)/);
-      const norm = s => String(s).replace(/\s+/g, "");
-      let html = "";
-      for (const p of parts) {
-        html += (p.trim() && kws.some(kw => norm(p).includes(norm(kw))))
-          ? `<mark class="clause-mark">${escHtml(p)}</mark>`
-          : escHtml(p);
-      }
-      return html;
-    }
-    function scrollToClause(no) {
-      if (!no) return;
-      nextTick(() => {
-        const el = document.querySelector(`.cmp-left .clause-block[data-clause="${no}"]`);
-        if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
-      });
-    }
-    function hoverClause(label, reason) {
-      const nos = clauseNosForItem(label, reason);
-      cmpActive.value = { nos, kws: feeKeywordsOf(label), locked: false };
-      scrollToClause(nos[0]);
-    }
-    function leaveClause() {
-      if (!cmpActive.value.locked) cmpActive.value = { nos: [], kws: [], locked: false };
-    }
-    function clickClause(label, reason) {
-      const nos = clauseNosForItem(label, reason);
-      cmpActive.value = { nos, kws: feeKeywordsOf(label), locked: true };
-      scrollToClause(nos[0]);
-    }
     function openContract() {
       if (!selectedTicketId.value) { toast("请先打开工单", "", "warning"); return; }
       if (cPath.value) {
@@ -801,10 +661,15 @@ try {
         contractPreviewUrl.value = "";
         contractIsImage.value = false;
       }
+      cmp.reset();
       contractModalOpen.value = true;
-      loadComparison();
     }
-    function closeContract() { contractModalOpen.value = false; contractPreviewUrl.value = ""; cmpData.value = null; }
+
+    function closeContract() {
+      contractModalOpen.value = false;
+      contractPreviewUrl.value = "";
+      cmp.reset();
+    }
 
     // ── 撤案弹窗 ──
     const withdrawModalOpen = Vue.ref(false);
@@ -926,13 +791,27 @@ try {
       // 设置（系统设置页：AI 大模型配置）
       cfg, cfgSaving, cfgMsg, cfgOk, loadCfg, saveCfg,
       LLM_PROVIDERS, providerSel, applyProvider, presetModels, modelSel, modelCustom,
-      testing, testResult, testLlm,
+      orModels, orLoading, orErr, orQuery, loadOpenRouterModels,
+      testing, testResult, testLlm, keyVisible,
+      // 设置自动保存（改动即写盘；失败态可点重试）
+      dirtyKeys,
+      mark,
+      retrySave,
+      saveText,
+      saveCls,
+      saveIcon,
+      saveRetryable,
+      // 设置页布局（左分区导航 / 折叠 / 搜索 / 滚动联动）与左导航徽章
+      layout,
+      setNavBadge,
       // 账号管理
       users, USER_ROLES, roleLabel,
-      // 历史 / 看板
-      hList, hTotal, hSearch, hLimit, hPage, hTotalPages, hLoading,
       // 共享盘状态
       smb,
+      // 云 OCR 多云配置（Phase 2）
+      cloudOcr,
+      // 历史 / 看板
+      hList, hTotal, hSearch, hLimit, hPage, hTotalPages, hLoading,
       statusFilter, schoolOptions, stats, chartDateStart, chartDateEnd, setChartPeriod, periodStat,
       durationStats, loadDurationStats, groupedHistory, toggleGroup,
       chartPeriod, masked, maskId, repeatOnly, rankMode, compare, topChannels, hPageButtons,
@@ -980,12 +859,8 @@ try {
       deleteModalOpen, deleteSaving, askDeleteSelected, askDeleteRow, confirmDeleteSelected,
       // 回复函
       replyPolished, replyEdited, replySaved, replyHtml, replyCollapsed, replyPolishing, fmt, buildLetter, syncLetter, aiPolishReply, generateReply,
-      // 合同预览（双栏对照）
-      contractPreviewUrl, contractIsImage, cmpData, cmpLoading, cmpRefreshing,
-      openContract, closeContract, refreshPlatform, relevantClauses,
-      cmpActive, clauseHtml, hoverClause, leaveClause, clickClause,
-      // 合同三栏预览（上传合同分析：原文 / 原件 / 扣费明细）
-      cp, contractText: cp.contractText,
+      // 合同原文对照弹窗（左原文/原图 · 右扣费明细，悬停定位）
+      contractPreviewUrl, contractIsImage, openContract, closeContract, cmp,
       // 撤案
       withdrawModalOpen, withdrawReason, askWithdraw, confirmWithdraw, askCancelWithdraw,
       // 标签

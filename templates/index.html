@@ -21,6 +21,13 @@
     --color-danger-strong:#B91C1C; --color-danger-bg:#FEF2F2; --color-danger-bg-strong:#FEE2E2;
     --color-text:#0F172A; --color-text-secondary:#475569; --color-text-disabled:#94A3B8;
     --color-border:#E2E8F0; --color-surface-50:#F8FAFC; --color-bg:#EEF3F8; --color-surface:#FFFFFF;
+    /* 以下 3 个令牌此前被 index.html 消费却从未定义（border 简写失效 / 背景文字回退），补为别名 */
+    --color-border-tertiary:#E2E8F0;
+    --color-background-primary:var(--color-surface);
+    --color-text-primary:var(--color-text);
+    /* 高对比警告文字（#D97706 on #FFFBEB 仅 3.9:1，不达 AA） */
+    --color-warning-strong:#B45309;
+    --color-success-strong:#15803D;  /* 徽章「可用」绿字：#F0FDF4 底上 5.3:1，达 AA */
     --font-sans:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
     --font-mono:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
     --shadow-sm:0 2px 8px rgba(31,35,41,.06);
@@ -84,7 +91,7 @@
   .user-table th{background:var(--color-surface-50);color:var(--color-text-secondary);font-weight:600;text-align:left;padding:10px 12px;border-bottom:1px solid var(--color-border);white-space:nowrap}
   .user-table td{padding:10px 12px;border-bottom:1px solid var(--color-border);vertical-align:middle}
   .user-table tr:last-child td{border-bottom:none}
-  .user-table .muted{color:var(--color-text-disabled);font-size:12px}
+  .user-table .muted{color:var(--color-text-secondary);font-size:12px}
   .user-table .user-actions{display:flex;gap:6px;flex-wrap:wrap}
   .user-table .btn-sm{padding:4px 10px;font-size:12px}
   .status-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
@@ -135,6 +142,131 @@
   .card-body{padding:16px}
   .panel{scroll-margin-top:16px}
   .panel + .panel{margin-top:16px}
+
+  /* ===== 系统设置页：吸顶页头 / 分区导航 / 双列网格 / 可折叠卡片 ===== */
+  /* 吸顶页头：标题 + 设置项搜索 + 自动保存状态（改动即写盘，无需手动点保存） */
+  .set-head{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:12px 0 10px;margin-bottom:14px;background:var(--color-bg);border-bottom:1px solid var(--color-border)}
+  .set-head .grow{flex:1;min-width:12px}
+  .set-q{width:232px;padding:7px 12px;font:400 12.5px/1.5 var(--font-sans);color:var(--color-text);
+    background:var(--color-surface);border:1.5px solid var(--color-border);border-radius:9px}
+  .set-q:focus{outline:none;border-color:var(--color-primary);box-shadow:0 0 0 3px rgba(30,64,175,.12)}
+  .save-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid transparent;
+    border-radius:999px;font:500 12px/1.5 var(--font-sans);background:var(--color-surface-50);
+    color:var(--color-text-secondary);white-space:nowrap;cursor:default}
+  .save-pill:disabled{opacity:1}
+  .save-pill.warn{background:var(--color-warning-50);color:var(--color-warning-strong)}
+  .save-pill.ok{background:var(--color-success-50);color:var(--color-success-strong)}
+  .save-pill.err{background:var(--color-danger-50);color:var(--color-danger-strong);cursor:pointer}
+  /* 布局：左分区导航（目录）+ 右双列内容。宽表格卡用 .span2 跨两列。 */
+  .set-wrap{display:grid;grid-template-columns:212px minmax(0,1fr);gap:20px;align-items:start;max-width:1440px}
+  .set-nav{position:sticky;top:74px;display:flex;flex-direction:column;gap:2px;padding:10px;
+    background:var(--color-surface);border:1px solid var(--color-border);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm)}
+  .set-nav .grp{font:600 10.5px/1 var(--font-sans);letter-spacing:1.2px;text-transform:uppercase;
+    color:var(--color-text-secondary);padding:12px 8px 6px}
+  .set-nav .grp:first-child{padding-top:4px}
+  .sn-item{display:flex;align-items:center;gap:9px;width:100%;padding:8px 9px;border:none;background:none;
+    border-radius:8px;cursor:pointer;text-align:left;font:500 13px/1.4 var(--font-sans);
+    color:var(--color-text-secondary);transition:background .15s,color .15s}
+  .sn-item:hover{background:var(--color-surface-50);color:var(--color-text)}
+  .sn-item.on{background:var(--color-primary-50);color:var(--color-primary);font-weight:600}
+  .sn-item:focus-visible{outline:2px solid var(--color-primary);outline-offset:-2px}
+  .sn-item .bi{font-size:14px;flex:none;opacity:.9}
+  .sn-item .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sn-item .st{flex:none;max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font:600 10.5px/1.6 var(--font-sans);padding:1px 6px;border-radius:999px;
+    background:var(--color-surface-50);color:var(--color-text-secondary)}
+  .sn-item .st.ok{background:var(--color-success-50);color:var(--color-success-strong)}
+  .sn-item .st.warn,.sn-item .st.dirty{background:var(--color-warning-50);color:var(--color-warning-strong)}
+  .sn-foot{margin-top:8px;padding-top:8px;border-top:1px solid var(--color-border)}
+  .sn-foot .btn{width:100%;justify-content:center}
+  /* 分区标题：网格之外，整行 */
+  .set-sec{display:flex;align-items:center;gap:10px;margin:22px 0 10px;
+    font:600 11.5px/1 var(--font-sans);letter-spacing:1.2px;color:var(--color-text-secondary)}
+  .set-sec:first-child{margin-top:0}
+  .set-sec::after{content:'';flex:1;height:1px;background:var(--color-border)}
+  /* 双列网格：卡片间距交给 gap，卡片自身不再有 margin-top */
+  .set-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:stretch}
+  .set-grid .card{display:flex;flex-direction:column;margin-top:0;scroll-margin-top:88px}
+  .set-grid .card>.card-body{flex:1}
+  .set-grid .span2{grid-column:span 2}
+  /* 折叠头：标题区是独立 button（刷新/新增按钮必须留在 button 外，不能非法嵌套） */
+  .card-header.foldable{padding:0;gap:0;flex-wrap:nowrap}
+  .card-header.foldable > .ch-h{flex:1;min-width:0;margin:0;font-size:inherit;font-weight:inherit}
+  .ch-toggle{width:100%;display:flex;align-items:center;gap:8px;padding:12px 16px;
+    border:none;background:none;cursor:pointer;text-align:left;font:600 14px/1.4 var(--font-sans);
+    color:var(--color-text);border-radius:var(--radius-lg) 0 0 var(--radius-lg);transition:background .15s}
+  .ch-toggle:hover{background:var(--color-surface-50)}
+  .ch-toggle:focus-visible{outline:2px solid var(--color-primary);outline-offset:-2px}
+  .ch-toggle .ch-title{flex:none}
+  /* 摘要：折叠态与展开态都显示（展开时它就是「这张卡当前是什么状态」的一句话） */
+  .ch-toggle .ch-sum{display:inline-flex;align-items:center;min-width:0;margin-left:auto;
+    font:400 12px/1.4 var(--font-sans);color:var(--color-text-secondary);
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ch-toggle .caret{flex:none;font-size:12px;color:var(--color-text-secondary);transition:transform .18s}
+  .ch-actions{display:flex;align-items:center;gap:8px;padding-right:16px;flex:none}
+  .card.panel.collapsed .card-header{border-bottom:none}
+  /* 未保存徽章：只在该卡有未落盘改动时出现（非交互元素，不得是 button） */
+  .savedot{flex:none;display:inline-flex;align-items:center;gap:4px;margin-left:8px;
+    font:500 11px/1.4 var(--font-sans);color:var(--color-warning-strong)}
+  .savedot::before{content:'';width:5px;height:5px;border-radius:50%;background:currentColor}
+  /* 展开/收起统一约定：收起时箭头指右，展开时指下 */
+  .ch-toggle[aria-expanded="false"] .caret,
+  .ocr-toggle[aria-expanded="false"] .caret{transform:rotate(-90deg)}
+  .ch-toggle[aria-expanded="true"] .caret,
+  .ocr-toggle[aria-expanded="true"] .caret{transform:rotate(0deg)}
+  /* 状态徽章 */
+  .chip{display:inline-flex;align-items:center;gap:4px;padding:1px 8px;border-radius:10px;
+    font:500 11px/1.6 var(--font-sans);white-space:nowrap}
+  .chip-on{background:var(--color-success-50);color:var(--color-success-strong)}
+  .chip-warn{background:var(--color-warning-50);color:var(--color-warning-strong)}
+  .chip-off,.chip-mute{background:var(--color-surface-50);color:var(--color-text-secondary)}
+  /* 只读展示字段（替代 disabled input，杜绝「看着能改其实不能改」） */
+  .ro-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 18px}
+  .ro-item{min-width:0}
+  .ro-k{font:500 12.5px/1.4 var(--font-sans);color:var(--color-text-secondary)}
+  .ro-val{margin-top:2px;font:500 13.5px/1.5 var(--font-sans);color:var(--color-text);word-break:break-all}
+  /* 整宽卡片内部的两列排布（共享盘：状态区 | 记录区） */
+  .smb-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:14px 24px;align-items:start}
+  /* 识别链路预览（只读） */
+  .chain-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 12px;margin-bottom:12px;
+    background:var(--color-surface-50);border:1px solid var(--color-border);border-radius:var(--radius);font-size:12.5px}
+  .chain-bar .k{color:var(--color-text-secondary);font-weight:500;flex:none}
+  .chain-bar .v{font-weight:500;color:var(--color-text)}
+  /* 云 OCR 厂商行 */
+  .ocr-row{border:1px solid var(--color-border);border-radius:var(--radius);margin-bottom:10px;overflow:hidden}
+  .ocr-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 12px}
+  .ocr-toggle{flex:1;min-width:150px;display:flex;align-items:center;gap:8px;padding:4px 2px;
+    border:none;background:none;cursor:pointer;text-align:left;font-family:var(--font-sans);
+    border-radius:var(--radius-sm)}
+  .ocr-toggle:hover{background:var(--color-surface-50)}
+  .ocr-toggle:focus-visible{outline:2px solid var(--color-primary);outline-offset:2px}
+  .ocr-toggle b{flex:none;font-size:13px;color:var(--color-text);white-space:nowrap}
+  .ocr-toggle .caret{flex:none;margin-left:auto;font-size:12px;color:var(--color-text-secondary);
+    transition:transform .18s}
+  .ocr-toggle .ocr-use{min-width:0;font-size:12px;color:var(--color-text-secondary);white-space:nowrap}
+  .ocr-enable{display:flex;align-items:center;gap:5px;flex:none;cursor:pointer;margin:0;
+    font-size:12px;color:var(--color-text-secondary)}
+  .ocr-enable input{width:15px;height:15px;cursor:pointer}
+  .ocr-body{padding:10px 12px 12px;border-top:1px solid var(--color-border)}
+  .ocr-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 16px}
+  /* 字段数为奇数时，末个字段占满整行 —— 消除「空半行」 */
+  .ocr-fields > div:last-child:nth-child(odd){grid-column:1 / -1}
+  /* 危险操作与常规操作之间的分隔 */
+  .user-table .user-actions .act-sep{width:1px;align-self:stretch;background:var(--color-border);margin:0 2px}
+  .status-dot.danger{background:var(--color-danger);box-shadow:0 0 0 3px rgba(220,38,38,.15)}
+  /* 窄屏退化：单列 + 导航横排换行 + 取消跨列 */
+  @media(max-width:1180px){
+    .set-wrap{grid-template-columns:1fr}
+    .set-nav{position:static;flex-direction:row;flex-wrap:wrap;align-items:center;padding:8px;gap:4px}
+    .set-nav .grp{display:none}
+    .sn-item{width:auto;flex:none}
+    .sn-foot{width:100%;margin-top:6px}
+    .set-grid{grid-template-columns:1fr}
+    .set-grid .span2{grid-column:span 1}
+    .ro-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .smb-grid{grid-template-columns:1fr}
+  }
 
   /* 新增投诉 · 悬浮操作栏（重置 / 查询三系统并建案） */
   .intake-wrap{max-width:1560px;width:100%;margin:0 auto}
@@ -839,107 +971,51 @@
   html.dark .role-viewer{background:rgba(148,163,184,.18);color:#CBD5E1}
   html.dark .sidebar-toggle.logout-toggle:hover{background:rgba(220,38,38,.12);color:#FCA5A5}
 
-  /* ===== 合同三栏预览组件（demo contract-upload-parity-v1.html 内联化） ===== */
-  .cp-panel .card-body.cp-body{padding:0;overflow:hidden}
-  .cp-tierbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:#f7f8fa;border-bottom:1px solid var(--color-border)}
-  .cp-tier-label{font-size:12px;color:var(--color-text-secondary)}
-  .cp-tier-name{font-size:14px;color:var(--color-primary)}
-  .cp-tier-sel{font-size:12px;padding:2px 6px;border:1px solid var(--color-border);border-radius:3px;background:#fff}
-  .cp-tier-evidence{font-size:11px;color:#7a8699;margin-left:auto;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .cp-conf{font-size:11px;padding:2px 8px;border-radius:8px;display:inline-flex;align-items:center;gap:4px}
-  .cp-conf.cp-conf-high{background:#e8f7ea;color:#16A34A;border:1px solid #b7e0bd}
-  .cp-conf.cp-conf-medium{background:#FFFBEB;color:#D97706;border:1px solid #f0d9a8}
-  .cp-conf.cp-conf-low{background:#F1F5F9;color:#64748B;border:1px solid #cbd5e1}
-  .cp-dot{display:inline-block;width:7px;height:7px;border-radius:50%}
-  .cp-dot-green{background:#16A34A}.cp-dot-amber{background:#D97706}.cp-dot-gray{background:#94A3B8}
-
-  .cp-summary{display:flex;gap:1px;background:var(--color-border);border-bottom:1px solid var(--color-border)}
-  .cp-sumcell{flex:1;background:#fff;padding:8px 12px;min-width:0}
-  .cp-sumcell .k{font-size:11px;color:var(--color-text-secondary);display:flex;align-items:center;gap:4px}
-  .cp-sumcell .v{font-size:17px;font-weight:600;margin-top:2px;font-family:var(--font-mono);font-variant-numeric:tabular-nums}
-  .cp-sumcell .v.cp-refund{color:#DC2626}
-
-  .cp-panes{display:grid;grid-template-columns:1fr 330px 280px;gap:1px;background:var(--color-border);min-height:480px;max-height:60vh}
-  .cp-pane{background:#fff;overflow:hidden;display:flex;flex-direction:column;min-width:0}
-  .cp-pane-h{position:sticky;top:0;background:#f7f8fa;border-bottom:1px solid var(--color-border);padding:6px 12px;font-size:12px;font-weight:600;color:var(--color-text-secondary);z-index:2;display:flex;justify-content:space-between;align-items:center}
-  .cp-hint-r{font-weight:400;font-size:11px;color:#9aa0a8}
-  .cp-fold-btn{font-size:11px;font-weight:400;color:var(--color-primary);cursor:pointer;user-select:none}
-  .cp-pane-body{overflow-y:auto;flex:1}
-
-  /* 左侧：原文 mark */
-  .cp-clause{padding:10px 14px;border-bottom:1px dashed #eceeef}
-  .cp-clause h4{font-size:12.5px;color:#444;margin-bottom:4px;font-weight:600}
-  .cp-clause p{font-size:12.5px;color:#333;text-align:justify;line-height:1.7;word-break:break-word}
-  .cp-clause-pg{float:right;font-size:10px;color:#bbb}
-  .cp-mark{background:#fff1a8;padding:0 1px;border-radius:2px}
-  .cp-mark.cp-hit{background:#ffd666;outline:2px solid #fa8c16;animation:cp-pulse 1s ease 2}
-  @keyframes cp-pulse{50%{outline-color:transparent}}
-
-  /* 中间：原件影像（骨架占位） */
-  .cp-page-card{margin:12px;border:1px solid var(--color-border);border-radius:4px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:14px;color:#555;font-size:11.5px;filter:grayscale(.3);transition:all .2s}
-  .cp-page-card .cp-ph{height:8px;background:#e9ebee;border-radius:2px;margin:7px 0}
-  .cp-page-card .cp-ph-w60{width:60%}.cp-page-card .cp-ph-w80{width:80%}.cp-page-card .cp-ph-w40{width:40%}
-  .cp-page-card .cp-pno{text-align:center;color:#999;font-size:10px;margin-top:10px}
-  .cp-page-card.cp-flash{outline:3px solid #fa8c16;animation:cp-pulse 1s ease 2}
-  .cp-pane-orig.cp-folded .cp-page-card{display:inline-block;width:44%;margin:6px;padding:6px;filter:grayscale(.5);opacity:.85}
-  .cp-pane-orig.cp-folded .cp-page-card .cp-ph{height:4px;margin:4px 0}
-  .cp-pane-orig.cp-folded .cp-page-card .cp-pno{margin-top:4px;font-size:9px}
-  .cp-cache-note{margin:10px 12px;font-size:11px;color:var(--color-text-secondary);background:#f7f8fa;border:1px dashed var(--color-border);border-radius:4px;padding:8px 10px}
-  .cp-cache-key{display:block;margin-top:4px;font-size:10px;color:#64748B}
-  .cp-cache-key code{font-family:var(--font-mono);font-size:10px;background:#fff;padding:1px 4px;border-radius:2px}
-
-  /* 右侧：扣费明细 */
-  .cp-grp-h{padding:6px 12px;font-size:11px;font-weight:700;background:#f7f8fa;border-bottom:1px solid var(--color-border);color:var(--color-text-secondary)}
-  .cp-grp-h.cp-grp-must{color:#DC2626}
-  .cp-grp-h.cp-grp-actual{color:var(--color-primary)}
-  .cp-grp-h.cp-grp-pen{color:#D97706}
-  .cp-ded{padding:8px 12px;border-bottom:1px solid #f0f1f2;cursor:pointer;display:flex;flex-direction:column;gap:2px;align-items:stretch;transition:background .15s}
-  .cp-ded:hover{background:#f2f6ff}
-  .cp-ded.cp-ded-active{background:#e7efff;box-shadow:inset 2px 0 0 var(--color-primary)}
-  .cp-ded.cp-ded-pending{opacity:.85}
-  .cp-ded-l{display:flex;align-items:center;gap:6px;min-width:0}
-  .cp-ded-nm{font-size:12.5px;color:var(--color-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .cp-ded-amt{font-weight:600;font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right}
-  .cp-ded-basis{display:block;font-size:11px;color:var(--color-text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .cp-ded-loc{font-size:11px;color:var(--color-primary);cursor:pointer;align-self:flex-end}
-  .cp-ded-loc.cp-ded-loc-no{color:#94A3B8;cursor:not-allowed}
-  .cp-tag{font-size:10px;border-radius:3px;padding:0 4px;margin-left:4px;white-space:nowrap;border:1px solid transparent}
-  .cp-tag.cp-tag-must{background:#fdeceb;color:#DC2626;border-color:#f5c4c2}
-  .cp-tag.cp-tag-actual{background:#eaf3ff;color:var(--color-primary);border-color:#c2d8f8}
-  .cp-tag.cp-tag-pen{background:#fdf3e0;color:#D97706;border-color:#f0d9a8}
-  .cp-tag.cp-tag-pending{background:#FEF3C7;color:#92400E;border-color:#FDE68A}
-  .cp-conf-mini{display:inline-flex;align-items:center}
-  .cp-legend{padding:8px 12px;font-size:11px;color:var(--color-text-secondary);border-top:1px solid var(--color-border);background:#fbfbfc}
-  /* 工单 10：多份合同分节（左栏）与份类型标签 */
-  .cp-section{margin-bottom:14px;padding-bottom:12px;border-bottom:1px dashed var(--color-border)}
-  .cp-section:last-child{margin-bottom:0;padding-bottom:0;border-bottom:none}
-  .cp-sec-head{display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap}
-  .cp-sec-tier{font-weight:600;font-size:12px;color:var(--color-text)}
-  .cp-sec-file{font-size:11px;color:var(--color-text-secondary);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .cp-sec-err{font-size:11px;color:var(--color-danger)}
-  .cp-tag.cp-tag-kind{background:#eaf3ff;color:var(--color-primary);border-color:#c2d8f8}
-  .cp-sumcell .v.cp-sum-n{font-size:14px;font-weight:600;color:var(--color-primary)}
-
-  /* 通用 */
-  .cp-empty{padding:24px;text-align:center;color:var(--color-text-secondary);font-size:12px}
-  .cp-warnings{margin:10px 14px;padding:10px 12px;background:#FEF3C7;border:1px solid #FDE68A;border-radius:4px;font-size:12px;color:#92400E}
-  .cp-warnings ul{margin:6px 0 0 18px;padding:0}
-  .cp-warnings li{margin-bottom:2px}
-
-  /* 暗色主题适配 */
-  html.dark .cp-tierbar{background:var(--color-surface-50);border-color:var(--color-border)}
-  html.dark .cp-sumcell{background:var(--color-surface)}
-  html.dark .cp-pane{background:var(--color-surface)}
-  html.dark .cp-pane-h{background:var(--color-surface-50);border-color:var(--color-border)}
-  html.dark .cp-page-card{background:var(--color-surface);border-color:var(--color-border)}
-  html.dark .cp-page-card .cp-ph{background:#334155}
-  html.dark .cp-mark{background:rgba(250,204,21,.25);color:inherit}
-  html.dark .cp-mark.cp-hit{background:rgba(250,204,21,.45)}
-  html.dark .cp-ded:hover{background:rgba(59,130,246,.08)}
-  html.dark .cp-ded.cp-ded-active{background:rgba(59,130,246,.15)}
-  html.dark .cp-grp-h{background:var(--color-surface-50)}
-  html.dark .cp-cache-note{background:var(--color-surface-50);border-color:var(--color-border)}
-  html.dark .cp-cache-key code{background:var(--color-surface-50)}
+  /* ===== 合同原文对照弹窗 v2（左原文/原图 · 右扣费明细，悬停定位） ===== */
+  .cc-body{display:grid;grid-template-columns:1fr 400px;gap:1px;background:var(--color-border)}
+  .cc-pane{background:var(--color-surface);min-width:0;display:flex;flex-direction:column;min-height:0}
+  .cc-pane-h{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--color-surface-50);border-bottom:1px solid var(--color-border);font-size:12px;color:var(--color-text-secondary)}
+  .cc-tab{font-size:12px;padding:3px 10px;border-radius:5px;border:1px solid var(--color-border);background:var(--color-surface);cursor:pointer;color:var(--color-text)}
+  .cc-tab.on{background:var(--color-primary);border-color:var(--color-primary);color:#fff}
+  .cc-pane-body{overflow-y:auto;flex:1;min-height:0}
+  .cc-section{padding:14px 18px;border-bottom:1px dashed #eceeef}
+  .cc-sec-head{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12.5px;flex-wrap:wrap}
+  .cc-kind-tag{font-size:10px;padding:1px 6px;border-radius:3px;background:#eaf3ff;color:var(--color-primary);border:1px solid #c2d8f8}
+  .cc-text{font-size:13px;line-height:2;color:var(--color-text);white-space:pre-wrap;word-break:break-word}
+  mark.cc-kw{background:#fff1a8;border-radius:2px;padding:0 1px}
+  mark.cc-kw.cc-hit{background:#ffd666;outline:2px solid #fa8c16}
+  .cc-page{margin:14px;border:1px solid var(--color-border);border-radius:6px;overflow:hidden;background:var(--color-surface)}
+  .cc-page-cap{font-size:11px;color:var(--color-text-secondary);padding:6px 10px;border-bottom:1px solid var(--color-border);background:var(--color-surface-50)}
+  .cc-sum{display:flex;border-bottom:1px solid var(--color-border);background:var(--color-surface)}
+  .cc-sum-cell{flex:1;padding:10px 12px;border-right:1px solid #f0f1f2;min-width:0}
+  .cc-sum-cell:last-child{border-right:none}
+  .cc-sum-cell .k{font-size:11px;color:var(--color-text-secondary)}
+  .cc-sum-cell .v{font-size:15px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums}
+  .cc-sum-cell .v.refund{color:#DC2626}
+  .cc-ded{padding:10px 14px;border-bottom:1px solid #f0f1f2;cursor:pointer;transition:background .15s}
+  .cc-ded:hover,.cc-ded.active{background:#f2f6ff;box-shadow:inset 2px 0 0 var(--color-primary)}
+  .cc-ded .l1{display:flex;align-items:center;gap:6px;min-width:0}
+  .cc-ded .nm{font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cc-ded .amt{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .cc-ded .basis{display:block;font-size:11px;color:var(--color-text-secondary);margin-top:3px;line-height:1.6}
+  .cc-ded .loc{font-size:11px;color:var(--color-primary);white-space:nowrap}
+  .cc-ded .loc.no{color:#94A3B8}
+  .cc-tag{font-size:10px;border-radius:3px;padding:0 4px;border:1px solid transparent;white-space:nowrap;flex-shrink:0}
+  .cc-tag.cc-tag-must{background:#fdeceb;color:#DC2626;border-color:#f5c4c2}
+  .cc-tag.cc-tag-actual{background:#eaf3ff;color:var(--color-primary);border-color:#c2d8f8}
+  .cc-tag.cc-tag-pen{background:#fdf3e0;color:#D97706;border-color:#f0d9a8}
+  .cc-tag.cc-tag-pend{background:#FEF3C7;color:#92400E;border-color:#FDE68A}
+  .cc-extra{margin:12px 14px;border:1px solid var(--color-border);border-radius:6px;overflow:hidden}
+  .cc-extra .h{background:var(--color-surface-50);font-size:12px;font-weight:600;padding:7px 12px;border-bottom:1px solid var(--color-border)}
+  .cc-extra .b{padding:8px 12px;font-size:12px;line-height:1.9;white-space:pre-wrap;color:var(--color-text)}
+  .cc-foot{padding:10px 14px;text-align:center;font-size:11px;color:var(--color-text-secondary)}
+  .cc-tier-chip{font-size:12px;font-weight:400;color:#8a6d1a;background:#fbf7ec;border:1px solid #e6d9b8;border-radius:6px;padding:2px 8px}
+  html.dark .cc-pane{background:var(--color-surface)}
+  html.dark .cc-pane-h{background:var(--color-surface-50)}
+  html.dark .cc-tab{background:var(--color-surface)}
+  html.dark .cc-ded:hover,html.dark .cc-ded.active{background:rgba(59,130,246,.12)}
+  html.dark mark.cc-kw{background:rgba(250,204,21,.25);color:inherit}
+  html.dark mark.cc-kw.cc-hit{background:rgba(250,204,21,.45)}
   </style>
 </head>
 <body>
@@ -1341,9 +1417,10 @@
           <div v-if="noMatchInfo" class="uc-bar uc-warn" id="secNoMatch" style="align-items:flex-start;flex-wrap:wrap">
             <i class="bi bi-person-x"></i>
             <span>
-              三系统均<b>未查到该学员档案</b>。
-              <template v-if="noMatchInfo.eligible">若该学员确认已在分校/分店报名缴费、只是尚未录入三系统，可转人工建案。</template>
-              <template v-else>部分系统查询超时/异常，暂不能判定“查无”，请先重新查询。</template>
+              <template v-if="noMatchInfo.via_name_search">内部系统与第三系统按姓名均未查到该学员，可转人工建案。</template>
+              <template v-else>三系统均<b>未查到该学员档案</b>。</template>
+              <template v-if="noMatchInfo.eligible && !noMatchInfo.via_name_search">若该学员确认已在分校/分店报名缴费、只是尚未录入三系统，可转人工建案。</template>
+              <template v-else-if="!noMatchInfo.eligible">部分系统查询超时/异常，暂不能判定“查无”，请先重新查询。</template>
             </span>
             <span style="margin-left:auto;display:flex;gap:8px;flex:none">
               <button v-if="noMatchInfo.eligible" class="btn btn-primary btn-sm" @click="openManualIntake()"><i class="bi bi-person-plus-fill"></i> 转人工建案</button>
@@ -1664,7 +1741,7 @@
                     <i v-else class="bi bi-cloud-download"></i> [[ cLoading ? '下载合同中…' : (aLoading ? 'AI分析中…' : '下载合同并分析') ]]
                   </button>
                   <button v-else-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" disabled :title="noEContractReason(qr)" style="cursor:not-allowed;opacity:.65"><i class="bi bi-dash-circle"></i> 无电子合同</button>
-                  <button v-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" @click="contractFileInput && contractFileInput.click()" :disabled="cLoading || aLoading"><i class="bi bi-upload"></i> 上传合同分析</button>
+                  <button v-if="!selectedTicket.intake_type" class="btn btn-secondary btn-sm" @click="contractFileInput && contractFileInput.click()" :disabled="cLoading || aLoading"><span v-if="cLoading" class="spinner-custom spinner-custom-sm me-1"></span><i v-else class="bi bi-upload"></i> [[ cLoading ? '上传中…' : '上传合同分析' ]]</button>
                   <input v-if="!selectedTicket.intake_type" ref="contractFileInput" type="file" multiple accept=".pdf,.png,.jpg,.jpeg" style="display:none" @change="ulContractAnalyze($event)">
                   <button class="btn btn-secondary btn-sm" @click="startManualFeeEntry()" :disabled="cLoading || aLoading"><i class="bi bi-pencil-square"></i> 手动录入费用</button>
                 </template>
@@ -1729,143 +1806,6 @@
                       <span style="margin-left:auto">应退 <span class="big" :class="{'refund-pos': ((ar.actual_paid||ar.paid_amount||0) - (ar.total_deduction||0)) > 0}">¥[[ money(Math.max((ar.actual_paid||ar.paid_amount||0) - (ar.total_deduction||0), 0)) ]]</span></span>
                     </div>
                   </template>
-                </div>
-              </div>
-
-              <!-- ②.5 三栏预览：合同上传分析后的原文 / 原件 / 扣费明细（demo parity v2） -->
-              <div class="card panel cp-panel" v-if="ar && ar.deductions_result">
-                <div class="card-header">
-                  <i class="bi bi-layout-three-columns text-primary"></i> 合同三栏预览
-                  <span class="badge badge-processing" style="margin-left:6px"><i class="bi bi-link-45deg"></i> 锚点已落库</span>
-                  <span style="flex:1"></span>
-                  <span class="hint" style="font-weight:400">点击右侧明细 → 原文 mark 高亮 + 原件页闪烁</span>
-                </div>
-                <div class="card-body cp-body">
-                  <!-- 档位 + 置信度 -->
-                  <div class="cp-tierbar">
-                    <span class="cp-tier-label">合同档位</span>
-                    <b class="cp-tier-name" :class="'cp-conf-' + cp.tierConfidence">[[ cp.tierDisplayName ]]</b>
-                    <span class="cp-conf" :class="'cp-conf-' + cp.tierConfidence">
-                      <span class="cp-dot" :class="cp.tierConfidence==='high' ? 'cp-dot-green' : (cp.tierConfidence==='medium' ? 'cp-dot-amber' : 'cp-dot-gray')"></span>
-                      [[ cp.tierConfidence==='high' ? '高' : (cp.tierConfidence==='medium' ? '中' : '低') ]]
-                      <template v-if="cp.tierConfidenceLabel">[[ cp.tierConfidenceLabel ]]</template>
-                    </span>
-                    <select v-if="cp.tierCandidates.length > 1" class="cp-tier-sel">
-                      <option v-for="(c, ci) in cp.tierCandidates" :key="'tierc-' + ci" :value="c.tier_id || c">
-                        [[ (c.display_name || c.tier_id || c) + (c.tier_id === cp.tierId ? ' · 已选' : '') ]]
-                      </option>
-                    </select>
-                    <span class="cp-tier-evidence" v-if="cp.tierEvidence">依据：[[ cp.tierEvidence ]]</span>
-                  </div>
-
-                  <!-- summary -->
-                  <div class="cp-summary">
-                    <div class="cp-sumcell"><div class="k">培训费总额</div><div class="v">¥[[ cp.money(cp.summary.totalFee) ]]</div></div>
-                    <div class="cp-sumcell"><div class="k">已缴金额</div><div class="v">¥[[ cp.money(cp.summary.paid) ]]</div></div>
-                    <div class="cp-sumcell"><div class="k">必扣项（[[ cp.groupedDeductions.find(g=>g.key==='must')?.items.length || 0 ]] 项）</div><div class="v">¥[[ cp.money(cp.summary.mustTotal) ]]</div></div>
-                    <div class="cp-sumcell"><div class="k">依实项（[[ cp.groupedDeductions.find(g=>g.key==='actual')?.items.length || 0 ]] 项）</div><div class="v">¥[[ cp.money(cp.summary.actualTotal) ]]</div></div>
-                    <div class="cp-sumcell"><div class="k">违约金</div><div class="v">¥[[ cp.money(cp.summary.penaltyTotal) ]]</div></div>
-                    <div class="cp-sumcell"><div class="k">应退金额</div><div class="v cp-refund">¥[[ cp.money(cp.summary.refund) ]]</div></div>
-                    <div class="cp-sumcell" v-if="cp.summary.tailDue > 0"><div class="k">应付尾款（冲抵）</div><div class="v" style="color:var(--color-text-secondary)">−¥[[ cp.money(cp.summary.tailDue) ]]</div></div>
-                    <div class="cp-sumcell" v-if="cp.summary.netRefund != null && cp.summary.tailDue > 0"><div class="k">实退（冲抵后）</div><div class="v cp-refund">¥[[ cp.money(cp.summary.netRefund) ]]</div></div>
-                    <div class="cp-sumcell" v-if="cp.contractKinds.length"><div class="k">合同份数</div><div class="v cp-sum-n">已识别 [[ cp.contractCount ]] 份</div></div>
-                  </div>
-
-                  <!-- 三栏 -->
-                  <div class="cp-panes">
-                    <!-- 左：结构化原文（多份合同分节展示） + anchor mark -->
-                    <div class="cp-pane cp-pane-left">
-                      <div class="cp-pane-h">
-                        <span>结构化原文</span>
-                        <span class="cp-hint-r">[[ cp.totalTextLength ? (cp.totalTextLength + ' 字') : '暂无文本层' ]]</span>
-                      </div>
-                      <div class="cp-pane-body" v-if="cp.contractSections.length">
-                        <div v-for="sec in cp.contractSections" :key="'sec-' + sec.index" class="cp-section">
-                          <div class="cp-sec-head">
-                            <span class="cp-tag" :class="sec.kind ? 'cp-tag-kind' : 'cp-tag-pending'">[[ sec.kind || '未识别' ]]</span>
-                            <span class="cp-sec-tier" v-if="sec.tierName">[[ sec.tierName ]]</span>
-                            <span class="cp-sec-file" v-if="sec.filename" :title="sec.filename">[[ sec.filename ]]</span>
-                            <span class="cp-sec-err" v-if="sec.error">提取失败：[[ sec.error ]]</span>
-                          </div>
-                          <template v-if="sec.clauses.length">
-                            <div v-for="(cl, cli) in sec.clauses" :key="'cl-' + sec.index + '-' + cli" class="cp-clause">
-                              <span class="cp-clause-pg" v-if="cl.no">第 [[ cl.no ]] 条</span>
-                              <h4 v-if="cl.no">[[ '第' + cl.no + '条　' + cl.title ]]</h4>
-                              <h4 v-else>[[ cl.title ]]</h4>
-                              <p v-html="cl.html"></p>
-                            </div>
-                          </template>
-                          <div v-else class="cp-empty">该份暂无文本层（text_source=[[ sec.textSource || '—' ]]）</div>
-                        </div>
-                      </div>
-                      <div v-else class="cp-empty">暂无合同原文（text_source=[[ cp.textSource || '—' ]]）</div>
-                    </div>
-
-                    <!-- 中：原件影像（骨架占位 + 闪烁） -->
-                    <div class="cp-pane cp-pane-orig" :class="{ 'cp-folded': cp.folded }">
-                      <div class="cp-pane-h">
-                        <span>原件影像</span>
-                        <span class="cp-fold-btn" @click="cp.toggleFolded()">[[ cp.folded ? '展开原件 ⇥' : '收起为缩略图 ⇤' ]]</span>
-                      </div>
-                      <div class="cp-pane-body">
-                        <div class="cp-page-card" v-for="n in 2" :key="'pg-' + n">
-                          <b>第 [[ n ]] 页</b>
-                          <div class="cp-ph cp-ph-w60"></div><div class="cp-ph cp-ph-w80"></div><div class="cp-ph"></div>
-                          <div class="cp-ph cp-ph-w80"></div><div class="cp-ph"></div><div class="cp-ph cp-ph-w40"></div>
-                          <div class="cp-ph cp-ph-w80"></div><div class="cp-ph"></div><div class="cp-ph cp-ph-w60"></div>
-                          <div class="cp-ph"></div><div class="cp-ph cp-ph-w80"></div><div class="cp-ph cp-ph-w40"></div>
-                          <div class="cp-pno">原件第 [[ n ]] 页 · 骨架占位</div>
-                        </div>
-                        <div class="cp-cache-note">
-                          <i class="bi bi-info-circle"></i>
-                          原件渲染：PDF/图片走浏览器端预览（零服务器产物）；扫描版按页生成缓存（按合同 sha256 整目录管理）。
-                          <span v-if="cp.cacheKey" class="cp-cache-key">cache_key: <code>[[ cp.cacheKey ]]</code></span>
-                          <span v-if="cp.extractionError" class="cp-cache-key" style="color:var(--color-danger)">提取警告：[[ cp.extractionError ]]</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <!-- 右：扣费明细（按 category 分组，点击定位） -->
-                    <div class="cp-pane cp-pane-ded">
-                      <div class="cp-pane-h">
-                        <span>扣费明细（点击定位）</span>
-                        <span v-if="cp.pendingCount > 0" class="cp-hint-r">[[ cp.pendingCount ]] 项待补</span>
-                      </div>
-                      <div class="cp-pane-body">
-                        <div v-for="grp in cp.groupedDeductions" :key="'g-' + grp.key" class="cp-grp">
-                          <div class="cp-grp-h" :class="'cp-grp-' + grp.key">[[ grp.label ]] · [[ grp.items.length ]] 项</div>
-                          <div v-for="(d, di) in grp.items" :key="d._key"
-                               class="cp-ded"
-                               :class="{ 'cp-ded-active': cp.activeItemKey === d._key, 'cp-ded-pending': d.pending || d._amount === 0 }"
-                               @click="cp.locate(d._key)">
-                            <div class="cp-ded-l">
-                              <span class="cp-ded-nm">[[ d.item || '未命名扣费' ]]</span>
-                              <span class="cp-tag" :class="'cp-tag-' + d._tagKey">[[ d._tagLabel ]]</span>
-                              <span v-if="d._kindLabel" class="cp-tag cp-tag-kind" :title="'所属合同份：' + d._kindLabel">[[ d._kindLabel ]]</span>
-                              <span v-if="d.confidence != null" class="cp-conf-mini" :title="'来源置信度 ' + (Math.round((Number(d.confidence)||0)*100)) + '%'">
-                                <span class="cp-dot" :class="(Number(d.confidence)>=0.8) ? 'cp-dot-green' : ((Number(d.confidence)>=0.5) ? 'cp-dot-amber' : 'cp-dot-gray')"></span>
-                              </span>
-                              <span v-if="d.pending || d._amount === 0" class="cp-tag cp-tag-pending">待补</span>
-                            </div>
-                            <span class="cp-ded-amt">¥[[ cp.money(d._amount) ]]</span>
-                            <span class="cp-ded-basis" v-if="d.basis">[[ d.basis ]]</span>
-                            <span class="cp-ded-loc" v-if="cp.canLocate(d._key)" title="可定位"><i class="bi bi-geo-alt-fill"></i></span>
-                            <span class="cp-ded-loc cp-ded-loc-no" v-else title="锚点缺失"><i class="bi bi-question-circle"></i></span>
-                          </div>
-                        </div>
-                        <div class="cp-legend">
-                          ● 必扣＝不论进度一律扣除<br>
-                          ● 依实＝按学时/已考科目<br>
-                          ● 违约金＝培训费×档位比例
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="cp-warnings" v-if="cp.warnings && cp.warnings.length">
-                    <i class="bi bi-exclamation-triangle-fill"></i>
-                    <ul><li v-for="(w, wi) in cp.warnings" :key="'w-' + wi">[[ w ]]</li></ul>
-                  </div>
                 </div>
               </div>
 
@@ -1968,10 +1908,10 @@
                     <div class="gate-item" :class="archiveGates.fee ? 'gate-ok':'gate-no'"><i class="bi" :class="archiveGates.fee ? 'bi-check-circle-fill':'bi-x-circle'"></i> 扣费明细表已确认（金额口径 · 不落盘）</div>
                   </div>
                   <div class="arch-row arch-foot">
-                    <p class="hint"><i class="bi bi-info-circle"></i> 回复函非必需；生成后按「[[ selectedTicket.complaint_date ]]_[[ selectedTicket.student_name ]]_投诉登记表 / 投诉回复函.docx」写入顶部学员归档路径</p>
+                    <p class="hint"><i class="bi bi-info-circle"></i> 回复函非必需；生成后按「[[ selectedTicket?.complaint_date ]]_[[ selectedTicket?.student_name ]]_投诉登记表 / 投诉回复函.docx」写入顶部学员归档路径</p>
                     <span style="flex:1"></span>
-                    <button class="btn btn-primary" :disabled="!canArchive || selectedTicket.archive_status==='已归档'" @click="doArchiveAndGoList()">
-                      <i class="bi bi-archive-fill"></i> [[ selectedTicket.archive_status==='已归档' ? '✓ 已归档' : '📦 归档到此路径' ]]
+                    <button class="btn btn-primary" :disabled="!canArchive || selectedTicket?.archive_status==='已归档'" @click="doArchiveAndGoList()">
+                      <i class="bi bi-archive-fill"></i> [[ selectedTicket?.archive_status==='已归档' ? '✓ 已归档' : '📦 归档到此路径' ]]
                     </button>
                   </div>
                   <p v-if="!canArchive" class="hint" style="margin-top:6px">未满足：[[ gateErrors.join('；') ]]</p>
@@ -2274,232 +2214,443 @@
       <!-- 视图五：系统设置（AI 大模型配置） -->
       <!-- ════════════════════════════════════════ -->
       <section v-if="view==='settings'" class="fade-in">
-        <div class="page-title">系统设置 <span class="hint" style="font-size:12px;font-weight:400">AI 大模型：投诉受理提取、合同识别分析、退费计算等 AI 功能均调用此处配置的模型</span></div>
+        <!-- 吸顶页头：分区导航（左）+ 内容（右）时仍能一眼看到「改了没有」 -->
+        <div class="set-head">
+          <h1 class="page-title" style="margin-bottom:0">系统设置
+            <span class="hint" style="font-size:12px;font-weight:400">AI 模型 · 合同识别 · 归档存储 · 账号权限</span>
+          </h1>
+          <span class="grow"></span>
+          <input class="set-q" type="search" aria-label="搜索设置项" autocomplete="off"
+                 :value="layout.query.value" @input="layout.setQuery($event.target.value)"
+                 placeholder="搜索设置项，如「密钥」「重挂」">
+          <button type="button" class="save-pill" :class="saveCls" :disabled="!saveRetryable" @click="retrySave()">
+            <i class="bi" :class="saveIcon"></i> [[ saveText ]]
+          </button>
+        </div>
 
-        <div style="max-width:780px">
-          <div class="card panel">
-            <div class="card-header"><i class="bi bi-cpu text-primary"></i> AI 大模型配置</div>
-            <div class="card-body">
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px">
-                <div>
-                  <label class="form-label" for="s_provider">服务商预设（自动填入地址和模型）</label>
-                  <select id="s_provider" class="form-control" v-model="providerSel" @change="applyProvider()">
-                    <option v-for="p in LLM_PROVIDERS" :key="p.key" :value="p.key">[[ p.name ]]</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="form-label" for="s_model_sel">模型名称</label>
-                  <select id="s_model_sel" class="form-control" v-if="providerSel !== 'custom' && !modelCustom" v-model="modelSel">
-                    <option v-for="m in presetModels" :key="m.id" :value="m.id">[[ m.id ]][[ m.max ? '　（最大输出 ' + m.max.toLocaleString() + '）' : '' ]]</option>
-                    <option value="__custom">其他模型（手动输入）…</option>
-                  </select>
-                  <input v-else id="s_model" class="form-control" v-model="cfg.llm.model" placeholder="输入模型名称，如 qwen-plus">
-                </div>
-                <div style="grid-column:1 / -1">
-                  <label class="form-label" for="s_url">API 地址</label>
-                  <input id="s_url" class="form-control" v-model="cfg.llm.api_url" placeholder="OpenAI 兼容地址，如 https://dashscope.aliyuncs.com/compatible-mode/v1">
-                  <span class="hint" style="font-size:11.5px">填到 /v1 即可，系统会自动补全 /chat/completions；也兼容直接填写完整接口地址</span>
-                </div>
-                <div style="grid-column:1 / -1">
-                  <label class="form-label" for="s_key">API Key</label>
-                  <input id="s_key" class="form-control" type="text" v-model="cfg.llm.api_key" placeholder="sk-..." autocomplete="off" spellcheck="false">
-                  <span class="hint" style="font-size:11.5px"><i class="bi bi-info-circle"></i> 在所选服务商开放平台控制台创建，当前保存的 Key 会原样显示</span>
-                </div>
-                <div>
-                  <label class="form-label" for="s_tokens">最大输出 Tokens</label>
-                  <input id="s_tokens" class="form-control" type="number" min="1" step="1" v-model.number="cfg.llm.max_tokens" placeholder="留空则用服务商默认值">
-                  <span class="hint" style="font-size:11.5px">选择服务商/模型时自动填入该模型的最大输出；保存后长期生效，无需每次填写</span>
-                </div>
-              </div>
-
-              <div v-if="testResult" class="mt-2 alert" :class="testResult.ok ? 'alert-success' : 'alert-danger'" style="font-size:12.5px;word-break:break-all">
-                <i class="bi" :class="testResult.ok ? 'bi-check-circle-fill' : 'bi-x-circle-fill'"></i>
-                [[ testResult.text ]]
-              </div>
-
-              <div style="display:flex;align-items:center;gap:10px;margin-top:16px">
-                <button class="btn btn-secondary btn-sm" :disabled="testing" @click="testLlm()">
-                  <i class="bi bi-lightning-charge"></i> [[ testing ? '测试中…' : '测试连接' ]]
-                </button>
-                <span class="hint" style="flex:1;font-size:11.5px">未单独配置的子功能（受理提取、合同文本识别）自动使用上述主模型</span>
-                <button class="btn btn-primary" :disabled="cfgSaving" @click="saveCfg()">
-                  <i class="bi bi-check2"></i> [[ cfgSaving ? '保存中…' : '保存配置' ]]
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- 我的资料（所有人可见，含改密入口） -->
-          <div class="card panel" style="margin-top:20px">
-            <div class="card-header"><i class="bi bi-person-circle text-primary"></i> 我的资料</div>
-            <div class="card-body">
-              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px 16px">
-                <div>
-                  <label class="form-label">用户名</label>
-                  <input class="form-control" :value="currentUser?.username || ''" disabled>
-                </div>
-                <div>
-                  <label class="form-label">真实姓名</label>
-                  <input class="form-control" :value="currentUser?.real_name || ''" disabled>
-                </div>
-          <!-- 共享盘（归档存储）状态 + 一键重挂（ISS-SMB-01） -->
-          <div class="card panel" style="margin-top:20px">
-            <div class="card-header" style="display:flex;align-items:center">
-              <span><i class="bi bi-hdd-network text-primary"></i> 共享盘（归档存储）</span>
-              <span style="margin-left:auto"></span>
-              <button class="btn btn-secondary btn-sm" :disabled="smb.smbLoading.value" @click="smb.loadSmbStatus()">
-                <i class="bi bi-arrow-clockwise"></i> [[ smb.smbLoading.value ? '检测中…' : '刷新状态' ]]
+        <div class="set-wrap">
+          <!-- 左：分区导航 = 目录。6 项一次列全，点即定位，状态徽章常显 -->
+          <nav class="set-nav" aria-label="设置分区导航">
+            <template v-for="g in layout.groups" :key="g.key">
+              <div class="grp" v-show="layout.groupVisible(g.key)">[[ g.label ]]</div>
+              <button v-for="c in layout.cardsOf(g.key)" :key="c.key" type="button" class="sn-item"
+                      v-show="layout.matches(c.key)" :class="{on: layout.active.value === c.key}"
+                      @click="layout.jumpTo(c.key)">
+                <i class="bi" :class="c.icon"></i>
+                <span class="nm">[[ c.navLabel ]]</span>
+                <span class="st" :class="setNavBadge(c.key).cls">[[ setNavBadge(c.key).text ]]</span>
+              </button>
+            </template>
+            <div class="sn-foot">
+              <button type="button" class="btn btn-secondary btn-sm"
+                      @click="layout.allCollapsed.value ? layout.expandAll() : layout.collapseAll()">
+                <i class="bi" :class="layout.allCollapsed.value ? 'bi-arrows-expand' : 'bi-arrows-collapse'"></i>
+                [[ layout.allCollapsed.value ? '全部展开' : '全部折叠' ]]
               </button>
             </div>
-            <div class="card-body">
-              <div v-if="smb.smbErr.value" class="hint" style="color:var(--color-danger);margin-bottom:10px">
-                <i class="bi bi-exclamation-triangle"></i> 读取共享盘状态失败：[[ smb.smbErr.value ]]
-              </div>
-              <div v-if="smb.smbStatus.value" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-                <span class="status-dot" :class="smb.smbHealthy.value ? 'on' : 'off'"></span>
-                <b>[[ smb.smbHealthy.value ? '共享盘正常' : '共享盘不可用' ]]</b>
-                <span class="hint">状态：[[ smb.smbReasonText.value ]]</span>
-                <span v-if="smb.smbStatus.value.smb_share && smb.smbStatus.value.smb_share.server" class="hint">
-                  · 映射 [[ smb.smbStatus.value.smb_share.server ]]/[[ smb.smbStatus.value.smb_share.share ]]
-                  → [[ smb.smbStatus.value.smb_share.mount_point ]]
-                </span>
-              </div>
-              <div class="hint" style="margin-top:8px;font-size:11.5px">
-                归档根目录：[[ (smb.smbStatus.value && smb.smbStatus.value.archive_root) || '—' ]]
-              </div>
-              <div v-if="smb.smbStatus.value && smb.smbStatus.value.events && smb.smbStatus.value.events.length"
-                   style="margin-top:10px">
-                <div class="hint" style="font-size:11.5px;margin-bottom:4px">
-                  <i class="bi bi-clock-history"></i> 最近掉载/重挂记录（新→旧）
-                </div>
-                <ul style="margin:0;padding-left:18px;font-size:11.5px;line-height:1.7;color:var(--color-text-secondary)">
-                  <li v-for="(ev, ei) in smb.smbStatus.value.events.slice(0, 6)" :key="ei">
-                    [[ ev.ts ]] · [[ ev.kind ]] · [[ ev.detail ]]（来源：[[ ev.source ]]）
-                  </li>
-                </ul>
-              </div>
-              <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
-                <button v-if="currentUser?.role !== 'viewer'" class="btn btn-primary btn-sm"
-                        :disabled="smb.smbRemounting.value" @click="smb.remountSmb()">
-                  <i class="bi bi-plug"></i> [[ smb.smbRemounting.value ? '重挂中…' : '一键重挂' ]]
-                </button>
-                <span class="hint" style="font-size:11.5px">
-                  共享盘掉载会导致归档失效；点「一键重挂」可立即尝试恢复挂载（归档失败弹窗的「重试」也会自动重挂）
-                </span>
-              </div>
-            </div>
-          </div>
+          </nav>
 
-                <div>
-                  <label class="form-label">角色</label>
-                  <input class="form-control" :value="currentUser?.role_label || ''" disabled>
-                </div>
-                <div v-if="currentUser?.phone" style="grid-column:1 / -1">
-                  <label class="form-label">手机号</label>
-                  <input class="form-control" :value="currentUser?.phone || ''" disabled>
+          <div>
+            <!-- ══ 分区一：AI 能力 ══ -->
+            <h2 class="set-sec" v-show="layout.groupVisible('ai')">AI 能力</h2>
+            <div class="set-grid">
+              <!-- 卡片一：AI 大模型配置 -->
+              <div class="card panel" id="card-llm" :class="{collapsed: layout.isCollapsed('llm')}" v-show="layout.matches('llm')">
+              <div class="card-header foldable">
+                <h3 class="ch-h">
+                  <button type="button" class="ch-toggle" :aria-expanded="layout.isOpen('llm')" aria-controls="set-body-llm" @click="layout.toggleCard('llm')">
+                    <i class="bi bi-cpu text-primary"></i>
+                    <span class="ch-title">AI 大模型配置</span>
+                    <span class="ch-sum">[[ cfg.llm.model || '未配置模型' ]]</span>
+                    <span class="savedot" v-if="dirtyKeys.llm">未保存</span>
+                    <i class="bi bi-chevron-down caret"></i>
+                  </button>
+                </h3>
+              </div>
+                <div class="card-body" id="set-body-llm" v-show="layout.isOpen('llm')">
+                  <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px">
+                    <div>
+                      <label class="form-label" for="s_provider">服务商预设（自动填入地址和模型）</label>
+                      <select id="s_provider" class="form-control" v-model="providerSel" @change="applyProvider(); mark('llm')">
+                        <option v-for="p in LLM_PROVIDERS" :key="p.key" :value="p.key">[[ p.name ]]</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label class="form-label" :for="(providerSel !== 'custom' && !modelCustom) ? 's_model_sel' : 's_model'">模型名称</label>
+                      <select id="s_model_sel" class="form-control" v-if="providerSel !== 'custom' && !modelCustom" v-model="modelSel" @change="mark('llm')">
+                        <option v-for="m in presetModels" :key="m.id" :value="m.id">[[ m.id ]][[ m.max ? '　（最大输出 ' + m.max.toLocaleString() + (m.vis ? '，支持视觉' : '') + '）' : (m.vis ? '　（支持视觉）' : '') ]]</option>
+                        <option value="__custom">其他模型（手动输入）…</option>
+                      </select>
+                      <input v-else id="s_model" class="form-control" v-model="cfg.llm.model" @input="mark('llm')" placeholder="输入模型名称，如 qwen-plus">
+                    </div>
+                    <div v-if="providerSel === 'openrouter'" style="grid-column:1 / -1">
+                      <label class="form-label" for="s_or_q">模型搜索（OpenRouter 提供 400+ 模型）</label>
+                      <div style="display:flex;gap:8px;align-items:center">
+                        <input id="s_or_q" class="form-control" v-model="orQuery" placeholder="搜索模型 id，如 gemini / deepseek / :free；留空则推荐型号置顶 + 全量清单">
+                        <button class="btn btn-secondary btn-sm" style="white-space:nowrap" :disabled="orLoading" @click="loadOpenRouterModels(true)">
+                          <i class="bi bi-arrow-clockwise"></i> [[ orLoading ? '加载中…' : '刷新清单' ]]
+                        </button>
+                      </div>
+                      <span v-if="orLoading" class="hint" style="font-size:12px">正在拉取 OpenRouter 官方模型清单…</span>
+                      <span v-else-if="orErr" class="hint" style="font-size:12px"><i class="bi bi-exclamation-triangle"></i> [[ orErr ]]</span>
+                      <span v-else-if="orModels" class="hint" style="font-size:12px">已加载 [[ orModels.length ]] 个在线模型（推荐型号置顶）</span>
+                      <span v-else class="hint" style="font-size:12px">模型名格式为「厂商/型号」，如 openai/gpt-6-astra；标「支持视觉」的才可用于合同图片识别</span>
+                    </div>
+                    <div style="grid-column:1 / -1">
+                      <label class="form-label" for="s_url">API 地址</label>
+                      <input id="s_url" class="form-control" v-model="cfg.llm.api_url" @input="mark('llm')" placeholder="OpenAI 兼容地址，如 https://dashscope.aliyuncs.com/compatible-mode/v1">
+                      <span class="hint" style="font-size:12px">填到 /v1 即可，系统会自动补全 /chat/completions；也兼容直接填写完整接口地址</span>
+                    </div>
+                    <div style="grid-column:1 / -1">
+                      <label class="form-label" for="s_key">API Key</label>
+                      <div style="display:flex;gap:8px;align-items:center">
+                        <input id="s_key" class="form-control" :type="keyVisible ? 'text' : 'password'" v-model="cfg.llm.api_key" @input="mark('llm')" placeholder="sk-..." autocomplete="off" spellcheck="false">
+                        <button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap" @click="keyVisible = !keyVisible">
+                          <i class="bi" :class="keyVisible ? 'bi-eye-slash' : 'bi-eye'"></i> [[ keyVisible ? '隐藏' : '显示' ]]
+                        </button>
+                      </div>
+                      <span class="hint" style="font-size:12px"><i class="bi bi-info-circle"></i> 在所选服务商开放平台控制台创建；默认打码显示，点「显示」可核对</span>
+                    </div>
+                    <div>
+                      <label class="form-label" for="s_tokens">最大输出 Tokens</label>
+                      <input id="s_tokens" class="form-control" type="number" min="1" step="1" v-model.number="cfg.llm.max_tokens" @input="mark('llm')" placeholder="留空则用服务商默认值">
+                      <span class="hint" style="font-size:12px">选择服务商/模型时自动填入该模型的最大输出；保存后长期生效</span>
+                    </div>
+                  </div>
+
+                  <div v-if="testResult" class="mt-2 alert" :class="testResult.ok ? 'alert-success' : 'alert-danger'" style="font-size:12.5px;word-break:break-all">
+                    <i class="bi" :class="testResult.ok ? 'bi-check-circle-fill' : 'bi-x-circle-fill'"></i>
+                    [[ testResult.text ]]
+                  </div>
+
+                  <div style="display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap">
+                    <button class="btn btn-secondary btn-sm" :disabled="testing" @click="testLlm()">
+                      <i class="bi bi-lightning-charge"></i> [[ testing ? '测试中…' : '测试大模型连接' ]]
+                    </button>
+                    <span class="hint" style="flex:1;min-width:200px;font-size:12px">未单独配置的子功能（受理提取、合同文本识别）自动使用上述主模型</span>
+                  </div>
                 </div>
               </div>
-              <div v-if="users.profileErr.value" style="color:var(--color-danger);font-size:12px;margin-top:8px">[[ users.profileErr.value ]]</div>
-              <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
-                <button class="btn btn-secondary" @click="users.openMyPwd()"><i class="bi bi-key"></i> 修改密码</button>
-                <span class="hint" style="font-size:11.5px;color:var(--color-text-secondary)">修改密码后当前 session 立即失效，需要重新登录</span>
-              </div>
-            </div>
-          </div>
 
-          <!-- 用户管理（仅 admin 可见） -->
-          <div v-if="users.isAdmin.value" class="card panel" style="margin-top:20px">
-            <div class="card-header" style="display:flex;align-items:center">
-              <span><i class="bi bi-people text-primary"></i> 用户管理</span>
-              <span style="margin-left:auto"></span>
-              <button class="btn btn-primary btn-sm" @click="users.openCreate()"><i class="bi bi-plus-lg"></i> 新增用户</button>
-            </div>
-            <div class="card-body" style="padding:0">
-              <table class="user-table">
-                <thead>
-                  <tr>
-                    <th>用户名</th>
-                    <th>真实姓名</th>
-                    <th>角色</th>
-                    <th>手机号</th>
-                    <th>状态</th>
-                    <th>最后登录</th>
-                    <th style="width:240px">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="u in users.list.value" :key="u.id">
-                    <td>[[ u.username ]]</td>
-                    <td>[[ u.real_name ]]</td>
-                    <td><span class="role-badge" :class="'role-' + u.role">[[ u.role_label ]]</span></td>
-                    <td>[[ u.phone || '-' ]]</td>
-                    <td>
-                      <span class="status-dot" :class="u.status === '启用' ? 'on' : 'off'"></span>
-                      [[ u.status ]]
-                    </td>
-                    <td class="muted">[[ u.last_login_at ? u.last_login_at.slice(0,16).replace('T',' ') : '从未' ]]</td>
-                    <td class="user-actions">
-                      <button class="btn btn-secondary btn-sm" @click="users.openEdit(u)">编辑</button>
-                      <button class="btn btn-secondary btn-sm" @click="users.openReset(u)">重置密码</button>
-                      <button class="btn btn-secondary btn-sm" :class="u.status === '启用' ? 'danger' : 'primary'" :disabled="u.id === currentUser?.id" @click="users.toggleStatus(u)">[[ u.status === '启用' ? '停用' : '启用' ]]</button>
-                    </td>
-                  </tr>
-                  <tr v-if="!users.list.value.length && !users.loading.value">
-                    <td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-disabled)">暂无用户</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- 历史处理人 → 账号 别名映射（仅 admin 可见） -->
-          <div v-if="users.isAdmin.value" class="card panel" style="margin-top:20px">
-            <div class="card-header" style="display:flex;align-items:center">
-              <span><i class="bi bi-link-45deg text-primary"></i> 历史处理人映射</span>
-              <span style="margin-left:10px;font-size:12px;color:var(--color-text-secondary)">把旧工单里的姓名（如「李老师」）映射到当前系统账号。映射后会自动回写所有未关联工单。</span>
-              <span style="margin-left:auto"></span>
-              <button class="btn btn-primary btn-sm" @click="users.openAliasCreate()"><i class="bi bi-plus-lg"></i> 新增映射</button>
-            </div>
-            <div class="card-body" style="padding:0">
-              <!-- 未映射的历史处理人（待办） -->
-              <div v-if="users.unmapped.value.length" style="padding:14px 16px;background:var(--color-warning-50,#FFFBEB);border-bottom:1px solid var(--color-border)">
-                <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">
-                  <i class="bi bi-exclamation-triangle text-warning"></i>
-                  还有 <b>[[ users.unmapped.value.length ]]</b> 个历史处理人未关联：
-                </div>
-                <div style="display:flex;flex-wrap:wrap;gap:6px">
-                  <button v-for="u in users.unmapped.value" :key="u.old_name" class="btn btn-secondary btn-sm" @click="users.openAliasFromUnmapped(u)">
-                    「[[ u.old_name ]]」· <span class="muted">[[ u.cnt ]] 条工单</span>
-                    <i class="bi bi-arrow-right" style="margin-left:6px"></i>
-                    <span style="color:var(--color-primary)">绑定账号</span>
+              <!-- 卡片二：云 OCR 多云配置 -->
+              <div class="card panel" id="card-ocr" :class="{collapsed: layout.isCollapsed('ocr')}" v-show="layout.matches('ocr')">
+              <div class="card-header foldable">
+                <h3 class="ch-h">
+                  <button type="button" class="ch-toggle" :aria-expanded="layout.isOpen('ocr')" aria-controls="set-body-ocr" @click="layout.toggleCard('ocr')">
+                    <i class="bi bi-cloud-arrow-down text-primary"></i>
+                    <span class="ch-title">云 OCR（合同图片识别）</span>
+                    <span class="ch-sum">[[ cloudOcr.ocrSummary.value ]]</span>
+                    <span class="savedot" v-if="dirtyKeys.ocr">未保存</span>
+                    <i class="bi bi-chevron-down caret"></i>
+                  </button>
+                </h3>
+                <div class="ch-actions">
+                  <button class="btn btn-secondary btn-sm" :disabled="cloudOcr.loading.value" @click="cloudOcr.loadUsage()">
+                    <i class="bi bi-arrow-clockwise"></i> [[ cloudOcr.loading.value ? '读取中…' : '刷新用量' ]]
                   </button>
                 </div>
               </div>
+                <div class="card-body" id="set-body-ocr" v-show="layout.isOpen('ocr')">
+                  <div class="chain-bar">
+                    <span class="k"><i class="bi bi-signpost-split"></i> 当前识别链路</span>
+                    <span class="v">[[ cloudOcr.chainText.value ]]</span>
+                  </div>
+                  <p class="hint" style="margin:0 0 12px;font-size:12px">
+                    按顺序依次尝试，只有可用（已启用 + 密钥齐 + 额度未用尽）的才会被走到；四家都不可用才回退本机识别。
+                  </p>
 
-              <!-- 已映射的列表 -->
-              <table class="user-table">
-                <thead>
-                  <tr>
-                    <th>历史名称</th>
-                    <th>关联账号</th>
-                    <th>创建时间</th>
-                    <th style="width:140px">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="a in users.aliases.value" :key="a.id">
-                    <td><b>「[[ a.old_name ]]」</b></td>
-                    <td>[[ a.user_real_name || '?' ]] <span class="muted">(@[[ a.username ]])</span></td>
-                    <td class="muted">[[ a.created_at ? a.created_at.slice(0,16).replace('T',' ') : '' ]]</td>
-                    <td>
-                      <button class="btn btn-secondary btn-sm danger" @click="users.deleteAliasRow(a)">删除</button>
-                    </td>
-                  </tr>
-                  <tr v-if="!users.aliases.value.length && !users.aliasLoading.value">
-                    <td colspan="4" style="text-align:center;padding:24px;color:var(--color-text-disabled)">暂无映射</td>
-                  </tr>
-                </tbody>
-              </table>
+                  <div v-if="cloudOcr.errMsg.value" class="hint" style="color:var(--color-danger);margin-bottom:10px;font-size:12px">
+                    <i class="bi bi-exclamation-triangle"></i> 读取用量失败：[[ cloudOcr.errMsg.value ]]
+                  </div>
+
+                  <div v-for="(p, idx) in cloudOcr.providers.value" :key="p.key" class="ocr-row">
+                    <div class="ocr-head">
+                      <button type="button" class="ocr-toggle"
+                              :aria-expanded="cloudOcr.expanded.value === p.key" :aria-controls="'ocr-body-' + p.key"
+                              @click="cloudOcr.toggle(p.key)">
+                        <b>[[ idx + 1 ]]. [[ p.label ]]</b>
+                        <span class="chip" :class="cloudOcr.providerState(p.key).cls">[[ cloudOcr.providerState(p.key).text ]]</span>
+                        <span v-if="cloudOcr.firstReadyKey.value === p.key" class="chip chip-on"><i class="bi bi-star-fill"></i> 首选</span>
+                        <span v-if="cloudOcr.usageOf(p.key)" class="ocr-use">
+                          本月 [[ cloudOcr.usageOf(p.key).used ]]<span v-if="cloudOcr.usageOf(p.key).quota">/[[ cloudOcr.usageOf(p.key).quota ]]</span> 次
+                        </span>
+                        <i class="bi bi-chevron-down caret"></i>
+                      </button>
+                      <label class="ocr-enable" @click.stop>
+                        <input type="checkbox" v-model="cfg.cloud_ocr.providers[p.key].enabled" @change="mark('ocr')"> 启用
+                      </label>
+                      <button class="btn btn-secondary btn-sm" :disabled="idx === 0" title="提高优先级" @click="cloudOcr.move(p.key, -1); mark('ocr')">上移</button>
+                      <button class="btn btn-secondary btn-sm" :disabled="idx === cloudOcr.providers.value.length - 1" title="降低优先级" @click="cloudOcr.move(p.key, 1); mark('ocr')">下移</button>
+                    </div>
+
+                    <div class="ocr-body" :id="'ocr-body-' + p.key" v-show="cloudOcr.expanded.value === p.key">
+                      <span class="hint" style="font-size:12px;display:block;margin-bottom:8px">[[ p.hint ]]</span>
+                      <div class="ocr-fields">
+                        <div v-for="f in p.fields" :key="f.name">
+                          <label class="form-label" :for="'ocr-' + p.key + '-' + f.name">[[ f.label ]]</label>
+                          <input class="form-control" :id="'ocr-' + p.key + '-' + f.name"
+                                 :type="f.secret ? 'password' : 'text'"
+                                 v-model="cfg.cloud_ocr.providers[p.key][f.name]"
+                                 @input="mark('ocr')"
+                                 :placeholder="f.placeholder || ''"
+                                 autocomplete="off" spellcheck="false">
+                        </div>
+                      </div>
+                      <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap">
+                        <button class="btn btn-secondary btn-sm" :disabled="cloudOcr.testing.value === p.key"
+                                @click="cloudOcr.testProvider(p.key)">
+                          <i class="bi bi-lightning-charge"></i> [[ cloudOcr.testing.value === p.key ? '测试中…' : '测试连接' ]]
+                        </button>
+                        <span v-if="cloudOcr.testResult.value[p.key]" class="hint" style="font-size:12px"
+                              :style="cloudOcr.testResult.value[p.key].ok ? {color:'var(--color-success)'} : {color:'var(--color-danger)'}">
+                          [[ cloudOcr.testResult.value[p.key].text ]]
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="hint" style="font-size:12px;margin-top:10px">
+                    <i class="bi bi-info-circle"></i> 各厂商免费额度按月重置、不结转；此处显示的是本机台账（用于上限保护），并非厂商实时账单。
+                    密钥保存在服务器本地，页面只回显卡「尾 4 位」；「测试连接」会消耗 1 次额度。
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ══ 分区二：存储与归档 ══ -->
+            <h2 class="set-sec" v-show="layout.groupVisible('store')">存储与归档</h2>
+            <div class="set-grid">
+              <!-- 卡片三：共享盘（归档存储）状态 + 一键重挂（ISS-SMB-01） -->
+              <div class="card panel span2" id="card-smb" :class="{collapsed: layout.isCollapsed('smb')}" v-show="layout.matches('smb')">
+              <div class="card-header foldable">
+                <h3 class="ch-h">
+                  <button type="button" class="ch-toggle" :aria-expanded="layout.isOpen('smb')" aria-controls="set-body-smb" @click="layout.toggleCard('smb')">
+                    <i class="bi bi-hdd-network text-primary"></i>
+                    <span class="ch-title">共享盘（归档存储）</span>
+                    <span class="ch-sum">
+                      <span class="status-dot" :class="smb.smbHealthy.value ? 'on' : 'danger'"></span>
+                      [[ smb.smbStatus.value ? (smb.smbHealthy.value ? '正常' : '不可用') : '状态未知' ]]
+                    </span>
+                    <i class="bi bi-chevron-down caret"></i>
+                  </button>
+                </h3>
+                <div class="ch-actions">
+                  <button class="btn btn-secondary btn-sm" :disabled="smb.smbLoading.value" @click="smb.loadSmbStatus()">
+                    <i class="bi bi-arrow-clockwise"></i> [[ smb.smbLoading.value ? '检测中…' : '刷新状态' ]]
+                  </button>
+                </div>
+              </div>
+                <div class="card-body" id="set-body-smb" v-show="layout.isOpen('smb')">
+                  <div v-if="smb.smbErr.value" class="hint" style="color:var(--color-danger);margin-bottom:10px;font-size:12px">
+                    <i class="bi bi-exclamation-triangle"></i> 读取共享盘状态失败：[[ smb.smbErr.value ]]
+                  </div>
+                  <div class="smb-grid">
+                    <div>
+                      <div v-if="smb.smbStatus.value" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                        <span class="status-dot" :class="smb.smbHealthy.value ? 'on' : 'danger'"></span>
+                        <b :style="smb.smbHealthy.value ? {color:'var(--color-success)'} : {color:'var(--color-danger)'}">[[ smb.smbHealthy.value ? '共享盘正常' : '共享盘不可用' ]]</b>
+                        <span class="hint" style="font-size:12px">原因：[[ smb.smbReasonText.value ]]</span>
+                      </div>
+                      <!-- 配置信息与状态结论分开展示，避免「映射 …」被读成状态的一部分 -->
+                      <div v-if="smb.smbStatus.value && smb.smbStatus.value.smb_share && smb.smbStatus.value.smb_share.server"
+                           class="hint" style="margin-top:8px;font-size:12px">
+                        映射配置：<span class="mono">[[ smb.smbStatus.value.smb_share.server ]]/[[ smb.smbStatus.value.smb_share.share ]] → [[ smb.smbStatus.value.smb_share.mount_point ]]</span>
+                      </div>
+                      <div class="hint" style="margin-top:8px;font-size:12px">
+                        归档根目录：<span class="mono">[[ (smb.smbStatus.value && smb.smbStatus.value.archive_root) || '—' ]]</span>
+                      </div>
+                      <!-- 自愈守卫状态（ISS-SMB-10）：区分「正在重试」与「已熔断暂停、不会再自动恢复」 -->
+                      <div v-if="smb.smbGuardNote.value" class="hint"
+                           style="margin-top:8px;font-size:12px;color:var(--color-warning-strong)">
+                        <i class="bi bi-shield-exclamation"></i> [[ smb.smbGuardNote.value ]]
+                      </div>
+                      <div style="display:flex;align-items:center;gap:10px;margin-top:14px;flex-wrap:wrap">
+                        <button v-if="currentUser?.role !== 'viewer'" class="btn btn-primary btn-sm"
+                                :disabled="!smb.smbCanRemount.value" @click="smb.remountSmb()">
+                          <i class="bi bi-plug"></i>
+                          [[ smb.smbRemounting.value ? '重挂中…'
+                             : (smb.smbCooldown.value > 0 ? '请稍候 ' + smb.smbCooldown.value + 's' : '一键重挂') ]]
+                        </button>
+                        <span class="hint" style="flex:1;min-width:200px;font-size:12px">
+                          共享盘掉载会导致归档失效；点「一键重挂」可立即尝试恢复挂载（归档失败弹窗的「重试」也会自动重挂）。
+                          为避免堆积连接窗口，两次人工重挂需间隔 30 秒。
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <div v-if="smb.smbStatus.value && smb.smbStatus.value.events && smb.smbStatus.value.events.length">
+                        <div class="hint" style="font-size:12px;margin-bottom:4px">
+                          <i class="bi bi-clock-history"></i> 最近掉载/重挂记录（新→旧）
+                        </div>
+                        <ul style="margin:0;padding-left:18px;font-size:12px;line-height:1.7;color:var(--color-text-secondary)">
+                          <li v-for="(ev, ei) in smb.smbStatus.value.events.slice(0, 6)" :key="ei">
+                            [[ ev.ts ]] · [[ ev.kind ]] · [[ ev.detail ]]（来源：[[ ev.source ]]）
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ══ 分区三：账号与权限 ══ -->
+            <h2 class="set-sec" v-show="layout.groupVisible('account')">账号与权限</h2>
+            <div class="set-grid">
+              <!-- 卡片四：我的资料（所有人可见，含改密入口） -->
+              <div class="card panel span2" id="card-profile" :class="{collapsed: layout.isCollapsed('profile')}" v-show="layout.matches('profile')">
+              <div class="card-header foldable">
+                <h3 class="ch-h">
+                  <button type="button" class="ch-toggle" :aria-expanded="layout.isOpen('profile')" aria-controls="set-body-profile" @click="layout.toggleCard('profile')">
+                    <i class="bi bi-person-circle text-primary"></i>
+                    <span class="ch-title">我的资料</span>
+                    <span class="ch-sum">[[ currentUser?.username || '—' ]] · [[ currentUser?.role_label || '—' ]]</span>
+                    <i class="bi bi-chevron-down caret"></i>
+                  </button>
+                </h3>
+              </div>
+                <div class="card-body" id="set-body-profile" v-show="layout.isOpen('profile')">
+                  <div style="display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap">
+                    <div class="ro-grid" style="flex:1;min-width:420px">
+                      <div class="ro-item">
+                        <div class="ro-k">用户名</div>
+                        <div class="ro-val">[[ currentUser?.username || '—' ]]</div>
+                      </div>
+                      <div class="ro-item">
+                        <div class="ro-k">真实姓名</div>
+                        <div class="ro-val">[[ currentUser?.real_name || '—' ]]</div>
+                      </div>
+                      <div class="ro-item">
+                        <div class="ro-k">角色</div>
+                        <div class="ro-val">[[ currentUser?.role_label || '—' ]]</div>
+                      </div>
+                      <div class="ro-item">
+                        <div class="ro-k">手机号</div>
+                        <div class="ro-val mono">[[ currentUser?.phone ? maskPhone(currentUser.phone) : '—' ]]</div>
+                      </div>
+                    </div>
+                    <button class="btn btn-secondary" @click="users.openMyPwd()"><i class="bi bi-key"></i> 修改密码</button>
+                  </div>
+                  <div v-if="users.profileErr.value" style="color:var(--color-danger);font-size:12px;margin-top:8px">[[ users.profileErr.value ]]</div>
+                  <div class="hint" style="font-size:12px;color:var(--color-text-secondary);margin-top:10px">修改密码后当前 session 立即失效，需要重新登录</div>
+                </div>
+              </div>
+
+              <!-- 卡片五：用户管理（仅 admin 可见） -->
+              <div v-if="users.isAdmin.value" class="card panel span2" id="card-users" :class="{collapsed: layout.isCollapsed('users')}" v-show="layout.matches('users')">
+              <div class="card-header foldable">
+                <h3 class="ch-h">
+                  <button type="button" class="ch-toggle" :aria-expanded="layout.isOpen('users')" aria-controls="set-body-users" @click="layout.toggleCard('users')">
+                    <i class="bi bi-people text-primary"></i>
+                    <span class="ch-title">用户管理</span>
+                    <span class="ch-sum">[[ users.list.value.length ]] 个账号</span>
+                    <i class="bi bi-chevron-down caret"></i>
+                  </button>
+                </h3>
+                <div class="ch-actions">
+                  <button class="btn btn-primary btn-sm" @click="users.openCreate()"><i class="bi bi-plus-lg"></i> 新增用户</button>
+                </div>
+              </div>
+                <div class="card-body" id="set-body-users" v-show="layout.isOpen('users')" style="padding:0">
+                  <table class="user-table">
+                    <thead>
+                      <tr>
+                        <th>用户名</th>
+                        <th>真实姓名</th>
+                        <th>角色</th>
+                        <th>手机号</th>
+                        <th>状态</th>
+                        <th>最后登录</th>
+                        <th style="width:240px">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="u in users.list.value" :key="u.id">
+                        <td>[[ u.username ]]</td>
+                        <td>[[ u.real_name ]]</td>
+                        <td><span class="role-badge" :class="'role-' + u.role">[[ u.role_label ]]</span></td>
+                        <td class="mono">[[ maskPhone(u.phone) ]]</td>
+                        <td>
+                          <span class="status-dot" :class="u.status === '启用' ? 'on' : 'off'"></span>
+                          [[ u.status ]]
+                        </td>
+                        <td class="muted">[[ u.last_login_at ? u.last_login_at.slice(0,16).replace('T',' ') : '从未' ]]</td>
+                        <td class="user-actions">
+                          <button class="btn btn-secondary btn-sm" @click="users.openEdit(u)">编辑</button>
+                          <button class="btn btn-secondary btn-sm" @click="users.openReset(u)">重置密码</button>
+                          <span class="act-sep"></span>
+                          <button class="btn btn-secondary btn-sm" :class="u.status === '启用' ? 'danger' : 'primary'" :disabled="u.id === currentUser?.id" @click="users.toggleStatus(u)">[[ u.status === '启用' ? '停用' : '启用' ]]</button>
+                        </td>
+                      </tr>
+                      <tr v-if="!users.list.value.length && !users.loading.value">
+                        <td colspan="7" style="text-align:center;padding:24px;color:var(--color-text-secondary)">暂无用户</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- 卡片六：历史处理人 → 账号 别名映射（仅 admin 可见） -->
+              <div v-if="users.isAdmin.value" class="card panel span2" id="card-alias" :class="{collapsed: layout.isCollapsed('alias')}" v-show="layout.matches('alias')">
+              <div class="card-header foldable">
+                <h3 class="ch-h">
+                  <button type="button" class="ch-toggle" :aria-expanded="layout.isOpen('alias')" aria-controls="set-body-alias" @click="layout.toggleCard('alias')">
+                    <i class="bi bi-link-45deg text-primary"></i>
+                    <span class="ch-title">历史处理人映射</span>
+                    <span class="ch-sum" v-if="users.unmapped.value.length">[[ users.unmapped.value.length ]] 个待绑定</span>
+                    <span class="ch-sum" v-else>已全部关联</span>
+                    <i class="bi bi-chevron-down caret"></i>
+                  </button>
+                </h3>
+                <div class="ch-actions">
+                  <button class="btn btn-primary btn-sm" @click="users.openAliasCreate()"><i class="bi bi-plus-lg"></i> 新增映射</button>
+                </div>
+              </div>
+                <div class="card-body" id="set-body-alias" v-show="layout.isOpen('alias')" style="padding:0">
+                  <p class="hint" style="margin:0;padding:12px 16px;font-size:12px;border-bottom:1px solid var(--color-border)">
+                    把旧工单里的姓名（如「李老师」）映射到当前系统账号。映射后会自动回写所有未关联工单。
+                  </p>
+                  <!-- 未映射的历史处理人（待办） -->
+                  <div v-if="users.unmapped.value.length" style="padding:14px 16px;background:var(--color-warning-50);border-bottom:1px solid var(--color-border)">
+                    <div style="font-size:12px;color:var(--color-text-secondary);margin-bottom:8px">
+                      <i class="bi bi-exclamation-triangle" style="color:var(--color-warning-strong)"></i>
+                      还有 <b>[[ users.unmapped.value.length ]]</b> 个历史处理人未关联：
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:6px">
+                      <button v-for="u in users.unmapped.value" :key="u.old_name" class="btn btn-secondary btn-sm" @click="users.openAliasFromUnmapped(u)">
+                        「[[ u.old_name ]]」· <span class="muted">[[ u.cnt ]] 条工单</span>
+                        <i class="bi bi-arrow-right" style="margin-left:6px"></i>
+                        <span style="color:var(--color-primary)">绑定账号</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- 已映射的列表 -->
+                  <table class="user-table">
+                    <thead>
+                      <tr>
+                        <th>历史名称</th>
+                        <th>关联账号</th>
+                        <th>创建时间</th>
+                        <th style="width:140px">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="a in users.aliases.value" :key="a.id">
+                        <td><b>「[[ a.old_name ]]」</b></td>
+                        <td>[[ a.user_real_name || '?' ]] <span class="muted">(@[[ a.username ]])</span></td>
+                        <td class="muted">[[ a.created_at ? a.created_at.slice(0,16).replace('T',' ') : '' ]]</td>
+                        <td>
+                          <button class="btn btn-secondary btn-sm danger" @click="users.deleteAliasRow(a)">删除</button>
+                        </td>
+                      </tr>
+                      <tr v-if="!users.aliases.value.length && !users.aliasLoading.value">
+                        <td colspan="4" style="text-align:center;padding:24px;color:var(--color-text-secondary)">暂无映射</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -2507,94 +2658,85 @@
     </main>
     </div><!-- /app-shell -->
 
-    <!-- ═══ 合同预览弹窗（左合同原文 / 右扣费项对照，仅展示接口真实数据） ═══ -->
+    <!-- ═══ 合同原文对照弹窗 v2（左原文/原图 · 右扣费明细，悬停定位） ═══ -->
     <div class="modal-overlay" v-cloak v-if="contractModalOpen" @click.self="closeContract()">
       <div class="modal-content contract-modal">
         <div class="m-head">
           <span style="display:flex;flex-direction:column;gap:2px;font-weight:700">
             <span><i class="bi bi-eye"></i> 合同原文对照</span>
-            <span class="hint" style="font-weight:400">左侧仅展示扣费项/平台费用对应的合同条款，点击右侧条目可定位高亮</span>
+            <span class="hint" style="font-weight:400">悬停右侧明细 → 左侧原文自动定位高亮；「原图」可对照合同原件二次核对金额</span>
           </span>
           <span style="flex:1"></span>
-          <button class="btn btn-secondary btn-sm" :disabled="cmpRefreshing" @click="refreshPlatform()"><i class="bi bi-arrow-clockwise"></i> [[ cmpRefreshing ? '刷新中…' : '刷新平台数据' ]]</button>
+          <span v-if="cmp.tierInfo.name" class="cc-tier-chip">识别版本：[[ cmp.tierInfo.name ]]<template v-if="cmp.tierInfo.conf"> · [[ cmp.tierInfo.conf ]]</template></span>
           <button class="m-close" @click="closeContract()" aria-label="关闭"><i class="bi bi-x-lg"></i></button>
         </div>
-        <div class="m-body contract-body">
-          <div class="cmp-left">
-            <template v-if="cPath && contractPreviewUrl">
-              <template v-if="cmpData && !cmpLoading && cmpData.text_available && relevantClauses.length">
-                <div class="cmp-code" style="margin-top:12px"><i class="bi bi-section"></i> 相关合同条款</div>
-                <div v-if="cmpData.contract_code" class="cmp-code"><i class="bi bi-upc-scan"></i> 合同编号：[[ cmpData.contract_code ]]</div>
-                <div v-if="cmpData.profile" class="clause-block">
-                  <div class="clause-title"><i class="bi bi-file-earmark-text"></i> 合同关键信息</div>
-                  <div class="clause-info-grid">
-                    <template v-for="(f, fi) in (cmpData.profile.contract || [])" :key="'cf-' + fi">
-                      <div class="clause-info-k">[[ f.label ]]</div>
-                      <div class="clause-info-v">[[ f.value || '—' ]]</div>
-                    </template>
+        <div class="m-body contract-body cc-body">
+          <!-- 左栏：原文 / 原图 -->
+          <div class="cc-pane">
+            <div class="cc-pane-h">
+              <button class="cc-tab" :class="{on: cmp.cmpTab==='text'}" @click="cmp.setTab('text')">原文（提取文本）</button>
+              <button class="cc-tab" :class="{on: cmp.cmpTab==='orig'}" @click="cmp.setTab('orig')">原图（合同原件）</button>
+              <span class="hint" style="margin-left:auto">黄色 = 金额关键词 · 蓝色行 = 当前悬停项</span>
+            </div>
+            <div class="cc-pane-body" v-show="cmp.cmpTab==='text'">
+              <template v-if="cmp.hasText">
+                <div v-for="(sec, si) in cmp.textSections" :key="'ccsec-' + si" class="cc-section">
+                  <div v-if="sec.title || sec.kind" class="cc-sec-head">
+                    <b>[[ sec.title ]]</b>
+                    <span v-if="sec.kind" class="cc-kind-tag">[[ sec.kind ]]</span>
                   </div>
-                </div>
-                <div v-for="(cl, ci) in relevantClauses" :key="ci" class="clause-block" :data-clause="cl.no">
-                  <div class="clause-title">[[ cl.no ? '第' + cl.no + '条　' : '' ]][[ cl.title ]]</div>
-                  <div class="clause-text" v-html="clauseHtml(cl)"></div>
+                  <div class="cc-text" v-html="sec.html"></div>
                 </div>
               </template>
-              <template v-else>
-                <img v-if="contractIsImage" :src="contractPreviewUrl" style="max-width:100%;margin:0 auto;display:block">
-                <iframe v-else :src="contractPreviewUrl" style="width:100%;height:100%;min-height:60vh;border:none"></iframe>
-                <div v-if="cmpData && cmpData.text_error" class="hint" style="margin-top:8px"><i class="bi bi-info-circle"></i> [[ cmpData.text_error ]]，已回退原件预览</div>
+              <div v-else class="hint" style="padding:24px;text-align:center">
+                <i class="bi bi-file-earmark-x" style="font-size:30px;display:block;margin-bottom:10px;color:#94A3B8"></i>
+                未提取到合同文本<template v-if="cmp.textError">（[[ cmp.textError ]]）</template>。<br>
+                请切「原图」直接核对原件。
+              </div>
+            </div>
+            <div class="cc-pane-body" v-show="cmp.cmpTab==='orig'">
+              <template v-if="cmp.hasOrig">
+                <div v-for="(p, pi) in cmp.origPages" :key="'ccpg-' + pi" class="cc-page">
+                  <div v-if="p.cap" class="cc-page-cap">[[ p.cap ]]</div>
+                  <img v-if="p.type==='img'" :src="p.url" loading="lazy" style="max-width:100%;display:block;margin:0 auto">
+                  <iframe v-else :src="p.url" style="width:100%;height:62vh;border:none;display:block"></iframe>
+                </div>
               </template>
-            </template>
-            <div v-else class="hint" style="margin:auto;padding:32px 24px;text-align:center">
-              <i class="bi bi-file-earmark-x" style="font-size:32px;display:block;margin-bottom:10px;color:#94A3B8"></i>
-              <b>该学员暂无合同原件</b><br>
-              <template v-if="qr && noEContractReason(qr)">[[ noEContractReason(qr) ]]。<br></template>
-              如有纸质合同，请先「上传合同分析」导入后再预览；或用「手动录入费用」录入扣费明细。
+              <div v-else class="hint" style="padding:24px;text-align:center">
+                <i class="bi bi-file-earmark-x" style="font-size:30px;display:block;margin-bottom:10px;color:#94A3B8"></i>
+                暂无合同原件<br>请先「上传合同分析」或「下载合同并分析」。
+              </div>
             </div>
           </div>
-          <div class="cmp-right">
-            <div v-if="cmpLoading" class="hint" style="text-align:center;padding:24px"><i class="bi bi-hourglass-split"></i> 对照数据加载中…</div>
-            <div v-else-if="!cmpData" class="hint" style="text-align:center;padding:24px;color:var(--color-danger)"><i class="bi bi-exclamation-triangle"></i> 对照数据加载失败</div>
-            <template v-else>
-              <div class="cmp-card">
-                <h5><i class="bi bi-list-check"></i> 合同扣费明细</h5>
-                <div v-if="!(cmpData.deductions && cmpData.deductions.length)" class="hint" style="padding:6px 0">暂无扣费明细</div>
-                <div v-for="(d, di) in (cmpData.deductions || [])" :key="'d-' + di" class="cmp-item"
-                     @click="clickClause(d.item, d.reason)" @mouseenter="hoverClause(d.item, d.reason)" @mouseleave="leaveClause()"
-                     title="悬浮定位合同条款，点击锁定">
-                  <div style="display:flex;align-items:center;gap:6px">
-                    <b style="font-size:13px">[[ d.item ]]</b>
-                    <b style="margin-left:auto;font-size:13px;color:var(--color-danger)">[[ money(d.amount) ]] 元</b>
-                  </div>
-                  <div v-if="d.reason" class="cmp-ded-reason">[[ d.reason ]]</div>
+          <!-- 右栏：金额汇总 + 扣费明细对照 -->
+          <div class="cc-pane cc-right">
+            <div class="cc-sum">
+              <div v-for="(c, ci) in cmp.summaryCells" :key="'ccsum-' + ci" class="cc-sum-cell">
+                <div class="k">[[ c.k ]]</div>
+                <div class="v" :class="{refund: c.refund}">[[ c.v ]]</div>
+              </div>
+            </div>
+            <div class="cc-pane-body">
+              <div v-if="!cmp.dedRows.length" class="hint" style="padding:16px;text-align:center">暂无扣费明细——请先完成「上传合同分析 / 下载合同并分析」，或「手动录入费用」。</div>
+              <div v-for="d in cmp.dedRows" :key="'ccded-' + d.idx" class="cc-ded"
+                   :class="{active: cmp.activeIdx===d.idx || cmp.pinnedIdx===d.idx}"
+                   @mouseenter="cmp.hoverRow(d.idx)" @mouseleave="cmp.leaveRow(d.idx)" @click="cmp.pinRow(d.idx)"
+                   :title="d.canLocate ? '悬停定位原文，点击钉住' : '无原文锚点（识别降级），不可定位'">
+                <div class="l1">
+                  <span class="nm">[[ d.item ]]</span>
+                  <span class="cc-tag" :class="'cc-tag-' + d.tagKey">[[ d.category ]]</span>
+                  <span v-if="d.pending" class="cc-tag cc-tag-pend">待核</span>
+                  <span class="amt">¥[[ cmp.money(d.amount) ]]</span>
                 </div>
+                <span v-if="d.basis" class="basis">[[ d.basis ]]</span>
+                <span class="loc" :class="{no: !d.canLocate}"><i class="bi" :class="d.canLocate ? 'bi-geo-alt-fill' : 'bi-ban'"></i> [[ d.canLocate ? '原文定位' : '无锚点' ]]</span>
               </div>
-              <div class="cmp-card">
-                <h5><i class="bi bi-bank2"></i> 平台备案费用（东莞驾培）</h5>
-                <div v-if="!cmpData.platform_available" class="hint" style="padding:6px 0"><i class="bi bi-info-circle"></i> 未查询到驾培平台费用数据，请先执行三系统查询或点击刷新</div>
-                <template v-else>
-                  <div v-for="(it, ii) in (cmpData.items || [])" :key="'it-' + ii"
-                       class="cmp-item" :class="{diff: it.status === 'diff', only: it.status === 'platform_only' || it.status === 'contract_only'}"
-                       @click="clickClause(it.label, '')" @mouseenter="hoverClause(it.label, '')" @mouseleave="leaveClause()"
-                       title="悬浮定位合同条款，点击锁定">
-                    <div style="display:flex;align-items:center;gap:6px">
-                      <b style="font-size:13px">[[ it.label ]]</b>
-                      <span v-if="it.status === 'diff'" class="cmp-badge diff">不一致</span>
-                      <span v-else-if="it.status === 'platform_only'" class="cmp-badge only">仅平台</span>
-                      <span v-else-if="it.status === 'contract_only'" class="cmp-badge only">仅合同</span>
-                    </div>
-                    <div class="cmp-val">平台：[[ it.platform === null || it.platform === '' ? '—' : it.platform ]]<span style="margin:0 8px;color:var(--color-border)">|</span>合同：[[ it.contract === null || it.contract === '' ? '—' : it.contract ]]</div>
-                  </div>
-                  <template v-if="cmpData.platform_extra && cmpData.platform_extra.length">
-                    <div class="hint" style="margin-top:8px;font-weight:700">平台备案、合同未载明：</div>
-                    <div v-for="(pe, pi) in cmpData.platform_extra" :key="'pe-' + pi" style="font-size:12px;padding:3px 6px">
-                      [[ pe.label ]]：[[ pe.amount ]]
-                    </div>
-                  </template>
-                </template>
+              <div v-if="cmp.aiSummary" class="cc-extra">
+                <div class="h"><i class="bi bi-robot"></i> AI 摘要（额外约定等）</div>
+                <div class="b">[[ cmp.aiSummary ]]</div>
               </div>
-              <div class="hint" style="margin-top:auto;text-align:center"><i class="bi bi-shield-check"></i> 核对无误后请关闭本窗口并确认明细</div>
-            </template>
+              <div class="cc-foot"><i class="bi bi-shield-check"></i> 核对无误后请关闭本窗口并在 ② 确认明细</div>
+            </div>
           </div>
         </div>
         <div class="m-foot">
@@ -3055,15 +3197,15 @@
       "auth": "/static/js/utils/auth.js?v=3",
       "helpers": "/static/js/utils/helpers.js?v=16",
       "useToast": "/static/js/composables/useToast.js?v=16",
-      "useComplaint": "/static/js/composables/useComplaint.js?v=22",
+      "useComplaint": "/static/js/composables/useComplaint.js?v=23",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=22",
-      "useContractPreview": "/static/js/composables/useContractPreview.js?v=3",
-      "useSettings": "/static/js/composables/useSettings.js?v=27",
+      "useContractCompare": "/static/js/composables/useContractCompare.js?v=1",
+      "useSettings": "/static/js/composables/useSettings.js?v=32",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
       "useWorkbench": "/static/js/composables/useWorkbench.js?v=40"
     }
   }
   </script>
-  <script type="module" src="/static/js/app.js?v=55"></script>
+  <script type="module" src="/static/js/app.js?v=63"></script>
 </body>
 </html>

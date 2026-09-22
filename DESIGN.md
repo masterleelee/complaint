@@ -40,11 +40,16 @@
 |------|-----|----------|------|
 | Success | `#16A34A` | `--color-success` | 已完成/成功/通过 |
 | Success 50 | `#F0FDF4` | `--color-success-50` | 成功浅底 |
+| Success 强 | `#15803D` | `--color-success-strong` | 成功浅底上的**文字**（`#F0FDF4` 上 ≈5.3:1，达 AA） |
 | Warning | `#D97706` | `--color-warning` | 待处理/警示/更正 |
 | Warning 50 | `#FFFBEB` | `--color-warning-50` | 警示浅底 |
+| Warning 强 | `#B45309` | `--color-warning-strong` | 警示浅底上的**文字**（`#FFFBEB` 上 ≈4.6:1；`#D97706` 仅 3.9:1 不达 AA） |
 | Danger | `#DC2626` | `--color-danger` | 失败/过期/风险/删除 |
 | Danger 50 | `#FEF2F2` | `--color-danger-50` | 危险浅底 |
 | Info | `#2563EB` | `--color-info` | 信息提示（复用主色） |
+
+> 规律：**浅底 + 深字**。`--color-*-50` 只做底色，其上的文字必须用 `--color-*-strong`，
+> 直接用 `--color-*` 会在浅底上跌到 3.9:1（2026-09-22 设置页对比度审计实测）。
 
 ### Neutral（中性灰阶 —— 以 slate 为基底）
 | 角色 | HEX | CSS 变量 | 用途 |
@@ -103,6 +108,7 @@
 .btn:disabled { opacity: .5; cursor: not-allowed; }
 .btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
+
 .btn-primary   { background: var(--color-primary); color:#fff; border-color: var(--color-primary); }
 .btn-primary:hover:not(:disabled){ background: var(--color-primary-dark); box-shadow: var(--shadow-md); }
 .btn-secondary { background:#fff; color: var(--color-text); border-color: var(--color-border); }
@@ -114,6 +120,71 @@
 .btn-sm { padding: 6px 12px; font-size: 12px; }
 .btn-lg { padding: 10px 22px; font-size: 14px; }
 ```
+
+### Disclosure Header（披露头 —— 折叠/展开卡片与展开区块）
+
+> **这是 `.btn` 体系之外已登记的合法按钮形态之一**（另一个见下节「Save Pill」），
+> 2026-09-22 设置页改造引入并在此登记。
+>
+> 与 `.btn` 的区别与本因：`.ch-toggle` / `.ocr-toggle` **不是动作按钮**，而是「整行可点的
+> 披露头」——占满标题行、无边框、无圆角、无底色、无 padding 语汇，标题文字即按钮文字。
+> 强行套 `.btn` 会引入 border + radius + `8px 16px` padding，与卡片头布局直接打架，
+> 正是本文件「禁止两套按钮体系冲突」要防的情况。故显式登记为例外，而非绕过规则。
+
+```css
+/* 卡片披露头：必须是真的 <button>，带 aria-expanded + aria-controls */
+.ch-toggle { width:100%; display:flex; align-items:center; gap:8px; padding:12px 16px;
+             border:none; background:none; cursor:pointer; text-align:left;
+             font:600 14px/1.4 var(--font-sans); color: var(--color-text); }
+.ch-toggle:hover { background: var(--color-surface-50); }
+.ch-toggle:focus-visible { outline:2px solid var(--color-primary); outline-offset:-2px; }
+
+/* 区块内披露头（如云 OCR 单家厂商展开） */
+.ocr-toggle { flex:1; min-width:200px; display:flex; align-items:center; gap:8px;
+              padding:4px 2px; border:none; background:none; cursor:pointer; text-align:left;
+              font-family: var(--font-sans); border-radius: var(--radius-sm); }
+.ocr-toggle:focus-visible { outline:2px solid var(--color-primary); outline-offset:2px; }
+```
+
+**硬约束**（护栏 `tests/test_settings_page_guards.py` 逐条断言）：
+
+1. 必须是 `<button type="button">` —— `<div>` 会让键盘/读屏用户失去入口，而鼠标仍点得动，肉眼看不出来；
+2. 必须带 `aria-expanded`，且 `aria-controls` 指向真实存在的面板 id；
+3. 同级的刷新/新增按钮必须留在**披露头之外**（`<button>` 内嵌 `<button>` 是非法 HTML）；
+4. 折叠起止用 `[aria-expanded="false"] .caret{transform:rotate(-90deg)}` 统一表达；
+5. 折叠态必须在标题后显示**摘要**（`.ch-sum`）——折叠 ≠ 信息丢失。
+
+
+### Save Pill（保存状态胶囊 —— 系统设置页页头）
+
+> **`.btn` 体系之外第二个已登记的合法按钮形态**，2026-09-22 设置页改造引入并在此登记。
+>
+> 与 `.ch-toggle` 同理：`.save-pill` **不是动作按钮**，而是「持续显示保存状态的胶囊」——
+> 绝大多数时间处于 `disabled`（纯只读展示），**仅在保存失败时变为可点**以触发重试。
+> 强行套 `.btn` 会引入 border + radius + `8px 16px` padding，与 56px 高的吸顶页头打架，
+> 更糟的是会让一个「状态指示」长得像「主要动作」，正是本文件「禁止两套按钮体系冲突」要防的。
+> 故显式登记为例外，而非绕过规则。
+
+```css
+/* 保存状态胶囊：状态指示为主，唯一可点态 = 保存失败后的重试 */
+.save-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border:1px solid transparent;
+  border-radius:999px;font:500 12px/1.5 var(--font-sans);background:var(--color-surface-50);
+  color:var(--color-text-secondary);white-space:nowrap;cursor:default}
+.save-pill:disabled{opacity:1}   /* 只读态必须覆盖 .btn:disabled 的 .5 惯例 —— 否则状态文字灰到读不清 */
+.save-pill.warn{background:var(--color-warning-50);color:var(--color-warning-strong)}
+.save-pill.ok{background:var(--color-success-50);color:var(--color-success-strong)}
+.save-pill.err{background:var(--color-danger-50);color:var(--color-danger-strong);cursor:pointer}
+```
+
+**硬约束**（护栏 `tests/test_settings_page_guards.py::test_save_pill_is_registered_and_readable`
+逐条断言）：
+
+1. **默认 `disabled`，`err` 态是唯一可点态**（语义：点 = 重试保存）；
+2. **只读态必须 `opacity:1`** —— 胶囊常态即只读，若继承 `.btn:disabled` 的 `.5`，
+   状态文字会灰到读不清，而这层退化肉眼不报错；
+3. **四条状态必须都用语义色令牌**（`--color-{warning,success,danger}-50/-strong`），禁止写死 HEX；
+4. **本组件必须在 DESIGN.md 登记**（即本节）—— 例外不得靠"没人发现"存在。
+
 
 ### Cards
 ```css
