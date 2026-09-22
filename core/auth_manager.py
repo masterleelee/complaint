@@ -76,7 +76,14 @@ class BaseCrawler(ABC):
             }
     
     def _try_restore_session(self) -> bool:
-        """尝试从缓存恢复会话"""
+        """尝试从缓存恢复会话。
+
+        锁契约：调用方必须已持有 `self._login_lock`（当前唯一调用方
+        `_do_login_sync` 在锁内调用；ensure_login 恢复路径亦在锁内）。
+        此处不得再次获取 `_login_lock`——非重入 Lock 同线程重入即自死锁
+        （2026-09-22 P0：预登录线程 login(force=False) + 缓存新鲜 → 全部
+        查询接口永久挂起，见 tests/test_auth_manager_deadlock.py）。
+        """
         cache = cache_manager.get(self.system_type.value, self.username)
         if cache and cache.is_valid:
             max_age = getattr(self, "SESSION_MAX_AGE_SECONDS", None)
@@ -160,26 +167,30 @@ class BaseCrawler(ABC):
             return result
     
     def ensure_login(self) -> bool:
-        """确保已登录"""
-        if self._logged_in:
-            max_age = getattr(self, "SESSION_MAX_AGE_SECONDS", None)
-            if not max_age or time.time() - self._session_started_at < max_age:
-                return True
-            self._logged_in = False
-            self.http.session.cookies.clear()
-            return self.login(force=True).success
-        
-        # 尝试恢复缓存
-        if self._try_restore_session():
-            return True
-        
-        # 执行登录
+        """确保已登录。
+
+        策略（锁内检查、锁外登录，避免持锁做网络 IO）：
+        1. 内存会话未超龄 → 直接复用；
+        2. 会话超龄/未登录 → 锁外 login(force=False)，由 _do_login_sync
+           的缓存恢复判定统一决策（缓存新鲜则恢复，超龄/缺失才真实登录）。
+        """
+        with self._login_lock:
+            if self._logged_in:
+                max_age = getattr(self, "SESSION_MAX_AGE_SECONDS", None)
+                if not max_age or time.time() - self._session_started_at < max_age:
+                    return True
+                # 内存会话已超龄：清掉内存态，交由 login() 的恢复判定处理
+                self._logged_in = False
+                self.http.session.cookies.clear()
+
+        # 锁外执行登录，避免阻塞其他请求
         result = self.login()
         return result.success
     
     def logout(self):
         """登出并清除缓存"""
-        self._logged_in = False
+        with self._login_lock:
+            self._logged_in = False
         cache_manager.clear(self.system_type.value, self.username)
         # 清除 HTTP session 中的过期 cookies
         self.http.session.cookies.clear()
