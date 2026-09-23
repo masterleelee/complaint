@@ -4682,36 +4682,6 @@ def _build_contract_comparison(ticket: dict, ticket_id: str) -> dict:
     if not tier_display_name:
         tier_display_name = str((TIERS_BY_ID.get(tier_id) or {}).get("display_name") or "")
 
-    return {
-        "ticket_id": ticket_id,
-        "contract_code": ticket.get("contract_code") or "",
-        "platform_available": platform_available,
-        "platform": platform,
-        "items": items,
-        "platform_extra": platform_extra,
-        "deductions": deductions,
-        "clauses": clauses,
-        "text_available": bool(clauses),
-        "text_error": text_error,
-        "profile": _build_contract_profile(ticket, clauses),
-        "source": source,
-        "tier_id": tier_id,
-        "tier_display_name": tier_display_name,
-        "refund_rows": refund_rows,
-    }
-
-
-def _extract_signing_date(text: str) -> str:
-    """从合同文本中提取签订日期，支持多种格式（包括PDF提取时带空格的格式）。"""
-    # 先尝试匹配标准格式：日期：2026年07月07日 或 日期：2 0 2 5 年05月 03日（PDF空格）
-    # 匹配 digit(带可选空格)年 digit(带可选空格)月 digit(带可选空格)日
-    m = re.search(r"(?:签订|合同)?(?:日期|时间)[:：]?\s*((?:\d\s*){4}年\s*(?:\d\s*){1,2}月\s*(?:\d\s*){1,2}日)", text)
-    if m:
-        raw = m.group(1).strip()
-        # 清理多余空格并规范化
-        date_str = re.sub(r"\s+", "", raw)  # 移除所有空格: "2 0 2 5 年05月 03日" -> "2025年05月03日"
-        # 尝试解析并格式化
-        dm = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_str)
     # ── v4.4 · S4.1：工单「重开」缺数据回填 ──────────────────────────────
     # 前端从列表重开工单时会把 ar 重建成瘦扁平对象（useWorkflow 重开分支）：
     # 只有 {total_fee, actual_paid, total_deduction, refund, deductions, …}，
@@ -4750,6 +4720,38 @@ def _extract_signing_date(text: str) -> str:
         except Exception:
             upload_text = ""
 
+    return {
+        "ticket_id": ticket_id,
+        "contract_code": ticket.get("contract_code") or "",
+        "platform_available": platform_available,
+        "platform": platform,
+        "items": items,
+        "platform_extra": platform_extra,
+        "deductions": deductions,
+        "clauses": clauses,
+        "text_available": bool(clauses),
+        "text_error": text_error,
+        "profile": _build_contract_profile(ticket, clauses),
+        "source": source,
+        "tier_id": tier_id,
+        "tier_display_name": tier_display_name,
+        "refund_rows": refund_rows,
+        "rule_summary": rule_summary,
+        "upload_text": upload_text,
+    }
+
+
+def _extract_signing_date(text: str) -> str:
+    """从合同文本中提取签订日期，支持多种格式（包括PDF提取时带空格的格式）。"""
+    # 先尝试匹配标准格式：日期：2026年07月07日 或 日期：2 0 2 5 年05月 03日（PDF空格）
+    # 匹配 digit(带可选空格)年 digit(带可选空格)月 digit(带可选空格)日
+    m = re.search(r"(?:签订|合同)?(?:日期|时间)[:：]?\s*((?:\d\s*){4}年\s*(?:\d\s*){1,2}月\s*(?:\d\s*){1,2}日)", text)
+    if m:
+        raw = m.group(1).strip()
+        # 清理多余空格并规范化
+        date_str = re.sub(r"\s+", "", raw)  # 移除所有空格: "2 0 2 5 年05月 03日" -> "2025年05月03日"
+        # 尝试解析并格式化
+        dm = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_str)
         if dm:
             y, mo, d = int(dm.group(1)), int(dm.group(2)), int(dm.group(3))
             return f"{y}年{mo:02d}月{d:02d}日"
@@ -4764,10 +4766,6 @@ def _extract_signing_date(text: str) -> str:
         raw = m3.group(1)
         return f"{raw[:4]}年{raw[4:6]}月{raw[6:8]}日"
     return ""
-
-
-        "rule_summary": rule_summary,
-        "upload_text": upload_text,
 def _extract_contract_term(text: str, signing_date: str) -> str:
     """提取合同期限整句：跨行合并 PDF 换行断句；若原文只写到"至 YYYY 年"（月日被换行截断），
     结合签订日期 + 有效期年数推导精确到期日；若原文是"为 X 年……计算"（无明确截止日），
