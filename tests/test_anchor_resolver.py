@@ -12,6 +12,7 @@
 import pytest
 
 from services.contract_tiers import TIERS_BY_ID
+from services.contract_template_text import template_text
 from services.anchor_resolver import (
     detect_text_conflicts,
     find_phrase,
@@ -123,9 +124,13 @@ TEXT_2023_BRANCH_STORE = """\
 
 
 def test_resolve_2023_branch_store_full_set():
-    """服务费/建档费/IC卡/场地费/科二考试费/实操单价/违约金各项均有合法区间。"""
-    text = TEXT_2023_BRANCH_STORE
+    """服务费/建档费/IC卡/场地费/科二考试费/实操单价/违约金各项均有合法区间。
+
+    v4.4 起，2023·分店档各项在 `item_basis` 里已登记条款依据 → 锚点在**档位模板正文**
+    内按条款定位（`basis_text`），不再走 ANCHOR_PHRASE_HINTS 的全文首次命中。
+    """
     tier = TIERS_BY_ID["2023_branch_store"]
+    text = template_text(tier)  # 左栏渲染的档位模板正文
     items = [
         {"item": "服务费"},
         {"item": "建档费"},
@@ -135,14 +140,36 @@ def test_resolve_2023_branch_store_full_set():
         {"item": "科目二实操培训费"},
         {"item": "违约金"},
     ]
-    enriched = resolve_anchors_for_items(items, text, tier=tier)
+    enriched = resolve_anchors_for_items(items, "无关合同文本", tier=tier, basis_text=text)
     by_name = {it["item"]: it for it in enriched}
     for name in ("服务费", "建档费", "学员IC卡", "场地费", "科目二考试费", "科目二实操培训费", "违约金"):
         it = by_name[name]
         assert it["anchor_missing"] is False, f"{name} 锚点缺失"
         s, e = it["anchor_start"], it["anchor_end"]
         assert 0 <= s < e <= len(text)
-        # 回读 = 锚点短语（去空白后）
+        # 回读 = 锚点短语（basis 路径下 anchor_phrase 即所定位的原文本片段）
+        assert text[s:e] == it["anchor_phrase"]
+
+
+def test_resolve_hints_path_full_set_without_tier():
+    """无 tier（或 tier 未登记 basis）时，全套项仍走 ANCHOR_PHRASE_HINTS 命中（向后兼容）。"""
+    text = TEXT_2023_BRANCH_STORE
+    items = [
+        {"item": "服务费"},
+        {"item": "建档费"},
+        {"item": "学员IC卡"},
+        {"item": "场地费"},
+        {"item": "科目二考试费"},
+        {"item": "科目二实操培训费"},
+        {"item": "违约金"},
+    ]
+    enriched = resolve_anchors_for_items(items, text)  # 不传 tier
+    by_name = {it["item"]: it for it in enriched}
+    for name in ("服务费", "建档费", "学员IC卡", "场地费", "科目二考试费", "科目二实操培训费", "违约金"):
+        it = by_name[name]
+        assert it["anchor_missing"] is False, f"{name} 锚点缺失"
+        s, e = it["anchor_start"], it["anchor_end"]
+        assert 0 <= s < e <= len(text)
         assert text[s:e].replace(" ", "").replace("\n", "") == it["anchor_phrase"].replace(" ", "")
 
 
