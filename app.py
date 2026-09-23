@@ -57,6 +57,7 @@ from services.contract_service import (
 from services.upload_pipeline import (
     analyze_upload_contract_file, build_rule_summary, is_upload_ticket,
 )
+from services import upload_pipeline as _upload_pipeline_mod
 from services.multi_contract import analyze_contract_set, resolve_entry_kind
 from services.contract_tiers import TIERS_BY_ID
 from services import contract_template_text
@@ -3263,6 +3264,15 @@ def _run_contract_analysis(data: dict) -> dict:
                 except (json.JSONDecodeError, TypeError, AttributeError):
                     ticket["query_result"] = {"driving_hours": training_hours}
 
+    # 2026-09-23 提效（测试学员丙工单 a734ac56 实测 70s → 目标 ~12s）：
+    # ① 上传件跳过 legacy LLM——免费池实测 59s 超时零产出，且费用字段随后被上传管线权威覆盖；
+    # ② 同一文件只提取一次——此前 legacy 与上传管线各 OCR 一遍，百度调用量翻倍。
+    upload_entry = bool(ticket and is_upload_ticket(ticket.get("contract_set")))
+    # 共享提取经 upload_pipeline 模块属性调用（调用期解析）：该名字是上传链路提取的
+    # 规范入口，测试桩打在模块属性上（test_10_multi_integration._stub_extraction）
+    shared_extraction = _upload_pipeline_mod.extract_contract_text_from_file(
+        filepath, image_paths=data.get("image_paths", []) or []
+    )
     result = analyze_contract_from_file(
         filepath=filepath,
         exam_stage=exam_stage,
@@ -3272,6 +3282,8 @@ def _run_contract_analysis(data: dict) -> dict:
         exam_counts=exam_counts,
         registration_date=registration_date,
         skill_cert_date=skill_cert_date,
+        skip_llm=upload_entry,
+        extraction=shared_extraction,
     )
 
     if result.get("error"):
@@ -3319,7 +3331,8 @@ def _run_contract_analysis(data: dict) -> dict:
     # 东莞驾培 contract_fee 为权威合同金额，覆盖 AI/规则结果（AI 仅作校验对比）。
     # 上传路径（纸质合同）跳过覆盖：用户上传合同本身即说明东莞驾培无对应电子合同，
     # 工单快照残留的 contract_fee 会错误覆盖纸质合同 OCR 金额，造成总金额与扣费明细不一致。
-    is_upload = bool(ticket and is_upload_ticket(ticket.get("contract_set")))
+    # 上传件判定已在 legacy 调用前算好（upload_entry），此处直接复用
+    is_upload = upload_entry
     if contract_fee > 0 and not is_upload:
         result = apply_authoritative_total_fee(result, contract_fee)
 
@@ -3380,6 +3393,7 @@ def _run_contract_analysis(data: dict) -> dict:
                     filepath=filepath,
                     ticket=ticket,
                     image_paths=data.get("image_paths", []),
+                    extraction=shared_extraction,
                 )
                 result["tier_id"] = upload_analysis.get("tier_id", "")
                 result["tier_result"] = upload_analysis.get("tier_result", {})

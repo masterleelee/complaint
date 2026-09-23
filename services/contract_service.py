@@ -1473,7 +1473,9 @@ def analyze_contract(
             "temperature": 0.05,
         }
 
-        resp = requests.post(api_url, headers=headers, json=payload, timeout=60)
+        # timeout=30（2026-09-23 由 60s 下调）：免费池失败时白等 60s 太久；
+        # 兜底路径仍可用本地规则/费用提取接住。
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=30)
         try:
             resp.raise_for_status()
         except requests.HTTPError:
@@ -1495,7 +1497,7 @@ def analyze_contract(
         return result
 
     except requests.exceptions.ReadTimeout:
-        return {"error": "分析失败: 大模型响应超过60秒。已优先尝试本地规则解析；请稍后重试或切换更快模型。"}
+        return {"error": "分析失败: 大模型响应超过30秒。已优先尝试本地规则解析；请稍后重试或切换更快模型。"}
     except Exception as e:
         return {"error": f"分析失败: {str(e)}"}
 
@@ -1562,9 +1564,17 @@ def analyze_contract_from_file(
     exam_counts: dict = None,
     registration_date: str = "",
     skill_cert_date: str = "",
+    skip_llm: bool = False,
+    extraction: dict = None,
 ) -> dict:
-    """从合同文件进行分析：先提取文本，再让文本模型结构化。"""
-    extraction = extract_contract_text_from_file(filepath, image_paths=image_paths)
+    """从合同文件进行分析：先提取文本，再让文本模型结构化。
+
+    skip_llm=True（上传件路径，2026-09-23）：只做 OCR/模板匹配/本地规则，不发 LLM 请求
+    ——免费池实测 59s 超时零产出，且上传件费用字段由上传管线（档位引擎）权威覆盖。
+    extraction：外部共享的提取结果（同一文件只 OCR 一次）；缺省时自行提取。
+    """
+    if extraction is None:
+        extraction = extract_contract_text_from_file(filepath, image_paths=image_paths)
     if extraction.get("error"):
         return extraction
 
@@ -1592,37 +1602,53 @@ def analyze_contract_from_file(
         result["contract_set"] = attach_contract_text(result["contract_set"], extraction, filepath)
         return result
 
-    result = analyze_contract(
-        contract_text=contract_text,
-        exam_stage=exam_stage,
-        training_hours=training_hours,
-        total_fee=total_fee,
-        exam_counts=exam_counts,
-    )
-    if not result.get("error"):
-        result["contract_set"] = contract_set_from_ai_response(
-            result.get("raw_analysis", ""),
-            filepath,
-        )
+    if skip_llm:
+        # 上传件：不发 LLM 请求，本地兜底回填费用（字段由上传管线权威覆盖）。
+        fees = extract_contract_fees(contract_text)
+        payment_plan = extraction.get("payment_plan") or {}
+        result = {
+            "analysis_source": "skip_llm_local",
+            "total_fee": fees.get("total_fee") or 0,
+            "warnings": [],
+        }
+        if payment_plan.get("down_payment") is not None:
+            result["down_payment"] = payment_plan["down_payment"]
+        if payment_plan.get("balance") is not None:
+            result["balance"] = payment_plan["balance"]
+        if payment_plan.get("balance_source"):
+            result["balance_source"] = payment_plan["balance_source"]
     else:
-        # BUG-02：LLM 失败（典型 OpenRouter 免费池 429）时本地 OCR 已提取的费用
-        # 不应被整体丢弃——用 contract_text 本地兜底回填费用字段，失败不影响原 error 返回。
-        try:
-            fees = extract_contract_fees(contract_text)
-            if not result.get("total_fee"):
-                result["total_fee"] = fees.get("total_fee")
-            payment_plan = extraction.get("payment_plan") or {}
-            if "down_payment" not in result and payment_plan.get("down_payment") is not None:
-                result["down_payment"] = payment_plan["down_payment"]
-            if "balance" not in result and payment_plan.get("balance") is not None:
-                result["balance"] = payment_plan["balance"]
-            if "balance_source" not in result and payment_plan.get("balance_source"):
-                result["balance_source"] = payment_plan["balance_source"]
-            result.setdefault("warnings", []).append(
-                "大模型分析失败，费用字段为本地兜底提取值，请人工核对后确认"
+        result = analyze_contract(
+            contract_text=contract_text,
+            exam_stage=exam_stage,
+            training_hours=training_hours,
+            total_fee=total_fee,
+            exam_counts=exam_counts,
+        )
+        if not result.get("error"):
+            result["contract_set"] = contract_set_from_ai_response(
+                result.get("raw_analysis", ""),
+                filepath,
             )
-        except Exception as exc:
-            system_logger.warning("[FALLBACK-FEE] 本地兜底回填费用失败：%s", exc)
+        else:
+            # BUG-02：LLM 失败（典型 OpenRouter 免费池 429）时本地 OCR 已提取的费用
+            # 不应被整体丢弃——用 contract_text 本地兜底回填费用字段，失败不影响原 error 返回。
+            try:
+                fees = extract_contract_fees(contract_text)
+                if not result.get("total_fee"):
+                    result["total_fee"] = fees.get("total_fee")
+                payment_plan = extraction.get("payment_plan") or {}
+                if "down_payment" not in result and payment_plan.get("down_payment") is not None:
+                    result["down_payment"] = payment_plan["down_payment"]
+                if "balance" not in result and payment_plan.get("balance") is not None:
+                    result["balance"] = payment_plan["balance"]
+                if "balance_source" not in result and payment_plan.get("balance_source"):
+                    result["balance_source"] = payment_plan["balance_source"]
+                result.setdefault("warnings", []).append(
+                    "大模型分析失败，费用字段为本地兜底提取值，请人工核对后确认"
+                )
+            except Exception as exc:
+                system_logger.warning("[FALLBACK-FEE] 本地兜底回填费用失败：%s", exc)
 
     # Build multi-line summary
     summary_lines = []

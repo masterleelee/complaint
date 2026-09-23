@@ -417,12 +417,18 @@ def analyze_upload_contract_file(
     ticket: dict,
     *,
     image_paths: list | None = None,
+    extraction: dict | None = None,
 ) -> dict:
-    """上传件分析管线（生产入口）。"""
-    extraction = extract_contract_text_from_file(
-        filepath,
-        image_paths=image_paths or [],
-    )
+    """上传件分析管线（生产入口）。
+
+    extraction：外部共享的提取结果（app 层同一文件只 OCR 一次，2026-09-23 提效）；
+    缺省时自行走完整提取降级链。
+    """
+    if extraction is None:
+        extraction = extract_contract_text_from_file(
+            filepath,
+            image_paths=image_paths or [],
+        )
     return _run_pipeline(
         extraction,
         ticket,
