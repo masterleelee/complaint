@@ -5,8 +5,10 @@
 - 【演示案例专项】服务费/建档费/学员IC卡/违约金/科目二实操培训费/科目三实操培训费 的 anchor_text
 - 【诚实性】分校退费表无「场地费」行 → `(None, None)`；同项在分店版必须命中
 - **反向证据**：服务费/建档费/学员IC卡 新定位 ≠ 旧「全文首次命中」，且旧结果落在错误条款
-- 东城自制档 6 条：4 条落内容行（含第六条（三）实操行、第十一条（一）违约金行），
-  2 条（咨询/服务费、理论培训费）在模板正文里无可锚定的整行/短语 → 显式豁免为 `(None, None)`
+- 东城自制档 6 条**逐条落内容行**（含第六条（三）实操行、第十一条（一）违约金行；
+  咨询/服务费、理论培训费 经 v4.4·S4 补的「裸序号行」步锚到第四条（一）1 的「1、…」行）
+- 扣费项的 basis 解析字段（basis_clause/basis_section/basis_row）逐档全覆盖、与
+  parse_item_basis 严格一致（None→""）；无 basis 项三键为空串
 - 无关文本 / 未知档位 → `(None, None)` 且不抛
 - 条款窗口必须止于「下一条标题」，不得越界到后续条款
 - parse_item_basis 各形态逐条断言
@@ -188,12 +190,19 @@ def test_old_first_hit_for_ic_card_before_eighth():
 
 # ── 东城自制档 ────────────────────────────────────────────────────────
 
-DONGCHENG_CONTENT_ITEMS = ["违约金", "代交费", "科目二实操培训费", "科目三实操培训费"]
+# 东城自制档 item_basis 的权威清单（逐条列举）：v4.4·S4 起**全部 6 条**均可定位到内容行
+# （此前「咨询/服务费」「理论培训费」因该档第四条用裸序号「1、2、3、」落空）。
+DONGCHENG_CONTENT_ITEMS = [
+    "违约金",
+    "代交费",
+    "科目二实操培训费",
+    "科目三实操培训费",
+    "咨询/服务费",
+    "理论培训费",
+]
 
-# 显式豁免白名单：这两项 basis 指向的分项（「甲方收取的咨询、服务等费用」「培驾费用合计」）
-# 在东城模板正文里既无同名整行、也无同名短语，末级编号段（一）在第四条内亦无对应行 →
-# 诚实返回 (None, None)。
-DONGCHENG_ABSENT_WITHIN_CLAUSE = ["咨询/服务费", "理论培训费"]
+# 靠 v4.4·S4「裸序号行」补位步锚定的两条（第四条（一）1 的「1、…」行）。
+DONGCHENG_BARE_ORDINAL_ITEMS = ["咨询/服务费", "理论培训费"]
 
 
 @pytest.mark.parametrize("name", DONGCHENG_CONTENT_ITEMS)
@@ -203,9 +212,15 @@ def test_dongcheng_items_land_on_content_line(name):
     _assert_on_content_line(DONGCHENG_TEXT, start, name)
 
 
-@pytest.mark.parametrize("name", DONGCHENG_ABSENT_WITHIN_CLAUSE)
-def test_dongcheng_items_honestly_absent_within_clause(name):
-    assert find_by_basis(name, DONGCHENG, DONGCHENG_TEXT) == (None, None)
+@pytest.mark.parametrize("name", DONGCHENG_BARE_ORDINAL_ITEMS)
+def test_dongcheng_bare_ordinal_items_land_in_fourth_clause(name):
+    """「咨询/服务费」「理论培训费」：东城第四条用裸序号（1、2、3、）→ 锚到第四条窗口内
+    的裸序号内容行（不再诚实缺席，也不落在条款标题行）。"""
+    four = find_clause_window(DONGCHENG_TEXT, "第四条")
+    start, end = find_by_basis(name, DONGCHENG, DONGCHENG_TEXT)
+    assert start is not None, f"{name} 未定位（裸序号补位步未生效）"
+    assert four[0] <= start < four[1], f"{name} 未落在第四条窗口"
+    _assert_on_content_line(DONGCHENG_TEXT, start, name)
 
 
 def test_dongcheng_practical_and_penalty_windows():
@@ -345,3 +360,84 @@ def test_no_basis_item_still_uses_hints():
     enriched = resolve_anchors_for_items(items, "科目二实操培训费：120 元/学时", tier=tier)
     assert enriched[0]["anchor_missing"] is False
     assert enriched[0]["anchor_text"] == "科目二实操培训费"
+
+
+# ── basis 解析字段（v4.4 · S3b/S4）：逐档全覆盖 ─────────────────────────
+
+ALL_TIER_IDS = [
+    "2019_service",
+    "2019_pay_agent",
+    "2019_training",
+    "2021_2022",
+    "2023_branch_school",
+    "2023_branch_store",
+    "2019_dongcheng",
+]
+
+_CN_NUM_RE = re.compile(r"[一二三四五六七八九十百零〇]+")
+
+
+@pytest.mark.parametrize("tier_id", ALL_TIER_IDS)
+def test_basis_fields_match_parser_for_every_item(tier_id):
+    """每档 item_basis 的每一项：basis_clause/section/row 严格 == parse_item_basis（None→""），
+    且 basis_clause 恒为**非空中文数字**（与 template_clauses()[].no 同口径）。"""
+    tier = TIERS_BY_ID[tier_id]
+    assert tier["item_basis"], f"{tier_id} 无 item_basis"
+    items = [{"item": name} for name in tier["item_basis"]]
+    enriched = {it["item"]: it for it in resolve_anchors_for_items(items, template_text(tier), tier=tier)}
+    for name, basis in tier["item_basis"].items():
+        clause, section, row = parse_item_basis(basis)
+        it = enriched[name]
+        assert it["basis_clause"] == (clause or ""), f"{tier_id} {name}"
+        assert it["basis_section"] == (section or ""), f"{tier_id} {name}"
+        assert it["basis_row"] == (row or ""), f"{tier_id} {name}"
+        assert _CN_NUM_RE.fullmatch(it["basis_clause"]), f"{tier_id} {name} clause={it['basis_clause']!r}"
+
+
+@pytest.mark.parametrize("tier_id", ALL_TIER_IDS)
+def test_refund_table_items_have_nonempty_basis_row(tier_id):
+    """basis 走退费表「组·行」的项，basis_row 必须非空（备注类条目无行名，见 §1.3「无则 ''」）。"""
+    tier = TIERS_BY_ID[tier_id]
+    table_items = [n for n, b in tier["item_basis"].items() if "退费表" in b]
+    if not table_items:
+        pytest.skip(f"{tier_id} 无退费表 basis 项")
+    items = [{"item": n} for n in table_items]
+    enriched = {it["item"]: it for it in resolve_anchors_for_items(items, template_text(tier), tier=tier)}
+    for name in table_items:
+        assert enriched[name]["basis_row"] != "", f"{tier_id} {name} basis_row 为空"
+
+
+def test_basis_fields_demo_example_2023():
+    """§1.3 示例：服务费 → basis_clause='八' / basis_section='基础服务（必扣项）' / basis_row='服务费'。"""
+    items = [{"item": "服务费"}]
+    it = resolve_anchors_for_items(items, TEXT, tier=TIER)[0]
+    assert it["basis_clause"] == "八"
+    assert it["basis_section"] == "基础服务（必扣项）"
+    assert it["basis_row"] == "服务费"
+
+
+def test_no_basis_item_gets_empty_strings():
+    """无 item_basis 映射的项 → basis_clause/section/row 三键**一律空串**（不留 None）。"""
+    tier = TIERS_BY_ID["2019_service"]  # 该档无「科目二实操培训费」条目
+    items = [{"item": "科目二实操培训费"}]
+    it = resolve_anchors_for_items(items, "科目二实操培训费：120 元/学时", tier=tier)[0]
+    assert it["basis_clause"] == ""
+    assert it["basis_section"] == ""
+    assert it["basis_row"] == ""
+
+
+def test_tier_none_all_basis_fields_empty():
+    """tier=None（无档位）→ 三个 basis 键均为空串。"""
+    items = [{"item": "服务费"}]
+    it = resolve_anchors_for_items(items, "应收服务费600元", tier=None)[0]
+    assert (it["basis_clause"], it["basis_section"], it["basis_row"]) == ("", "", "")
+
+
+def test_basis_fields_present_even_when_anchor_missing():
+    """有 basis 映射但文本无条款结构 → anchor_missing=True，但 basis 三键仍是**已解析真值**。"""
+    items = [{"item": "服务费"}]
+    it = resolve_anchors_for_items(items, "服务费 违约金 600", tier=TIER)[0]
+    assert it["anchor_missing"] is True
+    assert it["basis_clause"] == "八"
+    assert it["basis_section"] == "基础服务（必扣项）"
+    assert it["basis_row"] == "服务费"

@@ -16,6 +16,15 @@ LLM prompt 升级（spec 05 工单第 1 验收）在 06 阶段实现：prompt �
 锚点必须落在**该条款窗口内**，绝不回落「全文档首次命中」——旧行为正是把 ¥600 服务费锚到
 第四条（一）1 的枚举句、把 ¥100 学员IC卡锚到办理义务句的根因。条款窗口用
 `services.contract_template_text.find_clause_window` 切分（与模板正文同一套排版容忍规则）。
+
+basis 解析字段（v4.4 · S3b/S4）：`resolve_anchors_for_items` 在每条明细上补 `basis_clause`
+（中文数字条款号）/ `basis_section`（退费表分组或编号段）/ `basis_row`（退费表行名），供前端
+「悬停扣费卡 → 高亮退费表对应行」直接消费，不必重复实现解析器。三者由 `parse_item_basis`
+产出，`None` 一律归一为空串 `""`（前端按空串判断有无）。
+
+东城自制档补位（v4.4 · S4）：该档第四条用裸序号（`1、2、3、`）编号，无「（一）」括号段，
+`_section_label_line` 匹配不上；`find_by_basis` 补一条「窗口内行首为裸序号且行内含该项/行名」
+的匹配步（仍严格限定窗口内、绝不回落条款标题行）。
 """
 
 from __future__ import annotations
@@ -220,6 +229,63 @@ def _section_label_line(section: str | None, text: str, start: int, end: int) ->
     return None
 
 
+# 裸序号行（东城自制等旧模板用「1、」「2.」编号，无括号）：行首（容忍缩进）为阿拉伯数字 +
+# 顿号/点/逗号/冒号 或其后直接跟空白 的行。
+_BARE_ORDINAL_LINE_RE = re.compile(r"^[ \t\u3000]*\d+\s*(?:[、.．,，:：]|\s)")
+
+# 括号注释（如「（第六条（二）退费基数）」）：从 key 里剔除，避免其内部编号（「第六条」）
+# 与本步无关地误命中其它行。
+_PAREN_ANNOTATION_RE = re.compile(r"[（(][^（()）]*[)）]")
+
+# 行与 key 视为「同一对象」所需的最短公共子串长度：短于此（如「费」「用」）易误命中。
+_MIN_ORDINAL_KEY_OVERLAP = 3
+
+
+def _strip_parens(text: str) -> str:
+    """去掉括号注释（含嵌套一层），用于从 basis 行名里剥离「（第六条（二）…）」括号段。"""
+    return _PAREN_ANNOTATION_RE.sub("", text or "")
+
+
+def _shares_key_substring(line: str, key: str) -> bool:
+    """line 与 key（均去空白；key 先去括号注释）是否存在长度 >= `_MIN_ORDINAL_KEY_OVERLAP`
+    的公共子串；key 短于阈值时退化为「包含」。用于容忍 basis 行名与正文的行文差异
+    （如 basis 写「培驾费用合计」，正文行只写「培驾费用」）。"""
+    a = _strip_ws(line)
+    b = _strip_ws(_strip_parens(key))
+    if not a or not b:
+        return False
+    n = _MIN_ORDINAL_KEY_OVERLAP
+    if len(b) < n:
+        return b in a
+    for i in range(len(b) - n + 1):
+        if b[i:i + n] in a:
+            return True
+    return False
+
+
+def _ordinal_keyed_line(
+    item_name: str | None, row_name: str | None, text: str, start: int, end: int
+) -> tuple[int, int] | None:
+    """在窗口内找**行首为裸序号**且行内含 `item_name` / `row_name` 的行，锚点 = 该行整行。
+
+    东城自制档第四条用「1、2、3、」（裸序号）编号、无「（一）」括号段，`_section_label_line`
+    匹配不上；此步以「行首裸序号 + 行内出现该项/行名（含去括号后的公共子串）」定位，
+    仍严格限定在条款窗口 [start, end) 内，**绝不**返回窗口首行（条款标题）。
+    """
+    keys = [k for k in (item_name, row_name) if k]
+    if not keys:
+        return None
+    for rel, line in _lines_with_offset(text[start:end]):
+        if not _BARE_ORDINAL_LINE_RE.match(line):
+            continue
+        if any(_shares_key_substring(line, k) for k in keys):
+            lead = len(line) - len(line.lstrip())
+            trail = len(line.rstrip())
+            if trail > lead:
+                return start + rel + lead, start + rel + trail
+    return None
+
+
 def find_by_basis(item_name: str, tier: Any, text: str | None) -> tuple[int | None, int | None]:
     """按 `tier["item_basis"]` 在 `text` 中定位该扣费项，返回原文本 [start, end)。
 
@@ -230,7 +296,9 @@ def find_by_basis(item_name: str, tier: Any, text: str | None) -> tuple[int | No
     2. `item_name`（扣费项名）：整行精确 → 行首 → 窗口内短语。
     3. `section` 的**末级编号括号段**所在行（`（三）`→三、`（一）1（3）`→3、`（三）1`→三；
        `（必扣项）` 这类非编号段不作标签）→ 锚点 = 该行整行。
-    4. 全不中 → `(None, None)`（→ `anchor_missing=True`，前端不显示定位按钮——比指向
+    4. **裸序号行**（东城自制档）：行首为 `1、`/`2.`/`3 ` 这类裸序号、且行内含 `item_name`
+       或 `row_name`（或二者去括号后的公共子串）→ 锚点 = 该行整行。
+    5. 全不中 → `(None, None)`（→ `anchor_missing=True`，前端不显示定位按钮——比指向
        条款标题诚实）。
 
     切不出条款窗口（无 basis / 无「第X条」标题）同样返回 `(None, None)`。
@@ -258,6 +326,10 @@ def find_by_basis(item_name: str, tier: Any, text: str | None) -> tuple[int | No
     labeled = _section_label_line(section, text, w_start, w_end)
     if labeled is not None:
         return labeled
+
+    numbered = _ordinal_keyed_line(item_name, row_name, text, w_start, w_end)
+    if numbered is not None:
+        return numbered
     return None, None
 
 
@@ -296,6 +368,12 @@ def resolve_anchors_for_items(
         item_name = it.get("item", "")
 
         if item_name in item_basis:
+            # 三个「已解析」basis 字段（v4.4 · S3b/S4）：供前端悬停扣费卡时定位退费表对应行，
+            # 前端不重复实现解析器。None 归一为空串（前端按空串判断）。
+            clause_no, basis_section, basis_row = parse_item_basis(item_basis[item_name])
+            new["basis_clause"] = clause_no or ""
+            new["basis_section"] = basis_section or ""
+            new["basis_row"] = basis_row or ""
             start, end = find_by_basis(item_name, tier_dict, basis_source)
             if start is not None:
                 located = (basis_source or "")[start:end]
@@ -314,6 +392,9 @@ def resolve_anchors_for_items(
             continue
 
         # ── 无 basis：保持既有 hints 行为 ──
+        new["basis_clause"] = ""
+        new["basis_section"] = ""
+        new["basis_row"] = ""
         phrases: list[str] = []
         if explicit:
             phrases.append(explicit)
