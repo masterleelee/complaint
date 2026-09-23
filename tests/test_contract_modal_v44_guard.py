@@ -144,9 +144,11 @@ def test_no_percent_score_regression(js):
 
 
 # ── importmap 版本号 bump（否则浏览器吃旧缓存）────────────────────────────
+# v4→v5（2026-09-23 S4.1）：useContractCompare 加 _pick 根字段回落 / 填空回落 /
+# aiSummary 三级回落 / ocrText 回落 api.upload_text；每次改该文件都必须再 bump。
 def test_importmap_bumped(html):
-    assert 'useContractCompare.js?v=4"' in html, (
-        "importmap 里 useContractCompare 未 bump 到 ?v=4 —— 浏览器会继续用旧缓存"
+    assert 'useContractCompare.js?v=5"' in html, (
+        "importmap 里 useContractCompare 未 bump 到 ?v=5 —— 浏览器会继续用旧缓存"
     )
 
 

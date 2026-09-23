@@ -2727,6 +2727,7 @@
             <div class="cc-pane-body" v-show="cmp.cmpTab==='text'">
               <!-- ① 电子合同：PDF 条款块 + 整句高亮 -->
               <template v-if="cmp.leftSource==='pdf'">
+                <div v-if="cmp.electronicDegraded" class="hint" style="margin:10px 14px 0">本单扣费项未引用具体条款，以下为合同全部条款</div>
                 <div v-for="(b, bi) in cmp.clauseBlocks" :key="'ccE-'+bi" class="blk">
                   <div class="b-head">第[[ b.no ]]条　[[ b.title ]] <span v-for="(c, ci) in b.chips" :key="'ccEc-'+bi+'-'+ci" class="cc-tag" :class="'cc-tag-'+c.tagKey">[[ c.text ]]</span></div>
                   <div class="b-para" v-html="b.bodyHtml"></div>
@@ -3281,7 +3282,7 @@
       "useToast": "/static/js/composables/useToast.js?v=16",
       "useComplaint": "/static/js/composables/useComplaint.js?v=23",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=22",
-      "useContractCompare": "/static/js/composables/useContractCompare.js?v=4",
+      "useContractCompare": "/static/js/composables/useContractCompare.js?v=5",
       "useSettings": "/static/js/composables/useSettings.js?v=32",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
       "useWorkbench": "/static/js/composables/useWorkbench.js?v=40"

@@ -75,6 +75,17 @@ function _refundValue(dr, r, paid, dedSum) {
   return (refundPending || refund == null) ? "待核" : "¥" + _money(refund);
 }
 
+// 取第一个「非 null 且非 undefined」的值；**0 是有效值，不许当缺失**（与 _refundValue 同口径）。
+// 用途：工单「重开」时 ar 是瘦扁平对象（无 deductions_result / contract_analyses /
+// contract_text，见 useWorkflow 重开分支），模板分支必须能回落根字段，
+// 否则「合同总额」显示 —、第四条填空渲染成 0（QA 在测试学员丙真机实测命中）。
+function _pick(...vals) {
+  for (const v of vals) {
+    if (v !== null && v !== undefined) return v;
+  }
+  return null;
+}
+
 // 一段正文字符串注入 anchor mark（区间重叠时后者失效，保证 HTML 合法）
 function _injectMarks(text, marks) {
   const sorted = [...marks].sort((m1, m2) => m1.start - m2.start);
@@ -407,16 +418,20 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
     const dedSum = dedRows.value.reduce((s, x) => s + (x.amount || 0), 0);
     const src = leftSource.value;
     if (src === "template") {
-      const tot = Number(dr.total_fee) || 0;
-      const paid = Number(dr.paid_amount) || 0;
-      const tail = Number(dr.tail_due) || 0;
-      return [
+      const tot = Number(_pick(dr.total_fee, r.total_fee)) || 0;
+      // ⚠️ r.actual_paid 在上传件恒为 0（那正是 S2 修的 bug 现场），放最后兜底
+      const paid = Number(_pick(dr.paid_amount, r.paid_amount, r.actual_paid)) || 0;
+      const tailRaw = _pick(dr.tail_due, r.tail_due);
+      const tail = (tailRaw == null) ? null : Number(tailRaw);
+      const cells = [
         { k: "合同总额", v: tot ? "¥" + _money(tot) : "—", dom: "t-total" },
         { k: "实缴", v: paid ? "¥" + _money(paid) : "—", dom: "t-paid" },
         { k: "扣费合计", v: "¥" + _money(dedSum) },              // 无 dom：扣费合计不定位
-        { k: "应付尾款", v: "¥" + _money(tail), dom: "t-paid" },
-        { k: "应退", v: _refundValue(dr, r, paid, dedSum), dom: "t-note", refund: true },
       ];
+      // 尾款拿不到（重开路径）就不显示「¥0」这种假数；>0 才出这格（沿用既有行为）
+      if (tail != null && tail > 0) cells.push({ k: "应付尾款", v: "¥" + _money(tail), dom: "t-paid" });
+      cells.push({ k: "应退", v: _refundValue(dr, r, paid, dedSum), dom: "t-note", refund: true });
+      return cells;
     }
     if (src === "pdf") {
       const tot = Number(r.total_fee) || 0;
@@ -440,6 +455,22 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
     return [];
   });
 
+  // 电子合同「无引用 → 退化为全部条款」时置真，左栏顶部据此出提示（区别于「未提取到」）
+  const electronicDegraded = Vue.computed(() => {
+    if (leftSource.value !== "pdf") return false;
+    const clauses = _clauses();
+    if (!clauses.some(c => c && c.no)) return false;
+    const items = dedRows.value;
+    const linked = {};
+    items.forEach(d => {
+      _nosOf(d.item, d.basis || d.reason, clauses).forEach(no => {
+        linked[no] = linked[no] || [];
+      });
+    });
+    if (Object.keys(linked).length) return false;
+    return !clauses.some(c => c && c.no && _GENERAL_CLAUSES.includes(c.no));
+  });
+
   function _buildElectronicBlocks(clauses) {
     const items = dedRows.value;
     const linked = {};
@@ -449,7 +480,14 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
         if (!linked[no].includes(d.item)) linked[no].push(d.item);
       });
     });
-    const show = clauses.filter(c => c && c.no && (linked[c.no] || _GENERAL_CLAUSES.includes(c.no)));
+    let show = clauses.filter(c => c && c.no && (linked[c.no] || _GENERAL_CLAUSES.includes(c.no)));
+    // ⚠️ 原型 `GENERAL = ['第六','第九',…]` 带「第」前缀，而 `c.no` 不带「第」（「三」「七」），
+    //   `GENERAL.includes(c.no)` 恒 false，是死分支 —— 实测真工单季宏涛只出被引用的 三/七 两条。
+    //   但「一条都没被引用」时若仍渲染「未提取到合同条款」就是假话（PDF 文本层已成功提取）。
+    //   故此处退化为显示全部条款（另出提示，见 electronicDegraded）；GENERAL 原样保留。
+    if (!show.length && clauses.some(c => c && c.no)) {
+      show = clauses.filter(c => c && c.no);
+    }
     return show.map(c => {
       const body = _reflowBody(c.body);
       const marks = [];
@@ -492,6 +530,7 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
   }
 
   function _buildTemplateBlocks(clauses, api) {
+    const r = result.value || {};
     const dr = _dr();
     const items = dedRows.value;
     const refundRows = Array.isArray(api.refund_rows) ? api.refund_rows : [];
@@ -499,9 +538,11 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
     const refundNo = _refundClauseNo(clauses, refundRows);
     const feeClause = clauses.find(c => c && c.no === feeNo);
     const refundClause = clauses.find(c => c && c.no === refundNo);
-    const total = Number(dr.total_fee) || 0;
-    const paid = Number(dr.paid_amount) || 0;
-    const tail = Number(dr.tail_due) || 0;
+    // 与 sumCells 同一回落链：工单「重开」时 dr={} → 回落根字段（r.actual_paid 放最后，
+    // 上传件分析结果里它恒 0，正是 S2 修的 bug 现场）。否则第四条填空渲染成 0。
+    const total = Number(_pick(dr.total_fee, r.total_fee)) || 0;
+    const paid = Number(_pick(dr.paid_amount, r.paid_amount, r.actual_paid)) || 0;
+    const tail = Number(_pick(dr.tail_due, r.tail_due)) || 0;
     const installment = paid > 0 && tail > 0;
 
     const blocks = [];
@@ -605,18 +646,29 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
 
   function _ocrText() {
     const r = result.value;
-    if (!r) return "";
-    if (Array.isArray(r.contract_analyses) && r.contract_analyses.length) {
-      return r.contract_analyses.map(a => String((a && a.text) || "")).join("\n\n");
+    const api = apiData.value || {};
+    if (r) {
+      if (Array.isArray(r.contract_analyses) && r.contract_analyses.length) {
+        const joined = r.contract_analyses.map(a => String((a && a.text) || "")).filter(Boolean).join("\n\n");
+        if (joined) return joined;
+      }
+      const fromResult = String(r.contract_text || r.text || "");
+      if (fromResult) return fromResult;
     }
-    return String(r.contract_text || r.text || "");
+    // 工单「重开」时 ar 无 contract_analyses/contract_text → 回落 comparison 接口带出的
+    // OCR 合并正文（后端从 contract_set[].text 拼装；非上传件/取不到 = ""）
+    return String(api.upload_text || "");
   }
 
   // ── AI 摘要（额外约定等）──
   const aiSummary = Vue.computed(() => {
     const r = result.value;
     const dr = (r && r.deductions_result) || null;
+    // 三级回落：dr.rule_summary（新鲜分析）→ api.rule_summary（工单重开，后端复用同一
+    // 纯函数生成）→ r.summary（电子合同的 LLM 摘要）。
     if (dr && dr.rule_summary) return String(dr.rule_summary);
+    const api = apiData.value || {};
+    if (api.rule_summary) return String(api.rule_summary);
     return (r && r.summary) ? String(r.summary) : "";
   });
   // 渲染容器用 v-html，内容 = _rich(_esc(raw))（先转义再转 <b>，防 XSS）
@@ -813,6 +865,7 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
     aiSummary, aiSummaryHtml,
     // v4.4 左栏
     leftSource, clauseBlocks, refundTable, leftFolds,
+    electronicDegraded,
     // v4.4 接口
     apiData, apiLoading, apiError, apiTicketId, load,
     // 交互
