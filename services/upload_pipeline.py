@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from typing import Any
 
 from services.contract_service import (
@@ -209,6 +210,143 @@ def _attach_payment_context(
             note += f"（不足冲抵的 {outstanding:.0f} 元仍为学员应付）"
         dr["warnings"] = list(dr.get("warnings") or []) + [note]
     return dr
+
+
+# ── 规则文案摘要（v4.4 · S3b）：上传件「🤖 AI 摘要（额外约定等）」 ──────────
+#
+# 用户拍板（Q2）：上传件「AI 摘要」**不走 LLM**，改为规则文案（纯函数），照抄原型
+# `demo/contract-preview-v4-demo.html` 的 `aiSummary`，只按数据有无裁剪。所有数字取
+# `deductions_result` 自身字段（不另算一份）；金额千分位取整（`f"{v:,.0f}"`），与前端
+# `_money` 一致。纯文本，行以 `\n` 分隔，`**x**` 表示加粗（前端先转义再转 `<b>`）。
+# 电子合同（下载）路径不产出此字段：本函数只在 upload_pipeline 里被调用。
+
+# 实操项名后缀：「科目二实操培训费」→ 科目标签「科目二实操」。
+_PRACTICAL_ITEM_SUFFIX = "实操培训费"
+_PENALTY_ITEM_NAME = "违约金"
+# 从实操项 basis（`审核学时 {hours:g} × …`）里取学时数；取不到时该科只显示名不发学时。
+_HOURS_IN_BASIS_RE = re.compile(r"审核学时\s*([0-9]+(?:\.[0-9]+)?)")
+# 从违约金项 basis（`… × 档位默认 {rate}%（…）`）里取费率百分数。
+_PENALTY_RATE_IN_BASIS_RE = re.compile(r"([0-9]{1,3})\s*%")
+
+
+def _money(v: Any) -> str:
+    """千分位取整（元）：`f"{v:,.0f}"`；None / 非法 / 空 → "0"。"""
+    f = _as_float(v)
+    return f"{f:,.0f}" if f is not None else "0"
+
+
+def _display_name(tier_result: Any) -> str:
+    """从 tier_result 取档位显示名；缺失返回 ""（调用方据此整条降级）。"""
+    if isinstance(tier_result, dict):
+        return str(tier_result.get("display_name") or "").strip()
+    return ""
+
+
+def _practical_label(item_name: Any) -> str:
+    """「科目二实操培训费」→「科目二实操」；非该后缀则原样返回。"""
+    name = str(item_name or "")
+    if name.endswith(_PRACTICAL_ITEM_SUFFIX):
+        return name[: -len(_PRACTICAL_ITEM_SUFFIX)] + "实操"
+    return name
+
+
+def _hours_from_basis(basis: Any) -> str:
+    m = _HOURS_IN_BASIS_RE.search(str(basis or ""))
+    return m.group(1) if m else ""
+
+
+def _penalty_rate_from_basis(basis: Any) -> str:
+    m = _PENALTY_RATE_IN_BASIS_RE.search(str(basis or ""))
+    return m.group(1) if m else ""
+
+
+def build_rule_summary(deductions_result: Any, tier_result: Any) -> str:
+    """上传件「🤖 AI 摘要」规则文案（纯函数，不走 LLM）。
+
+    逐行口径见 `.scratch/contract-preview-v44-landing/s4-contract.md` §1.4（照抄原型
+    `aiSummary`，只按数据有无裁剪）：
+
+    1. 本合同为 **{档位显示名}** 档位标准合同（纸质照片识别）。合同总额 ¥…，实缴 ¥…，应付尾款 ¥…。
+    2. 额外约定（手写）：**首付 {实缴} 元，欠款 {尾款} 元**。        ← 实缴>0 且 尾款>0 才出
+    3. 已产生实操学时（计时平台）：{科目… 学时 + …} → 依实扣费 **¥…**。  ← 仅当有实操项
+    4. 扣费合计 ¥… = {项} {额} + …
+    5. 违约金按全部培训费用 {总额} × {率}% = {额}。               ← 仅当有违约金项
+    6. 应退 = 实缴 {实缴} − 扣费合计 {合计} = **¥{应退}**（…）。   ← 括号半句仅当应退<=0
+
+    「应退」口径（§1.4）：`max(paid_amount − Σitem.amount, 0)`，由 `deductions_result`
+    的 `paid_amount` 与 `items` 组合得出（不重跑引擎），保证与展示公式自洽、不出负数。
+
+    Args:
+        deductions_result: 上传件扣费结果（`_attach_payment_context` 之后的 dict）。
+        tier_result: `identify_tier` 输出；`display_name` 为空时整条降级。
+
+    Returns:
+        纯文本摘要（`\n` 分隔）；无 items / 无档位显示名 / 入参非法 → `""`（不抛）。
+    """
+    dr = deductions_result if isinstance(deductions_result, dict) else {}
+    items = dr.get("items") or []
+    if not items:
+        return ""
+    display = _display_name(tier_result)
+    if not display:
+        # 档位显示名取不到 → 整条降级为空串，避免出现 "None" 字样。
+        return ""
+
+    paid = _as_float(dr.get("paid_amount")) or 0.0
+    tail = _as_float(dr.get("tail_due")) or 0.0
+    total = dr.get("total_fee")
+
+    ded_sum = sum((_as_float(it.get("amount")) or 0.0) for it in items if isinstance(it, dict))
+    refund = max(paid - ded_sum, 0.0)
+
+    practical_items = [
+        it for it in items
+        if isinstance(it, dict) and str(it.get("item") or "").endswith(_PRACTICAL_ITEM_SUFFIX)
+    ]
+    penalty_item = next(
+        (it for it in items if isinstance(it, dict) and it.get("item") == _PENALTY_ITEM_NAME),
+        None,
+    )
+
+    lines: list[str] = []
+    # 1) 档位 + 三个金额
+    lines.append(
+        f"本合同为 **{display}** 档位标准合同（纸质照片识别）。"
+        f"合同总额 ¥{_money(total)}，实缴 ¥{_money(paid)}，应付尾款 ¥{_money(tail)}。"
+    )
+    # 2) 手写额外约定（有首付且有欠款才出）
+    if paid > 0 and tail > 0:
+        lines.append(f"额外约定（手写）：**首付 {_money(paid)} 元，欠款 {_money(tail)} 元**。")
+    # 3) 已产生实操学时（仅当有实操项）
+    if practical_items:
+        parts: list[str] = []
+        for it in practical_items:
+            label = _practical_label(it.get("item"))
+            hours = _hours_from_basis(it.get("basis"))
+            parts.append(f"{label} {hours} 学时" if hours else label)
+        practice_sum = sum((_as_float(it.get("amount")) or 0.0) for it in practical_items)
+        lines.append(
+            "已产生实操学时（计时平台）：" + " + ".join(parts) + f" → 依实扣费 **¥{_money(practice_sum)}**。"
+        )
+    # 4) 扣费合计 = 各项逐条相加
+    breakdown = " + ".join(f"{it.get('item')} {_money(it.get('amount'))}" for it in items if isinstance(it, dict))
+    lines.append(f"扣费合计 ¥{_money(ded_sum)} = {breakdown}。")
+    # 5) 违约金（仅当有违约金项）
+    if penalty_item is not None:
+        rate = _penalty_rate_from_basis(penalty_item.get("basis"))
+        if not rate:
+            total_f = _as_float(total)
+            if total_f:
+                rate = str(round((_as_float(penalty_item.get("amount")) or 0.0) / total_f * 100))
+        lines.append(
+            f"违约金按全部培训费用 {_money(total)} × {rate}% = {_money(penalty_item.get('amount'))}。"
+        )
+    # 6) 应退（扣费超实缴 → 兜底 0 + 说明半句）
+    suffix = "（扣费已超实缴，按公式兜底为 0，不出现负数）" if refund <= 0 else ""
+    lines.append(
+        f"应退 = 实缴 {_money(paid)} − 扣费合计 {_money(ded_sum)} = **¥{_money(refund)}**{suffix}。"
+    )
+    return "\n".join(lines)
 
 
 # ── 文本入口（已知文本，跳过 PDF 提取；测试与契约复用） ───────────────
@@ -488,6 +626,11 @@ def _run_pipeline(
                 "本次未能使用视觉识别，已回退本地 OCR：文字与金额均可能不准，"
                 "请务必对照合同原件核对后确认费用方案。"
             ]
+
+        # 2.6) 规则文案摘要（v4.4 · S3b）：上传件「🤖 AI 摘要」纯文本（不走 LLM）。
+        # 所有金额字段（total_fee/paid_amount/tail_due/net_refund）已在 2) 里就位、
+        # items 亦已锚定，此处统一产出，避免另算一份。
+        deductions_result["rule_summary"] = build_rule_summary(deductions_result, tier_result)
 
     # 3) 缓存键：文件指纹 + 档位 + 进度哈希
     cache_key = _compute_cache_key(
