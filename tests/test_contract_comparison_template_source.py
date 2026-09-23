@@ -180,6 +180,57 @@ def test_upload_ticket_reads_contract_tier_id_column(monkeypatch):
     assert out["tier_display_name"] == "2023·分校"
 
 
+# ── M2 护栏：template 分支守卫（v4.4 · S4.1） ─────────────────────────
+# 守卫条件是 `is_upload and template_text(tier_id)`。若有人删掉后半句
+# `template_text(tier_id)`，非法档位也会走 template 分支 → source=="template"
+# 但 clauses==[]（template_clauses 对未知档位安静返回 []），前端把「空合同」
+# 当成真数据渲染。以下用例钉死：非法档位绝不得报 template。
+
+
+@pytest.mark.parametrize("bad_tier", ["", "不存在的档位"])
+def test_upload_ticket_bad_tier_never_template_source(monkeypatch, bad_tier):
+    import app
+
+    calls: dict[str, list] = {"clauses": [], "update": []}
+
+    def _fake_build(path):
+        calls["clauses"].append(path)
+        return {"clauses": [], "error": "无文本层"}
+
+    def _fake_update(tid, fields):
+        calls["update"].append((tid, fields))
+
+    monkeypatch.setattr(app, "build_contract_clauses", _fake_build)
+    monkeypatch.setattr(app, "update_ticket", _fake_update)
+
+    ticket = _upload_ticket(tier_key="contract_tier_id", tier_id=bad_tier)
+
+    out = app._build_contract_comparison(ticket, "T-UPLOAD")
+
+    assert out["source"] != "template", f"非法档位 {bad_tier!r} 不得报 template"
+    assert out["source"] == "none"
+    assert out["clauses"] == []
+    assert out["text_available"] is False
+    # 非法档位兜底后走的是照片链路（pdfplumber），不是模板链路
+    assert calls["clauses"], "应回落到 build_contract_clauses 读原文件"
+
+
+@pytest.mark.parametrize("tier_id", TIER_IDS)
+def test_template_source_implies_nonempty_clauses(monkeypatch, tier_id):
+    """显式不变式：source=="template" ⇒ clauses 非空（7 档逐一验证）。"""
+    import app
+
+    monkeypatch.setattr(app, "build_contract_clauses", _forbid("build_contract_clauses"))
+    monkeypatch.setattr(app, "update_ticket", _forbid("update_ticket"))
+
+    ticket = _upload_ticket(tier_key="contract_tier_id", tier_id=tier_id)
+
+    out = app._build_contract_comparison(ticket, "T-UPLOAD")
+
+    assert out["source"] == "template", f"{tier_id} 是合法档位，必须走模板分支"
+    assert out["clauses"], f"template ⇒ clauses 非空被破坏：{tier_id}"
+
+
 def test_electronic_ticket_keeps_pdf_source(monkeypatch):
     """非上传件（电子合同）行为不变：source=="pdf"，不读模板。"""
     import app
