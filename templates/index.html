@@ -988,7 +988,7 @@
   .cc-sec-head{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12.5px;flex-wrap:wrap}
   .cc-kind-tag{font-size:10px;padding:1px 6px;border-radius:3px;background:#eaf3ff;color:var(--color-primary);border:1px solid #c2d8f8}
   .cc-text{font-size:13px;line-height:2;color:var(--color-text);white-space:pre-wrap;word-break:break-word}
-  mark.cc-kw{background:#fff1a8;border-radius:2px;padding:0 1px}
+  mark.cc-kw{background:transparent;border-radius:2px;padding:0 1px}
   mark.cc-kw.cc-hit{background:#ffd666;outline:2px solid #fa8c16}
   .cc-page{margin:14px;border:1px solid var(--color-border);border-radius:6px;overflow:hidden;background:var(--color-surface)}
   /* 原图页：按栏宽铺满（刻意**不**限高 —— 实测限到 74vh 会把 3072×4096 的扫描件
@@ -1027,8 +1027,41 @@
   html.dark .cc-pane-h{background:var(--color-surface-50)}
   html.dark .cc-tab{background:var(--color-surface)}
   html.dark .cc-ded:hover,html.dark .cc-ded.active{background:rgba(59,130,246,.12)}
-  html.dark mark.cc-kw{background:rgba(250,204,21,.25);color:inherit}
+  html.dark mark.cc-kw{background:transparent;color:inherit}
   html.dark mark.cc-kw.cc-hit{background:rgba(250,204,21,.45)}
+  /* ===== 合同对照 v4.4：条款块 / 退费表栅格 / 目标高亮（源码照抄原型 demo:57-77） ===== */
+  .blk{padding:12px 18px;border-bottom:1px solid #f1f3f5}
+  .b-head{font-weight:700;background:#f8fafc;border-left:3px solid var(--color-primary);padding:7px 12px;margin:0 -18px 8px;font-size:13.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .b-sub{font-weight:600;font-size:13px;color:#334155;margin-top:6px}
+  .b-para{font-size:13.5px;line-height:2;text-indent:0}
+  .b-para+.b-para{margin-top:2px}
+  .fill{background:#eaf3ff;border:1px solid #c2d8f8;border-radius:3px;padding:0 3px;color:#1D4ED8;font-weight:600}
+  .fill.hand{background:#fff7e6;border-color:#f0d9a8;color:#B45309}
+  .tgt{scroll-margin:80px}
+  .tgt.cc-hit{background:#fff7db;box-shadow:inset 0 0 0 2px #fa8c16;border-radius:4px}
+  .grid-table{display:grid;grid-template-columns:100px minmax(0,.8fr) max-content minmax(0,1.9fr);gap:1px;background:var(--color-border);border:1px solid var(--color-border);border-radius:6px;overflow:hidden;margin:8px 0;font-size:12.5px}
+  .grid-table .c{background:#fff;padding:6px 9px;min-width:0}
+  .grid-table .c.h{background:var(--color-surface-50);font-weight:600;color:#334155}
+  .grid-table .r{display:contents;cursor:pointer}
+  .grid-table .r:hover .c{background:#f2f6ff}
+  .grid-table .r.cc-hit .c{background:#fff7db;box-shadow:inset 0 -2px 0 #fa8c16}
+  details{margin:8px 18px 12px;font-size:12.5px}
+  details>summary{cursor:pointer;color:var(--color-text-secondary);font-size:12.5px}
+  .raw{white-space:pre-wrap;font-size:12.5px;line-height:1.9;background:#f8fafc;border:1px solid var(--color-border);border-radius:6px;padding:10px;margin-top:8px;max-height:300px;overflow:auto;color:#334155}
+  .cc-sum-cell{cursor:pointer}
+  .cc-sum-cell:hover,.cc-sum-cell.cc-sum-hit{background:#f2f6ff;box-shadow:inset 0 -2px 0 var(--color-primary)}
+  /* 暗色覆盖（原型只有浅色；不补则暗色下新块深字深底不可读） */
+  html.dark .b-head{background:var(--color-surface-50)}
+  html.dark .b-sub{color:var(--color-text)}
+  html.dark .grid-table .c{background:var(--color-surface)}
+  html.dark .grid-table .c.h{background:var(--color-surface-50);color:var(--color-text)}
+  html.dark .raw{background:var(--color-surface-50);color:var(--color-text)}
+  html.dark .fill{background:rgba(59,130,246,.18);border-color:#3b82f6;color:#BFDBFE}
+  html.dark .fill.hand{background:rgba(245,158,11,.18);border-color:#b45309;color:#FCD34D}
+  html.dark .tgt.cc-hit{background:rgba(250,204,21,.18);box-shadow:inset 0 0 0 2px #fa8c16}
+  html.dark .grid-table .r:hover .c{background:rgba(59,130,246,.12)}
+  html.dark .grid-table .r.cc-hit .c{background:rgba(250,204,21,.18);box-shadow:inset 0 -2px 0 #fa8c16}
+  html.dark .cc-sum-cell:hover,html.dark .cc-sum-cell.cc-sum-hit{background:rgba(59,130,246,.12)}
   </style>
 </head>
 <body>
@@ -2671,29 +2704,58 @@
     </main>
     </div><!-- /app-shell -->
 
-    <!-- ═══ 合同原文对照弹窗 v2（左原文/原图 · 右扣费明细，悬停定位） ═══ -->
+    <!-- ═══ 合同原文对照弹窗 v4.4（左条款块/原图 · 右扣费明细，悬停定位） ═══ -->
     <div class="modal-overlay" v-cloak v-if="contractModalOpen" @click.self="closeContract()">
       <div class="modal-content contract-modal">
         <div class="m-head">
           <span style="display:flex;flex-direction:column;gap:2px;font-weight:700">
             <span><i class="bi bi-eye"></i> 合同原文对照</span>
-            <span class="hint" style="font-weight:400">悬停右侧明细 → 左侧原文自动定位高亮；「原图」可对照合同原件二次核对金额</span>
+            <span class="hint" style="font-weight:400">悬停任意金额（含顶部汇总格）→ 左侧原文自动定位高亮</span>
           </span>
           <span style="flex:1"></span>
-          <span v-if="cmp.tierInfo.name" class="cc-tier-chip">识别版本：[[ cmp.tierInfo.name ]]<template v-if="cmp.tierInfo.conf"> · [[ cmp.tierInfo.conf ]]</template></span>
+          <span v-if="cmp.tierInfo.name" class="cc-tier-chip">识别版本：[[ cmp.tierInfo.name ]]<template v-if="cmp.tierInfo.conf"> · 置信度 [[ cmp.tierInfo.conf ]]</template><template v-if="cmp.tierInfo.score">（匹配分 [[ cmp.tierInfo.score ]]）</template></span>
           <button class="m-close" @click="closeContract()" aria-label="关闭"><i class="bi bi-x-lg"></i></button>
         </div>
         <div class="m-body contract-body cc-body">
           <!-- 左栏：原文 / 原图 -->
           <div class="cc-pane">
             <div class="cc-pane-h">
-              <button class="cc-tab" :class="{on: cmp.cmpTab==='text'}" @click="cmp.setTab('text')">原文（提取文本）</button>
+              <button class="cc-tab" :class="{on: cmp.cmpTab==='text'}" @click="cmp.setTab('text')">原文</button>
               <button class="cc-tab" :class="{on: cmp.cmpTab==='orig'}" @click="cmp.setTab('orig')">原图（合同原件）</button>
-              <span class="hint" style="margin-left:auto">黄色 = 金额关键词 · 蓝色行 = 当前悬停项</span>
+              <span class="hint" style="margin-left:auto">🟦 = 识别填入 · 🟨 = 当前悬停项</span>
             </div>
             <div class="cc-pane-body" v-show="cmp.cmpTab==='text'">
-              <template v-if="cmp.hasText">
-                <div v-for="(sec, si) in cmp.textSections" :key="'ccsec-' + si" class="cc-section">
+              <!-- ① 电子合同：PDF 条款块 + 整句高亮 -->
+              <template v-if="cmp.leftSource==='pdf'">
+                <div v-for="(b, bi) in cmp.clauseBlocks" :key="'ccE-'+bi" class="blk">
+                  <div class="b-head">第[[ b.no ]]条　[[ b.title ]] <span v-for="(c, ci) in b.chips" :key="'ccEc-'+bi+'-'+ci" class="cc-tag" :class="'cc-tag-'+c.tagKey">[[ c.text ]]</span></div>
+                  <div class="b-para" v-html="b.bodyHtml"></div>
+                </div>
+                <div v-if="!cmp.clauseBlocks.length" class="hint" style="padding:24px;text-align:center">未提取到合同条款。请切「原图」直接核对原件。</div>
+              </template>
+              <!-- ② 上传件：档位模板条款 + OCR 填空 + 退费表 -->
+              <template v-else-if="cmp.leftSource==='template'">
+                <div v-for="(b, bi) in cmp.clauseBlocks" :key="'ccT-'+bi" class="blk">
+                  <div class="b-head">第[[ b.no ]]条　[[ b.title ]] <span v-for="(c, ci) in b.chips" :key="'ccTc-'+bi+'-'+ci" class="cc-tag" :class="'cc-tag-'+c.tagKey">[[ c.text ]]</span></div>
+                  <template v-for="(p, pi) in b.parts" :key="'ccTp-'+bi+'-'+pi">
+                    <div v-if="p.type==='line'" :class="[p.cls, {tgt: p.dom, 'cc-hit': cmp.isHit(p.dom)}]" :data-dom="p.dom || null" :ref="el => p.dom ? cmp.registerTarget(p.dom, el) : null" v-html="p.html"></div>
+                    <div v-else-if="p.type==='grid' && cmp.refundTable" class="grid-table">
+                      <div v-for="(h, hi) in cmp.refundTable.header" :key="'ccTh-'+hi" class="c h">[[ h ]]</div>
+                      <div v-for="(r, ri) in cmp.refundTable.rows" :key="'ccTr-'+ri" class="r"
+                           :class="{tgt: cmp.refundTable.hitSet.includes(r[0]), 'cc-hit': cmp.isHit('t-row-'+r[0])}"
+                           :data-dom="cmp.refundTable.hitSet.includes(r[0]) ? ('t-row-'+r[0]) : null"
+                           :ref="el => cmp.refundTable.hitSet.includes(r[0]) ? cmp.registerTarget('t-row-'+r[0], el) : null">
+                        <div class="c">[[ r[0] ]]</div><div class="c">[[ r[1] ]]</div><div class="c">[[ r[2] ]]</div><div class="c">[[ r[3] ]]</div>
+                      </div>
+                    </div>
+                    <details v-else-if="p.type==='details'"><summary>[[ p.summary ]]</summary><div v-html="p.html"></div></details>
+                  </template>
+                </div>
+                <details v-if="cmp.leftFolds.ocrText"><summary>▸ 查看 OCR 识别原文（未加工，供逐字核对；如需核对金额请切「原图」）</summary><div class="raw">[[ cmp.leftFolds.ocrText ]]</div></details>
+              </template>
+              <!-- ③ 回落：无接口数据时沿用现有文本 sections（行为不退化） -->
+              <template v-else-if="cmp.hasText">
+                <div v-for="(sec, si) in cmp.textSections" :key="'ccsec-'+si" class="cc-section">
                   <div v-if="sec.title || sec.kind" class="cc-sec-head">
                     <b>[[ sec.title ]]</b>
                     <span v-if="sec.kind" class="cc-kind-tag">[[ sec.kind ]]</span>
@@ -2703,13 +2765,13 @@
               </template>
               <div v-else class="hint" style="padding:24px;text-align:center">
                 <i class="bi bi-file-earmark-x" style="font-size:30px;display:block;margin-bottom:10px;color:#94A3B8"></i>
-                未提取到合同文本<template v-if="cmp.textError">（[[ cmp.textError ]]）</template>。<br>
-                请切「原图」直接核对原件。
+                <template v-if="cmp.apiLoading">正在加载合同对照…</template>
+                <template v-else>未提取到合同文本<template v-if="cmp.textError">（[[ cmp.textError ]]）</template>。<br>请切「原图」直接核对原件。</template>
               </div>
             </div>
             <div class="cc-pane-body" v-show="cmp.cmpTab==='orig'">
               <template v-if="cmp.hasOrig">
-                <div v-for="(p, pi) in cmp.origPages" :key="'ccpg-' + pi" class="cc-page">
+                <div v-for="(p, pi) in cmp.origPages" :key="'ccpg-'+pi" class="cc-page">
                   <div v-if="p.cap" class="cc-page-cap">[[ p.cap ]]</div>
                   <!-- 单页限高后需要放大路径：点图新开原图（该 URL 走登录态，直接可看） -->
                   <a v-if="p.type==='img'" :href="p.url" target="_blank" rel="noopener" :title="'点击查看原图' + (p.cap ? '：' + p.cap : '')">
@@ -2727,17 +2789,21 @@
           <!-- 右栏：金额汇总 + 扣费明细对照 -->
           <div class="cc-pane cc-right">
             <div class="cc-sum">
-              <div v-for="(c, ci) in cmp.summaryCells" :key="'ccsum-' + ci" class="cc-sum-cell">
+              <div v-for="(c, ci) in cmp.sumCells" :key="'ccsum-'+ci" class="cc-sum-cell"
+                   :class="{'cc-sum-hit': c.dom && cmp.isHit(c.dom)}"
+                   :data-dom="c.dom || null" :title="c.dom ? '悬停定位到原文' : ''"
+                   @mouseenter="c.dom && cmp.hoverDom(c.dom)" @mouseleave="c.dom && cmp.leaveDom(c.dom)" @click="c.dom && cmp.pinDom(c.dom)">
                 <div class="k">[[ c.k ]]</div>
                 <div class="v" :class="{refund: c.refund}">[[ c.v ]]</div>
               </div>
             </div>
             <div class="cc-pane-body">
               <div v-if="!cmp.dedRows.length" class="hint" style="padding:16px;text-align:center">暂无扣费明细——请先完成「上传合同分析 / 下载合同并分析」，或「手动录入费用」。</div>
-              <div v-for="d in cmp.dedRows" :key="'ccded-' + d.idx" class="cc-ded"
-                   :class="{active: cmp.activeIdx===d.idx || cmp.pinnedIdx===d.idx}"
-                   @mouseenter="cmp.hoverRow(d.idx)" @mouseleave="cmp.leaveRow(d.idx)" @click="cmp.pinRow(d.idx)"
-                   :title="d.canLocate ? '悬停定位原文，点击钉住' : '无原文锚点（识别降级），不可定位'">
+              <div v-for="d in cmp.dedRows" :key="'ccded-'+d.idx" class="cc-ded"
+                   :class="{active: (d.dom && cmp.isHit(d.dom)) || cmp.activeIdx===d.idx || cmp.pinnedIdx===d.idx}"
+                   :data-dom="d.dom || null"
+                   @mouseenter="d.dom ? cmp.hoverDom(d.dom) : cmp.hoverRow(d.idx)" @mouseleave="d.dom ? cmp.leaveDom(d.dom) : cmp.leaveRow(d.idx)" @click="d.dom ? cmp.pinDom(d.dom) : cmp.pinRow(d.idx)"
+                   :title="(d.dom || d.canLocate) ? '悬停定位原文，点击钉住' : '无原文锚点（识别降级），不可定位'">
                 <div class="l1">
                   <span class="nm">[[ d.item ]]</span>
                   <span class="cc-tag" :class="'cc-tag-' + d.tagKey">[[ d.category ]]</span>
@@ -2745,11 +2811,11 @@
                   <span class="amt">¥[[ cmp.money(d.amount) ]]</span>
                 </div>
                 <span v-if="d.basis" class="basis">[[ d.basis ]]</span>
-                <span class="loc" :class="{no: !d.canLocate}"><i class="bi" :class="d.canLocate ? 'bi-geo-alt-fill' : 'bi-ban'"></i> [[ d.canLocate ? '原文定位' : '无锚点' ]]</span>
+                <span class="loc" :class="{no: !(d.dom || d.canLocate)}"><i class="bi" :class="(d.dom || d.canLocate) ? 'bi-geo-alt-fill' : 'bi-ban'"></i> [[ (d.dom || d.canLocate) ? '原文定位' : '无锚点' ]]</span>
               </div>
-              <div v-if="cmp.aiSummary" class="cc-extra">
+              <div v-if="cmp.aiSummaryHtml" class="cc-extra">
                 <div class="h"><i class="bi bi-robot"></i> AI 摘要（额外约定等）</div>
-                <div class="b">[[ cmp.aiSummary ]]</div>
+                <div class="b" v-html="cmp.aiSummaryHtml"></div>
               </div>
               <div class="cc-foot"><i class="bi bi-shield-check"></i> 核对无误后请关闭本窗口并在 ② 确认明细</div>
             </div>
@@ -3215,7 +3281,7 @@
       "useToast": "/static/js/composables/useToast.js?v=16",
       "useComplaint": "/static/js/composables/useComplaint.js?v=23",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=22",
-      "useContractCompare": "/static/js/composables/useContractCompare.js?v=3",
+      "useContractCompare": "/static/js/composables/useContractCompare.js?v=4",
       "useSettings": "/static/js/composables/useSettings.js?v=32",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
       "useWorkbench": "/static/js/composables/useWorkbench.js?v=40"

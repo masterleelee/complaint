@@ -229,7 +229,14 @@ try {
     // ── 合同原文对照弹窗（左原文/原图 · 右扣费明细，悬停定位） ──
     // cmp.* 暴露给模板；⚠️ 必须 Vue.reactive 包裹：普通对象内嵌 computed 模板不解包
     // → 根渲染崩溃整页白屏（2026-09-20 三栏预览实锤，护栏 test_contract_compare_reactive.py）
-    const cmp = Vue.reactive(useContractCompare(() => ar.value, () => cPath.value, () => contractManifest.value));
+    // 第 4 个参数 = 工单号 getter：有 ticket_id 时优先拉 /api/contract/comparison/<id>
+    // （上传件走档位模板条款 / 电子合同走 PDF 文本层）；拿不到则回落 ar 现有渲染路径。
+    const cmp = Vue.reactive(useContractCompare(
+      () => ar.value,
+      () => cPath.value,
+      () => contractManifest.value,
+      () => selectedTicketId.value || currentTicketId.value || "",
+    ));
 
     // ── 设置 ──
     const { cfg, cfgSaving, cfgMsg, cfgOk, loadCfg, saveCfg,
@@ -662,6 +669,8 @@ try {
         contractIsImage.value = false;
       }
       cmp.reset();
+      // 有 ticket_id 时拉对照接口（左栏条款块来源）；失败/无 id 自动回落现有渲染路径
+      cmp.load();
       contractModalOpen.value = true;
     }
 
