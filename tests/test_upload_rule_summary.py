@@ -108,7 +108,8 @@ def test_no_practical_item_omits_hours_line():
     assert "已产生实操学时" not in summary
 
 
-def test_practical_items_add_hours_line():
+def test_practical_items_add_hours_formula_line():
+    """两科目同单价：整行还原「学时 × 单价」算式（原型 ⑤）。"""
     items = [
         {"item": "科目二实操培训费", "amount": 1920, "basis": "审核学时 16 × 档位单价 120 元/学时（C1）"},
         {"item": "科目三实操培训费", "amount": 480, "basis": "审核学时 4 × 档位单价 120 元/学时（C1）"},
@@ -118,10 +119,54 @@ def test_practical_items_add_hours_line():
     lines = _lines(summary)
     # 有实操项 → 6 行（1/2/3/4/5/6）
     assert len(lines) == 6, summary
-    hours_line = next(ln for ln in lines if "已产生实操学时（计时平台）" in ln)
-    assert "科目二实操 16 学时" in hours_line
-    assert "科目三实操 4 学时" in hours_line
-    assert "**¥2,400**" in hours_line  # 1920 + 480
+    assert lines[2] == (
+        "已产生实操学时（计时平台）：科目二 16 小时 + 科目三 4 小时 = 20 小时 × 120 元/小时"
+        " → 依实扣费 **¥2,400**。"
+    )
+
+
+def test_practical_single_subject_no_dangling_plus_or_double_eq():
+    """单科目：无多余的 `+`，且不出现重复的 `=`。"""
+    items = [
+        {"item": "科目二实操培训费", "amount": 1920, "basis": "审核学时 16 × 档位单价 120 元/学时（C1）"},
+    ]
+    summary = build_rule_summary(_dr(items, 2000, 1580, 3580), TIER_2023)
+    hours_line = next(ln for ln in _lines(summary) if "已产生实操学时" in ln)
+    assert hours_line == (
+        "已产生实操学时（计时平台）：科目二 16 小时 = 16 小时 × 120 元/小时 → 依实扣费 **¥1,920**。"
+    )
+    assert "+" not in hours_line
+    assert hours_line.count("=") == 1
+
+
+def test_practical_different_rates_kept_per_item_not_merged():
+    """单价不同：各项各自带单价，不出现「20 小时 × 」这种合并写法。"""
+    items = [
+        {"item": "科目二实操培训费", "amount": 1920, "basis": "审核学时 16 × 档位单价 120 元/学时（C1）"},
+        {"item": "科目三实操培训费", "amount": 600, "basis": "审核学时 4 × 合同正文单价 150 元/学时（C2）"},
+    ]
+    summary = build_rule_summary(_dr(items, 2000, 1580, 3580), TIER_2023)
+    hours_line = next(ln for ln in _lines(summary) if "已产生实操学时" in ln)
+    assert hours_line == (
+        "已产生实操学时（计时平台）：科目二 16 小时 × 120 元/小时 + 科目三 4 小时 × 150 元/小时"
+        " → 依实扣费 **¥2,520**。"
+    )
+    # 不合并：不得出现「总学时 × 单一价」或 `=`
+    assert "20 小时 ×" not in hours_line
+    assert "=" not in hours_line
+
+
+def test_practical_nonstandard_basis_falls_back_without_none_or_hours():
+    """任一项 basis 非标准形态 → 退回简写行；整份摘要不得出现 None / nan / 小时。"""
+    items = [
+        {"item": "科目二实操培训费", "amount": 1920, "basis": "人工补录"},
+        {"item": "科目三实操培训费", "amount": 480, "basis": "审核学时 4 × 档位单价 120 元/学时（C1）"},
+    ]
+    summary = build_rule_summary(_dr(items, 2000, 1580, 3580), TIER_2023)
+    hours_line = next(ln for ln in _lines(summary) if "已产生实操学时" in ln)
+    assert hours_line == "已产生实操学时（计时平台）：科目二实操 + 科目三实操 → 依实扣费 **¥2,400**。"
+    for bad in ("None", "nan", "小时"):
+        assert bad not in summary, f"降级摘要不应出现 {bad!r}: {summary!r}"
 
 
 def test_extra_agreement_line_requires_both_paid_and_tail():

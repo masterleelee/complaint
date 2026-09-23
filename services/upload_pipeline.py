@@ -223,8 +223,12 @@ def _attach_payment_context(
 # 实操项名后缀：「科目二实操培训费」→ 科目标签「科目二实操」。
 _PRACTICAL_ITEM_SUFFIX = "实操培训费"
 _PENALTY_ITEM_NAME = "违约金"
-# 从实操项 basis（`审核学时 {hours:g} × …`）里取学时数；取不到时该科只显示名不发学时。
-_HOURS_IN_BASIS_RE = re.compile(r"审核学时\s*([0-9]+(?:\.[0-9]+)?)")
+# 从实操项 basis（`审核学时 {hours:g} × {单价标签} {rate:.0f} 元/学时（{车型}）`）里解析
+# 「学时」与「单价」——该串由 deduction_engine 写入，**已反映实际采用的单价**（合同正文
+# 单价或档位默认），比另查档位表更准。
+_PRACTICE_BASIS_RE = re.compile(
+    r"审核学时\s*(?P<hours>\d+(?:\.\d+)?)\s*×.*?(?P<rate>\d+(?:\.\d+)?)\s*元/学时"
+)
 # 从违约金项 basis（`… × 档位默认 {rate}%（…）`）里取费率百分数。
 _PENALTY_RATE_IN_BASIS_RE = re.compile(r"([0-9]{1,3})\s*%")
 
@@ -233,6 +237,14 @@ def _money(v: Any) -> str:
     """千分位取整（元）：`f"{v:,.0f}"`；None / 非法 / 空 → "0"。"""
     f = _as_float(v)
     return f"{f:,.0f}" if f is not None else "0"
+
+
+def _fmt_num(v: Any) -> str:
+    """数字归一显示（去掉多余的 `.0`）：`f"{float(v):g}"`；非法 → 原样字符串。"""
+    try:
+        return f"{float(v):g}"
+    except (TypeError, ValueError):
+        return str(v)
 
 
 def _display_name(tier_result: Any) -> str:
@@ -250,9 +262,42 @@ def _practical_label(item_name: Any) -> str:
     return name
 
 
-def _hours_from_basis(basis: Any) -> str:
-    m = _HOURS_IN_BASIS_RE.search(str(basis or ""))
-    return m.group(1) if m else ""
+def _practical_subject(item_name: Any) -> str:
+    """「科目二实操培训费」→「科目二」（去掉尾部「实操培训费」）。"""
+    name = str(item_name or "")
+    if name.endswith(_PRACTICAL_ITEM_SUFFIX):
+        return name[: -len(_PRACTICAL_ITEM_SUFFIX)]
+    return name
+
+
+def _practical_hours_formula(practical_items: list) -> str | None:
+    """把实操项还原为「科目二 16 小时 + 科目三 4 小时 = 20 小时 × 120 元/小时」。
+
+    学时与单价从各实操项的 `basis`（`审核学时 16 × 档位单价 120 元/学时（C1）`）解析；
+    该串已反映实际采用的单价（合同正文单价 / 档位默认）。
+
+    - 各项单价**全部相同** → 合并为「{各项} = {总学时} 小时 × {单价} 元/小时」；
+    - 各项单价**不同** → 各项各自带单价（不合并，不出 `=`）；
+    - 任一项解析不出学时/单价 → 返回 `None`（调用方退回简写，**绝不**写 0 / None 小时）。
+    """
+    parsed: list[tuple[str, str, str]] = []
+    for it in practical_items:
+        m = _PRACTICE_BASIS_RE.search(str(it.get("basis") or ""))
+        if not m:
+            return None
+        parsed.append((_practical_subject(it.get("item")), m.group("hours"), m.group("rate")))
+    if not parsed:
+        return None
+
+    rates = {_fmt_num(r) for _, _, r in parsed}
+    hours_parts = " + ".join(f"{subj} {_fmt_num(h)} 小时" for subj, h, _ in parsed)
+    if len(rates) == 1:
+        rate = next(iter(rates))
+        total_hours = sum(float(h) for _, h, _ in parsed)
+        return f"{hours_parts} = {_fmt_num(total_hours)} 小时 × {rate} 元/小时"
+    return " + ".join(
+        f"{subj} {_fmt_num(h)} 小时 × {_fmt_num(r)} 元/小时" for subj, h, r in parsed
+    )
 
 
 def _penalty_rate_from_basis(basis: Any) -> str:
@@ -268,7 +313,7 @@ def build_rule_summary(deductions_result: Any, tier_result: Any) -> str:
 
     1. 本合同为 **{档位显示名}** 档位标准合同（纸质照片识别）。合同总额 ¥…，实缴 ¥…，应付尾款 ¥…。
     2. 额外约定（手写）：**首付 {实缴} 元，欠款 {尾款} 元**。        ← 实缴>0 且 尾款>0 才出
-    3. 已产生实操学时（计时平台）：{科目… 学时 + …} → 依实扣费 **¥…**。  ← 仅当有实操项
+    3. 已产生实操学时（计时平台）：科目二 16 小时 + 科目三 4 小时 = 20 小时 × 120 元/小时 → 依实扣费 **¥…**。  ← 仅当有实操项
     4. 扣费合计 ¥… = {项} {额} + …
     5. 违约金按全部培训费用 {总额} × {率}% = {额}。               ← 仅当有违约金项
     6. 应退 = 实缴 {实缴} − 扣费合计 {合计} = **¥{应退}**（…）。   ← 括号半句仅当应退<=0
@@ -317,17 +362,15 @@ def build_rule_summary(deductions_result: Any, tier_result: Any) -> str:
     # 2) 手写额外约定（有首付且有欠款才出）
     if paid > 0 and tail > 0:
         lines.append(f"额外约定（手写）：**首付 {_money(paid)} 元，欠款 {_money(tail)} 元**。")
-    # 3) 已产生实操学时（仅当有实操项）
+    # 3) 已产生实操学时（仅当有实操项）：优先还原「学时 × 单价」算式（原型 ⑤）；
+    #    任一项 basis 解析不出 → 退回简写（不写 0/None 小时、不丢行）。
     if practical_items:
-        parts: list[str] = []
-        for it in practical_items:
-            label = _practical_label(it.get("item"))
-            hours = _hours_from_basis(it.get("basis"))
-            parts.append(f"{label} {hours} 学时" if hours else label)
         practice_sum = sum((_as_float(it.get("amount")) or 0.0) for it in practical_items)
-        lines.append(
-            "已产生实操学时（计时平台）：" + " + ".join(parts) + f" → 依实扣费 **¥{_money(practice_sum)}**。"
+        formula = _practical_hours_formula(practical_items)
+        body = formula if formula is not None else " + ".join(
+            _practical_label(it.get("item")) for it in practical_items
         )
+        lines.append(f"已产生实操学时（计时平台）：{body} → 依实扣费 **¥{_money(practice_sum)}**。")
     # 4) 扣费合计 = 各项逐条相加
     breakdown = " + ".join(f"{it.get('item')} {_money(it.get('amount'))}" for it in items if isinstance(it, dict))
     lines.append(f"扣费合计 ¥{_money(ded_sum)} = {breakdown}。")
