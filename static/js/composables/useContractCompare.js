@@ -51,6 +51,30 @@ function _confLabel(raw) {
   return "";
 }
 
+// 「应退」显示值（v4.4 修正 · 2026-09-24）。
+//
+// 权威口径 = deductions_result.refund——它与后端 app.py:3420 落库的
+// complaint_tickets.refund_fee、core/case_workflow.py、reply_docx.py 三处同源。
+//
+// ⚠️ 禁止使用 deductions_result.net_refund：那是 services/upload_pipeline.py 的
+//    「冲抵未付尾款后的实退」= max(0, refund − tail_due)，与「应退」不是同一口径。
+//    实测 dr.refund=284 / dr.net_refund=0（因 tail_due ≥ 284），旧代码会把应退显示成 ¥0。
+//
+// ⚠️ 0 是有效应退值（原型 ①⑤ 都要求显示 ¥0），绝不能因为 `!refund` 就当缺失显示「待核」。
+//    只有 refund_pending 为真、或 refund 与实缴信息都拿不到时，才「待核」。
+//
+// 兜底：权威 refund 缺失但确有实缴金额（paid > 0）时，保留既有口径「应退 = 实缴 − 扣费合计」，
+//       不使历史工单（无 refund 字段）回归成「待核」。
+function _refundValue(dr, r, paid, dedSum) {
+  const refundPending = Boolean((dr && dr.refund_pending) || (r && r.refund_pending));
+  const rawRefund = (dr && dr.refund != null) ? dr.refund
+    : ((r && r.refund != null) ? r.refund : null);
+  let refund = null;
+  if (rawRefund != null) refund = Number(rawRefund);
+  else if (paid > 0) refund = Math.max(paid - dedSum, 0);
+  return (refundPending || refund == null) ? "待核" : "¥" + _money(refund);
+}
+
 // 一段正文字符串注入 anchor mark（区间重叠时后者失效，保证 HTML 合法）
 function _injectMarks(text, marks) {
   const sorted = [...marks].sort((m1, m2) => m1.start - m2.start);
@@ -365,16 +389,13 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
     const paid = Number(r.actual_paid != null ? r.actual_paid : r.paid_amount) || 0;
     const tot = Number(r.total_fee) || 0;
     const dedSum = dedRows.value.reduce((s, x) => s + (x.amount || 0), 0);
-    const netRefund = (dr.net_refund != null) ? Number(dr.net_refund) : null;
-    const refund = netRefund != null ? netRefund
-      : Number(dr.refund != null ? dr.refund : r.refund) || Math.max(paid - dedSum, 0);
     const cells = [
       { k: "合同总额", v: tot ? "¥" + _money(tot) : "—" },
       { k: "实缴", v: paid ? "¥" + _money(paid) : "—" },
       { k: "扣费合计", v: "¥" + _money(dedSum) },
     ];
     if (Number(dr.tail_due) > 0) cells.push({ k: "应付尾款", v: "¥" + _money(dr.tail_due) });
-    cells.push({ k: "应退", v: refund ? "¥" + _money(refund) : "待核", refund: true });
+    cells.push({ k: "应退", v: _refundValue(dr, r, paid, dedSum), refund: true });
     return cells;
   });
 
@@ -389,25 +410,22 @@ export function useContractCompare(getResult, getSourcePath, getManifest, getTic
       const tot = Number(dr.total_fee) || 0;
       const paid = Number(dr.paid_amount) || 0;
       const tail = Number(dr.tail_due) || 0;
-      const refund = (dr.net_refund != null) ? Number(dr.net_refund) : Math.max(paid - dedSum, 0);
       return [
         { k: "合同总额", v: tot ? "¥" + _money(tot) : "—", dom: "t-total" },
         { k: "实缴", v: paid ? "¥" + _money(paid) : "—", dom: "t-paid" },
         { k: "扣费合计", v: "¥" + _money(dedSum) },              // 无 dom：扣费合计不定位
         { k: "应付尾款", v: "¥" + _money(tail), dom: "t-paid" },
-        { k: "应退", v: refund ? "¥" + _money(refund) : "待核", dom: "t-note", refund: true },
+        { k: "应退", v: _refundValue(dr, r, paid, dedSum), dom: "t-note", refund: true },
       ];
     }
     if (src === "pdf") {
       const tot = Number(r.total_fee) || 0;
       const paid = Number(r.actual_paid != null ? r.actual_paid : r.paid_amount) || 0;
-      const refund = (dr.net_refund != null) ? Number(dr.net_refund)
-        : (Number(dr.refund != null ? dr.refund : r.refund) || Math.max(paid - dedSum, 0));
       return [
         { k: "合同总额", v: tot ? "¥" + _money(tot) : "—", dom: "t-total" },  // 只有合同总额挂 dom
         { k: "实缴", v: paid ? "¥" + _money(paid) : "—" },
         { k: "扣费合计", v: "¥" + _money(dedSum) },
-        { k: "应退", v: refund ? "¥" + _money(refund) : "待核", refund: true },
+        { k: "应退", v: _refundValue(dr, r, paid, dedSum), refund: true },
       ];
     }
     return summaryCells.value.map(c => ({ ...c }));

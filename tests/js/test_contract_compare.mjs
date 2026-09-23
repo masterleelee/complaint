@@ -360,6 +360,79 @@ check("电子合同 sumCells = 4 格", pdfSum.length === 4);
 check("电子合同只有合同总额有 dom", pdfSum[0].dom === "t-total"
   && pdfSum.slice(1).every(c => c.dom === undefined));
 
+// ── 应退：读权威 refund 字段，0 不显示「待核」（v4.4 修正 · 2026-09-24）──────
+// 权威应退 = deductions_result.refund（与后端 app.py:3420 落库口径同源）。
+// deductions_result.net_refund 是「冲抵未付尾款后的实退」= max(0, refund − tail)，
+// 实测 dr.refund=284 / dr.net_refund=0（tail_due ≥ 284）—— 读 net_refund 会把应退显示成 ¥0。
+function _refundOf(c) {
+  const cell = c.sumCells.value.find(x => x.k === "应退");
+  return cell ? cell.v : "(缺应退格)";
+}
+const RESULT_REFUND = {
+  total_fee: 3580,
+  deductions_result: {
+    items: [
+      { item: "服务费", amount: 600, category: "必扣", basis: "第八条 退费表「基础服务（必扣项）·服务费」" },
+      { item: "违约金", amount: 716, category: "违约金", basis: "第八条 备注：全部培训费用的20%" },
+    ],
+    total_fee: 3580, paid_amount: 2000, tail_due: 1580,
+    refund: 284, net_refund: 0,   // ← 权威 284；net_refund=0 是「冲抵尾款后实退」
+  },
+  tier_result: { display_name: "2023·分校", confidence: "high", score: 10 },
+  contract_analyses: [{ index: 0, kind: "", text: "（OCR 原文）服务费600 违约金716" }],
+};
+const RT_AUTH = _mkCmp(API_TEMPLATE, RESULT_REFUND);
+await RT_AUTH.load();
+const PDF_AUTH = _mkCmp(API_PDF, RESULT_REFUND);
+await PDF_AUTH.load();
+const GEN_AUTH = _mkCmp(API_NONE, RESULT_REFUND);
+await GEN_AUTH.load();
+check("应退·上传件分支读权威 refund=284（不是 net_refund=0）", _refundOf(RT_AUTH) === "¥284");
+check("应退·电子合同分支读权威 refund=284", _refundOf(PDF_AUTH) === "¥284");
+check("应退·通用分支读权威 refund=284", _refundOf(GEN_AUTH) === "¥284");
+
+// 0 是有效应退值 → 必须显示 ¥0，绝不能因为 !refund 就当缺失显示「待核」
+const RESULT_ZERO = {
+  total_fee: 3580,
+  deductions_result: {
+    items: [{ item: "服务费", amount: 3580, category: "必扣" }],
+    total_fee: 3580, paid_amount: 2000,
+    refund: 0, refund_pending: false, net_refund: 0,
+  },
+  tier_result: { display_name: "2023·分校", confidence: "high", score: 10 },
+};
+const ZERO_TPL = _mkCmp(API_TEMPLATE, RESULT_ZERO);
+await ZERO_TPL.load();
+const ZERO_GEN = _mkCmp(API_NONE, RESULT_ZERO);
+await ZERO_GEN.load();
+check("应退=0 → ¥0（上传件分支，不得「待核」）", _refundOf(ZERO_TPL) === "¥0");
+check("应退=0 → ¥0（通用分支，不得「待核」）", _refundOf(ZERO_GEN) === "¥0");
+
+// refund_pending=true → 「待核」（即便 refund 有值也不下最终结论）
+const RESULT_PENDING = {
+  total_fee: 3580,
+  deductions_result: {
+    items: [{ item: "服务费", amount: 600, category: "必扣", basis: "第八条 退费表「基础服务（必扣项）·服务费」" }],
+    total_fee: 3580, paid_amount: 2000, refund: 284, refund_pending: true,
+  },
+  tier_result: { display_name: "2023·分校", confidence: "high", score: 10 },
+};
+const PEND_TPL = _mkCmp(API_TEMPLATE, RESULT_PENDING);
+await PEND_TPL.load();
+check("应退 refund_pending=true → 「待核」", _refundOf(PEND_TPL) === "待核");
+
+// refund 与实缴信息都缺 → 「待核」（不得凭空兜底出金额）
+const RESULT_MISSING = {
+  total_fee: 3580,
+  deductions_result: {
+    items: [{ item: "服务费", amount: 600, category: "必扣" }],   // 无 refund / 无 paid_amount
+  },
+  tier_result: { display_name: "2023·分校", confidence: "high", score: 10 },
+};
+const MISS_TPL = _mkCmp(API_TEMPLATE, RESULT_MISSING);
+await MISS_TPL.load();
+check("应退 refund 与实缴都缺 → 「待核」", _refundOf(MISS_TPL) === "待核");
+
 // ── aiSummary 取值（契约 §4.2）──────────────────────────────────────────
 check("aiSummary 优先 dr.rule_summary", cmpTpl.aiSummary.value.includes("2023·分校")
   && cmpTpl.aiSummary.value.includes("档位标准合同"));

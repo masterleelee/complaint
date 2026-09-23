@@ -175,6 +175,41 @@ def test_no_injection_attribute(html):
     assert "data-page-node-id" not in html, "index.html 残留 data-page-node-id 注入属性"
 
 
+# ── 应退必须读权威 refund 字段（v4.4 修正 · 2026-09-24）────────────────────
+def test_no_net_refund_in_source(js):
+    """`deductions_result.net_refund` 是 services/upload_pipeline.py 的「冲抵未付尾款后的实退」
+    = max(0, refund − tail_due)，**不是**「应退」。权威应退是 `deductions_result.refund`
+    （与 app.py:3420 落库的 complaint_tickets.refund_fee、core/case_workflow.py、
+    reply_docx.py 三处同源）。实测 dr.refund=284 / dr.net_refund=0（tail_due ≥ 284），
+    读 net_refund 会把应退显示成 ¥0。注释里详述该口径不算违规，故只查可执行代码。"""
+    assert "net_refund" not in _code(js), (
+        "useContractCompare.js 的可执行代码里出现 net_refund —— 应退必须读权威 refund 字段"
+    )
+
+
+def test_refund_reads_authoritative_field(js):
+    """三个分支的应退格统一走 _refundValue，且该函数优先读 `refund`、正确区分 0 与缺失。"""
+    code = _code(js)
+    n_def = code.count("function _refundValue(")
+    n_use = code.count("_refundValue(dr, r, paid, dedSum)") - n_def
+    assert n_def == 1, "应退取值应集中在唯一的 _refundValue 定义里"
+    assert n_use == 3, (
+        f"通用 / 上传件 / 电子合同三个分支的应退格都应调用 _refundValue，实际 {n_use} 处"
+    )
+    m = re.search(r"function _refundValue\([^)]*\)\s*\{(.*?)\n\}", code, re.S)
+    assert m, "找不到 _refundValue 定义（应退取值应集中在这里）"
+    body = m.group(1)
+    assert re.search(r"\brefund\b", body), "_refundValue 未读取权威 refund 字段"
+    assert "refund_pending" in body, "_refundValue 未处理 refund_pending（应显示「待核」）"
+    # 0 是有效应退值：缺失判据必须是 `refund == null`，不能用 `!refund`
+    assert "refund == null" in body, (
+        "应退的「待核」判据必须是 `refund == null`（0 是有效应退值，要显示 ¥0）"
+    )
+    assert not re.search(r"!\s*refund\b", body), (
+        "出现 `!refund` —— 会把 ¥0 误判成缺失并显示「待核」（原型 ①⑤ 要求显示 ¥0）"
+    )
+
+
 # ── 护栏与被护对象共存 ────────────────────────────────────────────────────
 def test_guard_subject_exists(html, js):
     assert 'v-if="contractModalOpen"' in html
