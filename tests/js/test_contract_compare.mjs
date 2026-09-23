@@ -99,7 +99,7 @@ check("summaryCells 含应退", cmp.summaryCells.value.some(c => c.k === "应退
 const refundCell = cmp.summaryCells.value.find(c => c.k === "应退");
 check("应退 = 实缴-扣费合计", refundCell.v === "¥1,240");
 check("tier 名称", cmp.tierInfo.value.name === "2023·分校");
-check("tier 置信度", cmp.tierInfo.value.conf === "93%");
+check("tier 置信度（high → 高）", cmp.tierInfo.value.conf === "高");
 
 // 2026-09-22 起：有逐张原图就不再列合并 PDF（同一份合同曾被列两遍：合并 PDF + 每张原图），
 // 且合并 PDF 走 <iframe> 会带出浏览器内置查看器的深色工具栏 → 有原图时改走 <img>。
@@ -154,6 +154,35 @@ check("无合并 PDF 但有 2 张原图 → 2 页且页码为 1/2、2/2",
 const cmp5 = useContractCompare(() => SINGLE, () => "/x/only.pdf", () => ({}));
 check("manifest 空但 cPath 为 PDF → 单页 pdf 兜底",
   cmp5.origPages.value.length === 1 && cmp5.origPages.value[0].type === "pdf");
+
+// ── S3a：档位徽章置信度（人话标签，绝不含「%」）────────────────────────
+// 用户截图缺陷：tier_result.score 是档位「特征加权分」（如 10），不是概率；
+// 旧逻辑 Math.round(score * 100) + "%" → 界面显示 1000%。这里把正确取值钉死，
+// 并把用户看到的错值（1000%）写成回归断言，防止回潮。
+const cmpConfHigh = useContractCompare(
+  () => ({ tier_result: { score: 10, confidence: "high", display_name: "2023·分校" } }),
+  () => "", () => null,
+);
+check("conf: high → 高", cmpConfHigh.tierInfo.value.conf === "高");
+check("conf: 不含「%」", !String(cmpConfHigh.tierInfo.value.conf).includes("%"));
+check("conf: score=10 不得显示 1000%（回归）", cmpConfHigh.tierInfo.value.conf !== "1000%");
+check("cls: high 保留", cmpConfHigh.tierInfo.value.cls === "high");
+check("tier 名称不受影响", cmpConfHigh.tierInfo.value.name === "2023·分校");
+
+const cmpConfMedium = useContractCompare(
+  () => ({ tier_result: { score: 10, confidence: "medium" } }), () => "", () => null,
+);
+check("conf: medium → 中", cmpConfMedium.tierInfo.value.conf === "中");
+
+const cmpConfLow = useContractCompare(
+  () => ({ tier_result: { score: 10, confidence: "low" } }), () => "", () => null,
+);
+check("conf: low → 低", cmpConfLow.tierInfo.value.conf === "低");
+
+const cmpConfMissing = useContractCompare(
+  () => ({ tier_result: { score: 10 } }), () => "", () => null,
+);
+check("conf: 缺失（score=10）→ \"\"", cmpConfMissing.tierInfo.value.conf === "");
 
 console.log(failed === 0 ? "\nALL PASS" : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);

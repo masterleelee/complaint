@@ -30,6 +30,16 @@ function _previewUrl(filepath) {
 }
 const _isImgPath = (p) => /\.(png|jpe?g|gif|bmp|webp)$/i.test(p || "");
 
+// 档位置信度 → 人话标签。⚠️ 绝不使用「%」：tier_result.score 是「档位特征加权分」
+// （如 10），不是概率；旧代码 Math.round(score * 100) + "%" 会把它显示成 1000%。
+function _confLabel(raw) {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (s === "high" || s === "h" || s === "高") return "高";
+  if (s === "medium" || s === "m" || s === "中") return "中";
+  if (s === "low" || s === "l" || s === "低") return "低";
+  return "";
+}
+
 // 一段正文字符串注入 anchor mark（区间重叠时后者失效，保证 HTML 合法）
 function _injectMarks(text, marks) {
   const sorted = [...marks].sort((m1, m2) => m1.start - m2.start);
@@ -62,10 +72,10 @@ export function useContractCompare(getResult, getSourcePath, getManifest) {
     const raw = String(t.confidence || "").toLowerCase();
     const cls = (raw === "high" || raw === "h" || raw === "高") ? "high"
       : (raw === "medium" || raw === "m" || raw === "中") ? "medium" : "";
-    const score = t.score != null ? Number(t.score) : null;
     return {
       name: t.display_name || (result.value && result.value.tier_id) || "",
-      conf: score != null && score > 0 ? Math.round(score * 100) + "%" : (t.confidence || ""),
+      // conf 只做人话置信度（高/中/低/""）；score 是特征加权分，不参与显示
+      conf: _confLabel(t.confidence),
       cls,
       evidence: t.evidence || "",
     };
