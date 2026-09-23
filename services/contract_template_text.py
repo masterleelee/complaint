@@ -131,6 +131,38 @@ def clause(tier: Any, no: Any) -> str:
     return text[window[0]:window[1]]
 
 
+def template_clauses(tier: Any) -> list[dict]:
+    """档位模板切成条款块：`[{"no": "四", "title": "费用及支付", "body": "（一）…"}]`。
+
+    - `no`    = 中文数字（不带「第」「条」，与 `build_contract_clauses` 同口径）
+    - `title` = 标题行「第X条」之后的剩余文本（strip；与 `build_contract_clauses` 同切法）
+    - `body`  = 标题行换行之后 → 下一条标题行之前（strip）
+    - **无前导块**（不像 `build_contract_clauses` 那样产出 `no=""` 的 preamble 条目）
+    - 未知档位 / 无资产 → `[]`（保持本模块「只读、安静返回空、不抛异常」的风格）
+    """
+    text = template_text(tier)
+    if not text:
+        return []
+
+    matches = list(_CLAUSE_TITLE_RE.finditer(text))
+    if not matches:
+        return []
+
+    clauses: list[dict] = []
+    for i, match in enumerate(matches):
+        start = match.end("title")  # 「第X条」之后
+        end = matches[i + 1].start("title") if i + 1 < len(matches) else len(text)
+        segment = text[start:end]
+        if "\n" in segment:
+            title, body = segment.split("\n", 1)
+            title, body = title.strip(), body.strip()
+        else:
+            title, body = "", segment.strip()
+        clauses.append({"no": match.group("num"), "title": title, "body": body})
+    return clauses
+
+
+
 # ── 退费表 ────────────────────────────────────────────────────────────
 
 def _load_refund_rows(tier_id: str) -> list[list[str]] | None:

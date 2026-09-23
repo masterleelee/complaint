@@ -57,6 +57,7 @@ from services.contract_service import (
 from services.upload_pipeline import analyze_upload_contract_file, is_upload_ticket
 from services.multi_contract import analyze_contract_set, resolve_entry_kind
 from services.contract_tiers import TIERS_BY_ID
+from services import contract_template_text
 from services.gating import check_fee_plan_confirm, check_archive as gating_check_archive
 from services.contract_cache import cache_stats, invalidate as cache_invalidate, retier_and_recompute
 from services.page_cache import cleanup_lru as page_cache_cleanup, get_page_image, get_page_count, has_text_layer, stats as page_cache_stats
@@ -4637,21 +4638,47 @@ def _build_contract_comparison(ticket: dict, ticket_id: str) -> dict:
         if amount > 0:
             platform_extra.append({"key": key, "label": label, "amount": amount})
 
-    contract_text = ticket.get("contract_text")
-    if isinstance(contract_text, str):
-        try:
-            contract_text = json.loads(contract_text)
-        except json.JSONDecodeError:
+    # ── v4.4 · S4：上传件左栏改走「档位模板条款」 ─────────────────────────
+    # 上传件是纸质照片，没有 PDF 文本层 → 沿用 build_contract_clauses（pdfplumber）
+    # 必返回空。故对上传件改走档位模板正文（template_clauses）+ 退费表结构化行；
+    # 这条分支**不写** contract_text 缓存（那是 PDF 条款缓存，模板正文不该污染它），
+    # 也不去 build_contract_clauses 读照片。电子合同链路行为保持完全不变。
+    is_upload = bool(ticket) and is_upload_ticket(ticket.get("contract_set"))
+    # 工单表里档位列写作 contract_tier_id；兼容内存态结果里的短名 tier_id（契约 §1.1 口径）。
+    tier_id = str(ticket.get("tier_id") or ticket.get("contract_tier_id") or "")
+    refund_rows: list[list[str]] = []
+    if is_upload and contract_template_text.template_text(tier_id):
+        clauses = contract_template_text.template_clauses(tier_id)
+        refund_rows = contract_template_text.refund_rows(tier_id)
+        text_error = ""
+        source = "template"
+    else:
+        contract_text = ticket.get("contract_text")
+        if isinstance(contract_text, str):
+            try:
+                contract_text = json.loads(contract_text)
+            except json.JSONDecodeError:
+                contract_text = {}
+        if not isinstance(contract_text, dict):
             contract_text = {}
-    if not isinstance(contract_text, dict):
-        contract_text = {}
-    clauses = contract_text.get("clauses") or []
-    text_error = contract_text.get("error", "")
-    if not contract_text and ticket.get("contract_path"):
-        result = build_contract_clauses(ticket["contract_path"])
-        clauses = result.get("clauses") or []
-        text_error = result.get("error", "")
-        update_ticket(ticket_id, {"contract_text": json.dumps({"clauses": clauses, "error": text_error}, ensure_ascii=False)})
+        clauses = contract_text.get("clauses") or []
+        text_error = contract_text.get("error", "")
+        if not contract_text and ticket.get("contract_path"):
+            result = build_contract_clauses(ticket["contract_path"])
+            clauses = result.get("clauses") or []
+            text_error = result.get("error", "")
+            update_ticket(ticket_id, {"contract_text": json.dumps({"clauses": clauses, "error": text_error}, ensure_ascii=False)})
+        source = "pdf" if clauses else "none"
+
+    # 档位显示名：内存态 tier_result 优先 → 落库的权威显示名 → 档位表按 id 取名
+    tier_display_name = ""
+    _dr = ticket.get("deductions_result")
+    if isinstance(_dr, dict) and isinstance(_dr.get("tier_result"), dict):
+        tier_display_name = str(_dr["tier_result"].get("display_name") or "")
+    if not tier_display_name:
+        tier_display_name = str(ticket.get("contract_tier_display") or "")
+    if not tier_display_name:
+        tier_display_name = str((TIERS_BY_ID.get(tier_id) or {}).get("display_name") or "")
 
     return {
         "ticket_id": ticket_id,
@@ -4665,6 +4692,10 @@ def _build_contract_comparison(ticket: dict, ticket_id: str) -> dict:
         "text_available": bool(clauses),
         "text_error": text_error,
         "profile": _build_contract_profile(ticket, clauses),
+        "source": source,
+        "tier_id": tier_id,
+        "tier_display_name": tier_display_name,
+        "refund_rows": refund_rows,
     }
 
 
