@@ -54,7 +54,9 @@ from services.contract_service import (
     merge_analysis_into_contract_set, normalize_contract_set,
     _llm_config, _format_llm_error,
 )
-from services.upload_pipeline import analyze_upload_contract_file, is_upload_ticket
+from services.upload_pipeline import (
+    analyze_upload_contract_file, build_rule_summary, is_upload_ticket,
+)
 from services.multi_contract import analyze_contract_set, resolve_entry_kind
 from services.contract_tiers import TIERS_BY_ID
 from services import contract_template_text
@@ -4710,6 +4712,44 @@ def _extract_signing_date(text: str) -> str:
         date_str = re.sub(r"\s+", "", raw)  # 移除所有空格: "2 0 2 5 年05月 03日" -> "2025年05月03日"
         # 尝试解析并格式化
         dm = re.match(r"(\d{4})年(\d{1,2})月(\d{1,2})日", date_str)
+    # ── v4.4 · S4.1：工单「重开」缺数据回填 ──────────────────────────────
+    # 前端从列表重开工单时会把 ar 重建成瘦扁平对象（useWorkflow 重开分支）：
+    # 只有 {total_fee, actual_paid, total_deduction, refund, deductions, …}，
+    # **没有** deductions_result / contract_analyses / contract_text。
+    # 后果：🤖 AI 摘要（rule_summary 只挂在 deductions_result 上）整块消失、
+    # 左栏第三个折叠区「查看 OCR 识别原文」（取自 contract_analyses[].text）被 v-if 挡掉。
+    # 这两样服务端本就有现成数据（deduction_detail / contract_set[].text），随本接口下发。
+    # 非上传件一律 ""——电子合同的摘要是另一条 LLM 链路（result["summary"]），别串味。
+    rule_summary = ""
+    upload_text = ""
+    if is_upload:
+        try:
+            _total_fee = _round2(ticket.get("total_fee"))
+            _paid = _round2(ticket.get("actual_paid"))
+            # 工单表没有 tail_due 列（PRAGMA table_info(complaint_tickets) 已核），
+            # 按 _resolve_paid_and_tail 的本地推算口径补：max(总额 − 实缴, 0)。
+            _tail = max((_total_fee or 0.0) - (_paid or 0.0), 0.0)
+            rule_summary = build_rule_summary(
+                {
+                    "items": deductions,
+                    "total_fee": _total_fee,
+                    "paid_amount": _paid,
+                    "tail_due": _tail,
+                },
+                {"display_name": tier_display_name},
+            )
+        except Exception:
+            rule_summary = ""
+        try:
+            _texts = [
+                str(c.get("text") or "")
+                for c in normalize_contract_set(ticket.get("contract_set") or {}).get("contracts", [])
+                if c.get("text")
+            ]
+            upload_text = "\n\n".join(_texts)
+        except Exception:
+            upload_text = ""
+
         if dm:
             y, mo, d = int(dm.group(1)), int(dm.group(2)), int(dm.group(3))
             return f"{y}年{mo:02d}月{d:02d}日"
@@ -4726,6 +4766,8 @@ def _extract_signing_date(text: str) -> str:
     return ""
 
 
+        "rule_summary": rule_summary,
+        "upload_text": upload_text,
 def _extract_contract_term(text: str, signing_date: str) -> str:
     """提取合同期限整句：跨行合并 PDF 换行断句；若原文只写到"至 YYYY 年"（月日被换行截断），
     结合签订日期 + 有效期年数推导精确到期日；若原文是"为 X 年……计算"（无明确截止日），
