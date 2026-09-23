@@ -207,16 +207,71 @@ def test_manual_theory_fee_overrides_total_fee():
     assert theory["confidence"] == "high"
 
 
-def test_practical_fee_capped_with_warning():
+# ── S5b：实操学时上限截断（Q4 口径，2026-09-23 用户拍板）────────────────
+# 上限 = 《机动车驾驶培训教学与考试大纲》学时（科目二 16 / 科目三 24）× 合同单价。
+# 合同正文不写上限（已逐份扫描 8 份模板），属外部口径。规则变更（原「封顶只告警
+# 不截断」，基线测试 test_practical_fee_capped_with_warning 断言 1000h×120=120000
+# 已按新规则更新）：超上限按上限计、恰等/未超按审计学时计、截断出告警。
+# demo 案例不受影响：科目二 16h 恰等上限、科目三 4h 未超 → ¥2,400 / ¥4,116 / ¥0 不变。
+
+def test_practical_fee_over_cap_truncated():
+    """科目二 17.03h > 16h → 按 16h 计 ¥1,920（不是 17.03×120=2,043.6）。"""
     tier = TIERS_BY_ID["2023_branch_school"]
     result = calculate_deductions(
         tier=tier,
         stage="实操中",
-        progress={"exam_counts": {}, "training_hours": {"subject2": 1000}, "license_type": "C1"},
+        progress={"exam_counts": {}, "training_hours": {"subject2": 17.03}, "license_type": "C1"},
         total_fee=6000,
     )
-    assert any("封顶" in w or "超出" in w for w in result["warnings"])
-    assert _amount(result["items"], "科目二实操培训费") == pytest.approx(120000)
+    it = _find(result["items"], item="科目二实操培训费")
+    assert it["amount"] == pytest.approx(16 * 120)
+    # basis 保留**计费学时**——upload_pipeline 的 _PRACTICE_BASIS_RE 用它拼
+    # 「学时 × 单价 = 金额」算式，若写审计学时会算出与 amount 不符的数
+    assert "审核学时 16 ×" in it["basis"]
+    # 截断必须出告警：金额被压低，受理员必须看得见
+    assert any("上限" in w and "科目二" in w for w in result["warnings"])
+
+
+def test_practical_fee_exactly_at_cap_not_truncated():
+    """恰等上限（demo 案例：科目二 16h）→ 全额计，无上限告警。"""
+    tier = TIERS_BY_ID["2023_branch_school"]
+    result = calculate_deductions(
+        tier=tier,
+        stage="实操中",
+        progress={"exam_counts": {}, "training_hours": {"subject2": 16}, "license_type": "C1"},
+        total_fee=6000,
+    )
+    assert _amount(result["items"], "科目二实操培训费") == pytest.approx(1920)
+    assert not any("上限" in w for w in result["warnings"])
+
+
+def test_practical_fee_under_cap_unchanged():
+    """未超上限（demo 案例：科目三 4h < 24h）→ 按审计学时计，无告警。"""
+    tier = TIERS_BY_ID["2023_branch_school"]
+    result = calculate_deductions(
+        tier=tier,
+        stage="实操中",
+        progress={"exam_counts": {}, "training_hours": {"subject3": 4}, "license_type": "C1"},
+        total_fee=6000,
+    )
+    assert _amount(result["items"], "科目三实操培训费") == pytest.approx(480)
+    assert not any("上限" in w for w in result["warnings"])
+
+
+def test_practical_fee_cap_applies_dongcheng_branch_too():
+    """东城自制分支同一口径（80 元/学时）：科目三 25h > 24h → 按 24×80=1,920。
+
+    两条实操计算路径（_practical_items / 东城第六条分支）必须共用同一截断规则，
+    否则同工单两口径。
+    """
+    tier = TIERS_BY_ID["2019_dongcheng"]
+    result = calculate_deductions(
+        tier=tier, stage="已受理",
+        progress={"exam_counts": {}, "training_hours": {"subject3": 25}, "license_type": "C1"},
+        total_fee=3680, service_fee=800, training_mode="",
+    )
+    assert _amount(result["items"], "科目三实操培训费") == pytest.approx(24 * 80)
+    assert any("上限" in w and "科目三" in w for w in result["warnings"])
 
 
 def test_function_is_pure():

@@ -35,6 +35,25 @@ _SUBJECT_LABELS: dict[str, str] = {
 # 培训档判定：只有这两类合同有「理论培训费视为已发生」的口径
 _TRAINING_KINDS: frozenset[str] = frozenset({"培训", "单一培训"})
 
+# ── 实操学时上限（v4.4 · S5b，Q4 口径 2026-09-23 用户拍板）────────────────
+# 「科目二 ≤16 学时 / 科目三 ≤24 学时」不写在任何一份合同正文里（已逐份扫描
+# 8 份模板），来自《机动车驾驶培训教学与考试大纲》，属**外部口径**。
+# 规则：审计学时超上限 → 按上限计（超出部分不计入扣费）+ 出告警；
+#       恰等 / 未超 → 按审计学时计（demo 案例 16h/4h 数字不变）。
+# 两条实操计算路径（_practical_items / 东城第六条分支）必须共用本表，防口径分叉。
+_PRACTICAL_MAX_HOURS: dict[str, float] = {"subject2": 16.0, "subject3": 24.0}
+
+
+def _capped_practical_hours(key: str, label: str, hours: float) -> tuple[float, list[str]]:
+    """实操计费学时截断。返回 (计费学时, 截断告警列表)。"""
+    cap = _PRACTICAL_MAX_HOURS.get(key)
+    if cap is not None and hours > cap:
+        return cap, [
+            f"{label}实操培训费按大纲上限 {cap:g} 小时计"
+            f"（审计学时 {hours:g} 小时超限，超出部分不计入扣费）"
+        ]
+    return hours, []
+
 
 def _is_training_kind(kind: str) -> bool:
     return kind in _TRAINING_KINDS
@@ -140,7 +159,7 @@ def _practical_items(
     total_fee: float | None,
     manual_amounts: dict | None = None,
 ) -> tuple[list[dict], list[str]]:
-    """返回 (明细, 告警)。仅培训档 + 学时 > 0 才出。封顶校验只告警不截断。
+    """返回 (明细, 告警)。仅培训档 + 学时 > 0 才出。实操学时超大纲上限按上限计（S5b）。
 
     实操单价优先取 manual_amounts.practical_unit_price（合同正文采信值，如罗炳灿 75 元/学时），
     缺省回退档位表 practical_rates（C1=120/C2=150）。
@@ -161,9 +180,13 @@ def _practical_items(
         hours = float(training_hours.get(key, 0) or 0)
         if hours <= 0:
             continue
-        amount = hours * rate
+        charged, cap_warnings = _capped_practical_hours(key, label, hours)
+        warnings.extend(cap_warnings)
+        amount = charged * rate
         rate_label = "合同正文单价" if (manual_amounts or {}).get("practical_unit_price") else "档位单价"
-        basis = f"审核学时 {hours:g} × {rate_label} {rate:.0f} 元/学时（{license_type}）"
+        # basis 写**计费学时**（截断后 = 上限）：upload_pipeline._PRACTICE_BASIS_RE
+        # 用它拼「学时 × 单价 = 金额」算式，写审计学时会算出与 amount 不符的数
+        basis = f"审核学时 {charged:g} × {rate_label} {rate:.0f} 元/学时（{license_type}）"
         items.append(_make_item(
             category="依实",
             name=f"{label}实操培训费",
@@ -465,7 +488,7 @@ def calculate_dongcheng_refund(
                 source="tier_default",
             ))
 
-    # ── 2) 已发生实操培训费（学时 × C1/C2 单价）──
+    # ── 2) 已发生实操培训费（学时 × C1/C2 单价，超大纲上限按上限计）──
     rate_table = tier.get("practical_rates") or {}
     rate = float(rate_table.get(license_type, 0))
     if rate > 0:
@@ -475,12 +498,14 @@ def calculate_dongcheng_refund(
             hours = float(training_hours.get(key, 0) or 0)
             if hours <= 0:
                 continue
-            amount = hours * rate
+            charged, cap_warnings = _capped_practical_hours(key, label, hours)
+            warnings.extend(cap_warnings)
+            amount = charged * rate
             items.append(_make_item(
                 category="依实",
                 name=f"{label}实操培训费",
                 amount=amount,
-                basis=f"审核学时 {hours:g} × 档位单价 {rate:.0f} 元/学时（{license_type}）",
+                basis=f"审核学时 {charged:g} × 档位单价 {rate:.0f} 元/学时（{license_type}）",
             ))
             if total_fee is not None and amount > float(total_fee):
                 warnings.append(
