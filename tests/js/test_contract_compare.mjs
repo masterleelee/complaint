@@ -12,7 +12,7 @@ globalThis.Vue = {
   computed: (fn) => ({ get value() { return fn(); } }),
 };
 
-const { useContractCompare } = await import(
+const { useContractCompare, _rowKey } = await import(
   "../../static/js/composables/useContractCompare.js?v=1"
 );
 
@@ -110,7 +110,9 @@ check("aiSummary 透传", cmp.aiSummary.value.includes("送考承诺"));
 
 // ── 悬停 / 钉住 DOM 行为 ────────────────────────────────────────────
 cmp.hoverRow(0);
-check("悬停加高亮", MARK_A.classes.has("cc-hit") === true && MARK_A.scrolled === true);
+// 2026-09-23（v4.4）起：定位统一走 _scrollLocate（自算可视盒 → 设 scrollTop），
+// 全程禁止 scrollIntoView；本桩无滚动容器，故只断言命中高亮（定位另见下方 hoverDom 用例）。
+check("悬停加高亮", MARK_A.classes.has("cc-hit") === true);
 cmp.leaveRow(0);
 check("移出取消高亮", MARK_A.classes.has("cc-hit") === false);
 cmp.hoverRow(0);
@@ -183,6 +185,245 @@ const cmpConfMissing = useContractCompare(
   () => ({ tier_result: { score: 10 } }), () => "", () => null,
 );
 check("conf: 缺失（score=10）→ \"\"", cmpConfMissing.tierInfo.value.conf === "");
+
+// ═══════════════════════════════════════════════════════════════════════
+// v4.4 · S4：左栏条款块化 / 退费表栅格 / 汇总格可定位 / 定位居中
+// 契约：.scratch/contract-preview-v44-landing/s4-contract.md
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── fixture：接口返回（契约 §1.1）────────────────────────────────────────
+const DR_TEMPLATE = {
+  items: [
+    { item: "服务费", amount: 600, category: "必扣", basis: "第八条 退费表「基础服务（必扣项）·服务费」" },
+    { item: "建档费", amount: 300, category: "必扣", basis: "第八条 退费表「基础服务（必扣项）·建档费」" },
+    { item: "学员IC卡", amount: 100, category: "必扣", basis: "第八条 退费表「基础服务（必扣项）·学员IC卡」" },
+    { item: "违约金", amount: 716, category: "违约金", basis: "第八条 备注：全部培训费用的20%" },
+  ],
+  total_fee: 3580, paid_amount: 2000, tail_due: 1580, net_refund: 0,
+  rule_summary: "本合同为 **2023·分校** 档位标准合同（纸质照片识别）。\n应退 = 实缴 2,000 − 扣费合计 1,716 = **¥284**。",
+};
+const RESULT_TEMPLATE = {
+  total_fee: 3580,
+  deductions_result: DR_TEMPLATE,
+  tier_result: { display_name: "2023·分校", confidence: "high", score: 10 },
+  contract_analyses: [{ index: 0, kind: "", text: "（OCR 原文）服务费600 建档费300 学员IC卡100" }],
+};
+
+const CLAUSES_TPL = [
+  {
+    no: "四", title: "费用及支付",
+    body: [
+      "（一）培训费用",
+      "1、乙方选择以下第  1  种方式支付培训费用（包含建档费/学员IC卡）：",
+      "（1）实行普通培训，培训费用总额合计人民币     　    元，□一次性支付，□分期付款；",
+      "包含乙方理论培训、实操培训及甲方协助乙方建档、学员IC卡等相关服务费。",
+      "（分期付款约定：                                                                                     ）。",
+      "（2）实行预约培训，实时支付：",
+      "理论培训费及相关手续费人民币            元，乙方于本合同订立时向甲方支付；",
+      "（三）代收代交考试费、工本费、补考费",
+      "1、乙方委托甲方代收代交考试费、工本费、补考费等款项，费用合计 490 元。",
+    ].join("\n"),
+  },
+  {
+    no: "八", title: "退学退费",
+    body: [
+      "（一）培训费用的退费",
+      "1、合同期内，乙方中途退学的，甲方为乙方办理退学手续，并按照本合同的约定退费。",
+      "（1）实行普通培训和按时收费培训的，按下表进行退费：",
+      "项目", "内容", "费用（单位：元）", "备注",
+      "基础服务", "（必扣项）", "服务费", "600",
+      "备注：合同期内乙方申请提前解除合同…再扣除全部培训费用的20%作为违约金后，甲方将剩余的费用退还给乙方。",
+      "（2）实行预约培训的，如乙方在公安部门受理前退学的…",
+    ].join("\n"),
+  },
+];
+const REFUND_ROWS_14 = [
+  ["项目", "内容", "费用（单位：元）", "备注"],
+  ["基础服务（必扣项）", "服务费", "600", ""],
+  ["", "建档费", "300", ""],
+  ["", "学员IC卡", "100", ""],
+  ["代收代缴（依实项）", "科目一考试费", "70", "补考费35元/次"],
+  ["", "科目二考试费", "130", "补考费65元/次"],
+  ["", "科目三考试费", "280", "补考费140元/次"],
+  ["", "工本费", "10", ""],
+  ["实操培训（依实项）", "科目二实操", "C1", "120元/学时", "实操培训时长可参照学员所签名的《培训学时记录表》"],
+  ["", "", "C2", "150元/学时", ""],
+  ["", "科目三实操", "C1", "120元/学时", ""],
+  ["", "", "C2", "150元/学时", ""],
+  ["其他（必扣项）", "其他双方约定的费用", "", ""],
+  ["备注：合同期内乙方申请提前解除合同…20%作为违约金后…", "", "", ""],
+];
+const API_TEMPLATE = {
+  source: "template", tier_id: "2023_branch_school", tier_display_name: "2023·分校",
+  refund_rows: REFUND_ROWS_14, clauses: CLAUSES_TPL,
+};
+const API_PDF = {
+  source: "pdf", tier_id: "", tier_display_name: "", refund_rows: [],
+  clauses: [
+    { no: "", title: "", body: "东莞市机动车驾驶员培训服务合同 甲方…乙方…" },
+    { no: "三", title: "培训收费约定", body: "（一）乙方向甲方支付培训费用合计人民币 3580.00 元（以下均为人民币），其中通过“东莞驾培”平台支付金额为 1500.00 元。\n1.综合服务费 1100.00 元；\n2.理论培训费 480.00 元。" },
+    { no: "六", title: "甲方的权利和义务", body: "（一）将其经营规模、信誉等级…公示。" },
+    { no: "七", title: "乙方的权利和义务", body: "（一）受到不公正对待…有权投诉。" },
+  ],
+};
+const API_NONE = { source: "none", tier_id: "", tier_display_name: "", refund_rows: [], clauses: [] };
+// 电子合同：扣费项 reason 里点明「第X条」（与真实工单同口径）
+const RESULT_PDF = {
+  total_fee: 3580,
+  deductions_result: {
+    items: [
+      { item: "综合服务费", amount: 1100, category: "必扣", reason: "合同第三条及第七条：已在平台备案注册的综合服务费按100%扣除" },
+      { item: "理论培训费", amount: 480, category: "必扣", reason: "合同第三条及第七条：已发计时IC卡的理论培训费按全额计算" },
+      { item: "违约金", amount: 716, category: "违约金", reason: "违约金=3580.0×20.0%=716.0元" },
+    ],
+    net_refund: 0,
+  },
+  tier_result: { display_name: "", confidence: "high", score: 10 },
+};
+
+function _okFetch(api) {
+  return async () => ({ ok: true, json: async () => ({ success: true, data: api }) });
+}
+function _mkCmp(api, res, id) {
+  return useContractCompare(
+    () => res, () => "", () => null,
+    id === undefined ? (() => "T-1") : (() => id),
+    _okFetch(api),
+  );
+}
+
+// ── _rowKey：退费表行名映射（契约 §2.6）──────────────────────────────────
+check("_rowKey 科目二实操培训费 → 科目二实操", _rowKey("科目二实操培训费") === "科目二实操");
+check("_rowKey 服务费 → 服务费", _rowKey("服务费") === "服务费");
+check("_rowKey 违约金 → 违约金", _rowKey("违约金") === "违约金");
+
+// ── leftSource 三分支（契约 §4）─────────────────────────────────────────
+const cmpTpl = _mkCmp(API_TEMPLATE, RESULT_TEMPLATE);
+await cmpTpl.load();
+check("leftSource: template", cmpTpl.leftSource.value === "template");
+const cmpPdf = _mkCmp(API_PDF, RESULT_PDF);
+await cmpPdf.load();
+check("leftSource: pdf", cmpPdf.leftSource.value === "pdf");
+const cmpNone = _mkCmp(API_NONE, RESULT_TEMPLATE);
+await cmpNone.load();
+check("leftSource: none", cmpNone.leftSource.value === "none");
+
+// ── clauseBlocks ────────────────────────────────────────────────────────
+const tplBlocks = cmpTpl.clauseBlocks.value;
+check("上传件 clauseBlocks = 费用条款 + 退费条款（恰好 2）", tplBlocks.length === 2);
+check("上传件条款号 = 四 / 八", tplBlocks[0].no === "四" && tplBlocks[1].no === "八");
+check("上传件条款块有 chips（第四条固定 2 个）", tplBlocks[0].chips.length === 2);
+check("上传件第八条 chip = 全部扣费项名（4 个）", tplBlocks[1].chips.map(c => c.text).join(",") === "服务费,建档费,学员IC卡,违约金");
+check("退费条款含 grid 部件", tplBlocks[1].parts.some(p => p.type === "grid"));
+check("第四条 OCR 填空：总额识别填入", tplBlocks[0].bodyHtml.includes('<span class="fill">3,580</span>'));
+check("第四条 OCR 填空：手写分期（fill hand）", tplBlocks[0].bodyHtml.includes('<span class="fill hand">首付 2,000 元，欠款 1,580 元</span>'));
+check("第三条（电子合同）合同总额 mark 用 t-total", (() => {
+  const b = cmpPdf.clauseBlocks.value.find(x => x.no === "三");
+  return !!b && b.bodyHtml.includes('data-dom="t-total"');
+})());
+check("电子合同 clauseBlocks 条款号为中文数字", cmpPdf.clauseBlocks.value.length > 0
+  && cmpPdf.clauseBlocks.value.every(b => /^[一二三四五六七八九十]+$/.test(b.no)));
+check("电子合同无 preamble 块（no 为空被过滤）", cmpPdf.clauseBlocks.value.every(b => b.no !== ""));
+check("none 分支无条款块", cmpNone.clauseBlocks.value.length === 0);
+
+// ── refundTable（上传件专用）────────────────────────────────────────────
+const rt = cmpTpl.refundTable.value;
+check("refundTable 非空", !!rt);
+check("refundTable.raw = 14 行（含表头 + 备注行）", rt.raw.length === 14);
+check("refundTable.rows 去掉表头与备注行 = 12", rt.rows.length === 12);
+check("refundTable.hitSet = 命中行名（服务费/建档费/学员IC卡）",
+  rt.hitSet.join(",") === "服务费,建档费,学员IC卡");
+check("refundTable 行名用 TSV 项目列（实操行 → 科目二实操）",
+  rt.rows.some(r => r[0] === "科目二实操") && rt.rows.some(r => r[0] === "科目三实操"));
+// 东城自制档：refund_rows 为空 → 不产表格；退费条款号 = 六（非第八条）
+const API_DONGCHENG = {
+  source: "template", tier_id: "2019_dongcheng", tier_display_name: "东城自制", refund_rows: [],
+  clauses: [
+    { no: "四", title: "费用及支付（含各阶段培训费及相关手续费）：", body: "（一）培训费用\n（1）实行普通培训，培训费用总额合计人民币     　    元，□一次性支付，□分期付款；" },
+    { no: "六", title: "退学退费", body: "（一）培训费用的退费\n备注：合同期内乙方申请提前解除合同…甲方将剩余的费用退还给乙方。" },
+  ],
+};
+const cmpDongcheng = _mkCmp(API_DONGCHENG, RESULT_TEMPLATE);
+await cmpDongcheng.load();
+check("refund_rows 为空（东城自制）→ refundTable = null", cmpDongcheng.refundTable.value === null);
+check("东城自制档退费条款取「六」（绝不硬编码第八条）", cmpDongcheng.clauseBlocks.value.some(b => b.no === "六"));
+check("东城自制档费用条款取「四」", cmpDongcheng.clauseBlocks.value.some(b => b.no === "四"));
+
+// ── sumCells：dom 锚点键（契约 §2.2 / §4）───────────────────────────────
+const tplSum = cmpTpl.sumCells.value;
+check("上传件 sumCells = 5 格", tplSum.length === 5);
+check("上传件 sumCells dom = t-total/t-paid/undefined/t-paid/t-note",
+  tplSum.map(c => String(c.dom)).join("|") === "t-total|t-paid|undefined|t-paid|t-note");
+check("扣费合计那格无 dom（不定位）", tplSum[2].dom === undefined);
+const pdfSum = cmpPdf.sumCells.value;
+check("电子合同 sumCells = 4 格", pdfSum.length === 4);
+check("电子合同只有合同总额有 dom", pdfSum[0].dom === "t-total"
+  && pdfSum.slice(1).every(c => c.dom === undefined));
+
+// ── aiSummary 取值（契约 §4.2）──────────────────────────────────────────
+check("aiSummary 优先 dr.rule_summary", cmpTpl.aiSummary.value.includes("2023·分校")
+  && cmpTpl.aiSummary.value.includes("档位标准合同"));
+check("aiSummaryHtml：**x** → <b>x</b>（先转义再替换）", cmpTpl.aiSummaryHtml.value.includes("<b>2023·分校</b>")
+  && !cmpTpl.aiSummaryHtml.value.includes("**"));
+// 无 rule_summary → 回落 r.summary
+const cmpNoRule = _mkCmp(API_TEMPLATE, { deductions_result: { items: [] }, summary: "送考承诺：科目二补考不超过2次" });
+await cmpNoRule.load();
+check("aiSummary 回落 r.summary（无 rule_summary）", cmpNoRule.aiSummary.value.includes("送考承诺"));
+
+// ── 加载中 / 失败 / 无 ticket_id（不得空白或报错）──────────────────────
+let _fetchCalls = 0;
+const cmpNoId = useContractCompare(() => RESULT_TEMPLATE, () => "", () => null, () => "",
+  async () => { _fetchCalls++; return { ok: true, json: async () => ({}) }; });
+await cmpNoId.load();
+check("无 ticket_id → 不拉取、leftSource 空串（回落现有路径）",
+  cmpNoId.leftSource.value === "" && _fetchCalls === 0);
+const cmpFail = useContractCompare(() => RESULT_TEMPLATE, () => "", () => null, () => "T-X",
+  async () => { throw new Error("boom"); });
+await cmpFail.load();
+check("接口失败：apiError 记录原因", cmpFail.apiError.value.includes("boom"));
+check("接口失败：leftSource 回落空串（不空白）", cmpFail.leftSource.value === "");
+
+// ── 定位：display:contents 无盒子 + 总是重新居中（v4.4 第 1 点回归）──────
+globalThis.document.querySelectorAll = () => [];
+globalThis.getComputedStyle = (el) => ({ overflowY: (el && el._oy) || "" });
+function _stubBox(top, bottom, w, h) {
+  return { top, bottom, left: 0, right: w, width: w, height: h };
+}
+function _stubEl(rect, children) {
+  const el = {
+    _rect: rect, children: children || [], parentElement: null,
+    classList: { toggle() {}, add() {}, remove() {} },
+    getBoundingClientRect() { return this._rect; },
+    querySelectorAll(sel) { return sel === ":scope > *" ? (this.children || []) : []; },
+  };
+  return el;
+}
+function _stubPane(scrollHeight, clientHeight, top, scrollTop) {
+  return {
+    _oy: "auto", clientHeight, scrollHeight, scrollTop,
+    parentElement: null,
+    getBoundingClientRect() { return { top, bottom: top + clientHeight, left: 0, right: 400, width: 400, height: clientHeight }; },
+  };
+}
+// A) display:contents 行（宽高 0）→ 取子元素并集
+const paneA = _stubPane(800, 400, 0, 200);
+const rowA = _stubEl(_stubBox(0, 0, 0, 0), [_stubEl(_stubBox(100, 120, 50, 20)), _stubEl(_stubBox(120, 140, 50, 20))]);
+rowA.parentElement = paneA;
+cmpTpl.registerTarget("t-row-服务费", rowA);
+cmpTpl.hoverDom("t-row-服务费");
+check("display:contents 行无盒子（w/h=0）", rowA.getBoundingClientRect().width === 0);
+check("并集盒子 → scrollTop 居中（8→ 120）", paneA.scrollTop === 120);
+check("hoverDom 置 activeDom", cmpTpl.activeDom.value === "t-row-服务费");
+check("isHit 生效", cmpTpl.isHit("t-row-服务费") === true);
+cmpTpl.leaveDom("t-row-服务费");
+check("leaveDom 清空 activeDom", cmpTpl.activeDom.value === "");
+// B) 目标「已部分在可视区内」仍必须重新居中（删掉短路后的回归护栏）
+const paneB = _stubPane(800, 400, 0, 0);
+const rowB = _stubEl(_stubBox(0, 0, 0, 0), [_stubEl(_stubBox(350, 370, 50, 20))]);
+rowB.parentElement = paneB;
+cmpTpl.registerTarget("t-row-科目二实操", rowB);
+cmpTpl.hoverDom("t-row-科目二实操");
+check("目标已在可视区内仍重新居中（旧短路会让 scrollTop=0）", paneB.scrollTop === 160 && paneB.scrollTop !== 0);
 
 console.log(failed === 0 ? "\nALL PASS" : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
