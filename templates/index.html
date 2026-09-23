@@ -468,7 +468,11 @@
   .modal-content.contract-modal{width:min(1280px,96vw);max-width:96vw}
   .modal-content .m-head{padding:14px 18px;font-weight:700;border-bottom:1px solid var(--color-border);display:flex;align-items:center;gap:8px}
   .modal-content .m-body{padding:18px;overflow:auto}
-  .modal-content .m-body.contract-body{overflow:hidden;display:flex;padding:0}
+  /* ⚠️ 这里**不能**写 display:flex —— .m-body.contract-body 特异性(0,2,0) 高于
+     .cc-body(0,1,0)，会把 .cc-body 的 grid 行列模板整个覆盖掉，两栏退化成
+     flex:0 1 auto，右栏被压到 100px（汇总格 25px 宽、金额重叠、footer 竖排）。
+     2026-09-22 实测：右栏 100px / body scrollWidth 1317 > clientWidth 1280。 */
+  .modal-content .m-body.contract-body{overflow:hidden;padding:0}
 
   /* 登记表预览：A4 纸 1:1 还原 docx 版式（services/visit_service.generate_registration_form）
      纸面 contenteditable 直接修改（同回复函交互）；灰底标签列与签名行锁定不可改
@@ -972,7 +976,9 @@
   html.dark .sidebar-toggle.logout-toggle:hover{background:rgba(220,38,38,.12);color:#FCA5A5}
 
   /* ===== 合同原文对照弹窗 v2（左原文/原图 · 右扣费明细，悬停定位） ===== */
-  .cc-body{display:grid;grid-template-columns:1fr 400px;gap:1px;background:var(--color-border)}
+  .cc-body{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:1px;background:var(--color-border)}
+  /* 右栏兜底：即使将来又有更高特异性的规则把 .cc-body 变成 flex，右栏也不会被压扁 */
+  .cc-pane.cc-right{flex:none;width:400px;min-width:400px}
   .cc-pane{background:var(--color-surface);min-width:0;display:flex;flex-direction:column;min-height:0}
   .cc-pane-h{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:8px 14px;background:var(--color-surface-50);border-bottom:1px solid var(--color-border);font-size:12px;color:var(--color-text-secondary)}
   .cc-tab{font-size:12px;padding:3px 10px;border-radius:5px;border:1px solid var(--color-border);background:var(--color-surface);cursor:pointer;color:var(--color-text)}
@@ -985,6 +991,9 @@
   mark.cc-kw{background:#fff1a8;border-radius:2px;padding:0 1px}
   mark.cc-kw.cc-hit{background:#ffd666;outline:2px solid #fa8c16}
   .cc-page{margin:14px;border:1px solid var(--color-border);border-radius:6px;overflow:hidden;background:var(--color-surface)}
+  /* 原图页：按栏宽铺满（刻意**不**限高 —— 实测限到 74vh 会把 3072×4096 的扫描件
+     压成 450px 宽，合同小字直接读不清；点图可新开原图放大）。 */
+  .cc-page img.cc-img{max-width:100%;display:block;margin:0 auto;background:#f7f8f9}
   .cc-page-cap{font-size:11px;color:var(--color-text-secondary);padding:6px 10px;border-bottom:1px solid var(--color-border);background:var(--color-surface-50)}
   .cc-sum{display:flex;border-bottom:1px solid var(--color-border);background:var(--color-surface)}
   .cc-sum-cell{flex:1;padding:10px 12px;border-right:1px solid #f0f1f2;min-width:0}
@@ -1010,6 +1019,10 @@
   .cc-extra .b{padding:8px 12px;font-size:12px;line-height:1.9;white-space:pre-wrap;color:var(--color-text)}
   .cc-foot{padding:10px 14px;text-align:center;font-size:11px;color:var(--color-text-secondary)}
   .cc-tier-chip{font-size:12px;font-weight:400;color:#8a6d1a;background:#fbf7ec;border:1px solid #e6d9b8;border-radius:6px;padding:2px 8px}
+  @media(max-width:900px){
+    .cc-body{grid-template-columns:minmax(0,1fr)}
+    .cc-pane.cc-right{width:auto;min-width:0}
+  }
   html.dark .cc-pane{background:var(--color-surface)}
   html.dark .cc-pane-h{background:var(--color-surface-50)}
   html.dark .cc-tab{background:var(--color-surface)}
@@ -2698,7 +2711,10 @@
               <template v-if="cmp.hasOrig">
                 <div v-for="(p, pi) in cmp.origPages" :key="'ccpg-' + pi" class="cc-page">
                   <div v-if="p.cap" class="cc-page-cap">[[ p.cap ]]</div>
-                  <img v-if="p.type==='img'" :src="p.url" loading="lazy" style="max-width:100%;display:block;margin:0 auto">
+                  <!-- 单页限高后需要放大路径：点图新开原图（该 URL 走登录态，直接可看） -->
+                  <a v-if="p.type==='img'" :href="p.url" target="_blank" rel="noopener" :title="'点击查看原图' + (p.cap ? '：' + p.cap : '')">
+                    <img class="cc-img" :src="p.url" loading="lazy" alt="合同原图">
+                  </a>
                   <iframe v-else :src="p.url" style="width:100%;height:62vh;border:none;display:block"></iframe>
                 </div>
               </template>
@@ -3199,7 +3215,7 @@
       "useToast": "/static/js/composables/useToast.js?v=16",
       "useComplaint": "/static/js/composables/useComplaint.js?v=23",
       "useWorkflow": "/static/js/composables/useWorkflow.js?v=22",
-      "useContractCompare": "/static/js/composables/useContractCompare.js?v=1",
+      "useContractCompare": "/static/js/composables/useContractCompare.js?v=2",
       "useSettings": "/static/js/composables/useSettings.js?v=32",
       "useHistory": "/static/js/composables/useHistory.js?v=22",
       "useWorkbench": "/static/js/composables/useWorkbench.js?v=40"
