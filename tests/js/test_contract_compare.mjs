@@ -498,5 +498,82 @@ cmpTpl.registerTarget("t-row-科目二实操", rowB);
 cmpTpl.hoverDom("t-row-科目二实操");
 check("目标已在可视区内仍重新居中（旧短路会让 scrollTop=0）", paneB.scrollTop === 160 && paneB.scrollTop !== 0);
 
+// ═══════════════════════════════════════════════════════════════════════
+// v4.4 · S4.1：工单「重开」瘦 ar 回落 / aiSummary 三级回落 / OCR 回落 /
+//              pdf 空命中退化 / M5·M7 护栏
+// 重开工单 ar = useWorkflow 重建的瘦扁平对象 {total_fee, actual_paid,
+// total_deduction, refund, deductions}，无 deductions_result / contract_analyses
+// / contract_text —— QA 在测试学员丙真机实测命中（合同总额 —、填空渲染 0）。
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── A) 重开路径：模板分支逐格回落根字段 ─────────────────────────────────
+const RESULT_REOPEN = {
+  total_fee: 3580, actual_paid: 2000, total_deduction: 1716, refund: 284,
+  deductions: [
+    { item: "服务费", amount: 600, category: "必扣", basis: "第八条 退费表「基础服务（必扣项）·服务费」" },
+    { item: "建档费", amount: 300, category: "必扣" },
+    { item: "学员IC卡", amount: 100, category: "必扣" },
+    { item: "违约金", amount: 716, category: "违约金" },
+  ],
+};
+const API_REOPEN = {
+  ...API_TEMPLATE,
+  rule_summary: "本合同为 **2023·分校** 档位标准合同（纸质照片识别）。",
+  upload_text: "（OCR 合并正文）服务费600 建档费300 学员IC卡100",
+};
+const cmpReopen = _mkCmp(API_REOPEN, RESULT_REOPEN);
+await cmpReopen.load();
+check("重开路径 leftSource=template", cmpReopen.leftSource.value === "template");
+const reopenSum = cmpReopen.sumCells.value;
+check("重开：合同总额回落 r.total_fee → ¥3,580", reopenSum.find(c => c.k === "合同总额").v === "¥3,580");
+check("重开：实缴回落 r.actual_paid → ¥2,000", reopenSum.find(c => c.k === "实缴").v === "¥2,000");
+check("重开：tail 拿不到 → 不出「应付尾款」格（不得渲染假 ¥0）", !reopenSum.some(c => c.k === "应付尾款"));
+check("重开：应退回落 r.refund → ¥284", reopenSum.find(c => c.k === "应退").v === "¥284");
+const reopenFeeBlock = cmpReopen.clauseBlocks.value.find(b => b.no === "四");
+check("重开：第四条填空回落根字段 → 3,580（不得渲染 0）",
+  !!reopenFeeBlock && reopenFeeBlock.bodyHtml.includes('<span class="fill">3,580</span>')
+  && !reopenFeeBlock.bodyHtml.includes('<span class="fill">0</span>'));
+check("重开：aiSummary 二级回落 api.rule_summary", cmpReopen.aiSummary.value.includes("档位标准合同"));
+check("重开：ocrText 回落 api.upload_text", cmpReopen.leftFolds.value.ocrText.includes("OCR 合并正文"));
+
+// ── B) aiSummary 三级回落次序：dr.rule_summary 压过 api.rule_summary ────
+const cmpBoth = _mkCmp(API_REOPEN, RESULT_TEMPLATE);   // dr 与 api 层都有 rule_summary
+await cmpBoth.load();
+check("aiSummary 一级优先 dr.rule_summary（不串到 api 层）",
+  cmpBoth.aiSummary.value.includes("应退 = 实缴 2,000"));
+
+// ── C) 电子合同空命中退化（PDF 文本层成功但扣费项无一引用条款）────────────
+const RESULT_PDF_NOHIT = {
+  total_fee: 3580,
+  deductions_result: {
+    // ⚠️ _nosOf 有两级：reason 里的「第X条」直引 → 兜底按扣费项名扫条款正文。
+    //   要构成真「空命中」，项名本身也不得出现在任何条款正文里（「综合服务费」
+    //   会命中第三条正文关键词，不算空命中）。
+    items: [{ item: "场地费", amount: 1100, category: "必扣", reason: "经双方协商一致扣除" }],
+  },
+  tier_result: { display_name: "", confidence: "high", score: 10 },
+};
+const cmpPdfNoHit = _mkCmp(API_PDF, RESULT_PDF_NOHIT);
+await cmpPdfNoHit.load();
+check("pdf 空命中 → electronicDegraded=true", cmpPdfNoHit.electronicDegraded.value === true);
+check("pdf 空命中 → 退化为全部条款块（3 个有条款号的）", cmpPdfNoHit.clauseBlocks.value.length === 3);
+check("pdf 有引用（三/七）→ 不退化", cmpPdf.electronicDegraded.value === false);
+
+// ── D) M5 护栏：退费原文区只认全角「备注：」（裸「备注」是表头第 4 格）────
+// 若把 startsWith("备注：") 弱化成 startsWith("备注")，会截到表头「备注」，
+// rawRefund 就只剩「项目/内容/费用（单位：元）」，丢失服务费/600 等表行。
+check("leftFolds.rawRefund 含退费表行（备注： 全角冒号防呆）",
+  cmpTpl.leftFolds.value.rawRefund.includes("服务费") && cmpTpl.leftFolds.value.rawRefund.includes("600"));
+
+// ── E) M7 护栏：钉住的 dom 行移出不清高亮 ──────────────────────────────
+cmpTpl.hoverDom("t-note");
+cmpTpl.pinDom("t-note");
+cmpTpl.leaveDom("t-note");
+check("M7：钉住后 leaveDom 仍保持（activeDom 不清空）",
+  cmpTpl.activeDom.value === "t-note" && cmpTpl.isHit("t-note") === true);
+cmpTpl.pinDom("t-note");          // 再次点击取消钉住
+cmpTpl.leaveDom("t-note");
+check("M7：取消钉住后 leaveDom 正常清空", cmpTpl.activeDom.value === "");
+
 console.log(failed === 0 ? "\nALL PASS" : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
