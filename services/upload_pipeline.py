@@ -288,6 +288,68 @@ def _append_fee_items_pending(deductions_result: dict, fees: dict) -> None:
         add("科目二三服务费", "依实")
 
 
+def _resolve_paid_and_tail(
+    ticket: dict,
+    payment_plan: dict | None,
+    total_fee: Any,
+    fees_total_amount: Any = None,
+) -> tuple[float, float, float]:
+    """实缴 / 应付尾款 / 退费基数口径（用户拍板 2026-09-14，S2 实缴回落）。
+
+    背景：工单 `actual_paid`（实缴）经常为 0，而合同手写「首付 2000 元，欠款 1580 元」
+    已由 `contract_service._extract_payment_plan` 抽出并挂在 `extraction["payment_plan"]`
+    （形状 `{down_payment, balance, balance_source}`）。此前只读 `ticket.actual_paid`
+    → 实缴显示 0、尾款误为合同全额、退费基数误取合同总额。此函数把付款计划回落进来。
+
+    三条优先级（严格）：
+      1. 实缴 `paid_amount`：`ticket.actual_paid` > 0 用之；否则回落付款计划首付
+         （`payment_plan.down_payment`）；再否则 `0.0`。
+      2. 应付尾款 `tail_due`：
+         - 实缴来自 `ticket.actual_paid`（权威值）时：`max(0, total_fee − paid_amount)`。
+         - 实缴来自回落（付款计划首付）时：**优先**用付款计划 `balance`；
+           `balance` 缺失 / 为 None 时才回退 `max(0, total_fee − paid_amount)`。
+      3. 退费基数 `refund_base`：`paid_amount` > 0 用之；否则回落 `fees_total_amount`
+         （合同总金额），仍无则 `total_fee`（保持既有兜底不变）。
+
+    Args:
+        ticket: 工单字典，读取 `actual_paid`。
+        payment_plan: 付款计划 `{down_payment, balance, balance_source}`，可为 None / 缺键。
+        total_fee: 合同总额（工单录入优先，其次合同正文抽取）；可为 None。
+        fees_total_amount: 合同正文抽取的「合同总金额」，作退费基数兜底。
+
+    Returns:
+        `(paid_amount, tail_due, refund_base)`，三者均为 float。
+    """
+    actual_paid = _as_float(ticket.get("actual_paid"))
+    plan = payment_plan if isinstance(payment_plan, dict) else {}
+    plan_down = _as_float(plan.get("down_payment"))
+    plan_balance = _as_float(plan.get("balance"))
+    total = float(total_fee or 0)
+
+    if actual_paid is not None and actual_paid > 0:
+        # 实缴是权威值：尾款一律由实缴侧算出，不受付款计划 balance 影响
+        paid_amount = actual_paid
+        tail_due = max(0.0, total - paid_amount)
+    elif plan_down is not None and plan_down > 0:
+        # 实缴未录入（0/None）→ 回落付款计划首付
+        paid_amount = plan_down
+        if plan_balance is not None:
+            tail_due = max(0.0, plan_balance)
+        else:
+            # 付款计划缺 balance（如只抽到首付）→ 用总额 − 首付兜底
+            tail_due = max(0.0, total - paid_amount)
+    else:
+        paid_amount = 0.0
+        tail_due = max(0.0, total)
+
+    if paid_amount > 0:
+        refund_base = paid_amount
+    else:
+        refund_base = fees_total_amount or total
+
+    return paid_amount, tail_due, refund_base
+
+
 def _run_pipeline(
     extraction: dict,
     ticket: dict,
@@ -359,9 +421,14 @@ def _run_pipeline(
             if implausible_amount:
                 total_fee = None
 
-            paid_amount = _as_float(ticket.get("actual_paid")) or 0.0
-            tail_due = max(0.0, float(total_fee or 0) - paid_amount)
-            refund_base = paid_amount if paid_amount > 0 else (fees.get("total_amount") or float(total_fee or 0))
+            # S2：实缴未录入（ticket.actual_paid=0）时回落付款计划首付，尾款优先用
+            # 付款计划 balance；口径见 _resolve_paid_and_tail（纯函数，单测直打）。
+            paid_amount, tail_due, refund_base = _resolve_paid_and_tail(
+                ticket,
+                extraction.get("payment_plan"),
+                total_fee,
+                fees.get("total_amount"),
+            )
 
             deductions_result = calculate_deductions(
                 tier=TIERS_BY_ID[tier_id],
